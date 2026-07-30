@@ -1,0 +1,14 @@
+{
+  "categories": {
+    "git_push":     [{ "anyOf": ["Bash(git push:*)", { "hook": "git-push-guard" }] }],
+    "mass_delete":  ["Bash(rm -rf:*)"],
+    "exfiltration": ["Bash(curl:*)", "Bash(wget:*)"]
+  },
+  "_notes": {
+    "syntax_verified": "Verified against https://code.claude.com/docs/en/permissions.md (2026-06-19). The trailing :* is the documented trailing-wildcard form and spans flags + args.",
+    "git_push": "Satisfied by EITHER the blanket deny `Bash(git push:*)` OR the precise `git-push-guard` PreToolUse hook (ADR-010, 2026-07-08). The blanket deny blocks ALL pushes (safe feature pushes too) — the hook is the preferred form: it lets safe feature-branch pushes through and blocks only pushes to main/master and reckless force-pushes, which a prefix matcher cannot reliably distinguish (the permission docs themselves recommend a PreToolUse hook for reliable command validation). A `{hook:s}` requirement is met when an installed PreToolUse hook command contains s.",
+    "prod_deploy_migrate": "Intentionally NOT a generic required category: prod deploy/migrate is PROJECT-SPECIFIC and cannot be matched generically without false positives. Add explicit deny rules for YOUR deploy commands (e.g. Bash(./deploy.sh prod:*)) or a PreToolUse hook.",
+    "destructive_git_rewrite": "Known residual (NOT yet a required category): `git reset --hard`, `git clean -f`, `git branch -D` remain unguarded — see the mattpocock/skills audit finding #1. Candidate for a future hook/deny extension.",
+    "exfiltration": "A Bash deny does NOT fully prevent network exfil while Bash is allowed; pair with WebFetch(domain:...) allow-rules. Add Bash(nc:*) / Bash(netcat:*) / Bash(socat:*) if those tools exist on the machine."
+  }
+}

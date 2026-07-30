@@ -1,0 +1,16 @@
+{
+  "name": "angelm",
+  "owner": {
+    "name": "Angel Marcos"
+  },
+  "metadata": {
+    "description": "Personal Claude Code plugins by Angel Marcos"
+  },
+  "plugins": [
+    {
+      "name": "the-foreman",
+      "source": "./plugin",
+      "description": "Gated development conductor: preflight rails, lifecycle gates enforced via render-then-ask, secret-scanned Artifact briefs, and a right-sized subagent dispatch policy."
+    }
+  ]
+}

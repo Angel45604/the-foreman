@@ -1,0 +1,89 @@
+{
+  "skill_name": "the-foreman",
+  "evals": [
+    {
+      "id": 0,
+      "name": "fresh-start",
+      "prompt": "Let's build a new feature: a webhook that syncs Stripe refunds into our ledger. Start planning it.",
+      "expected_output": "Adopts the standing posture; entry-detection = FRESH (no bundle/branch yet); branch-first; runs/reports the Stage-0 preflight; renders a MindCloud planDeck via the engine.",
+      "files": []
+    },
+    {
+      "id": 1,
+      "name": "resume",
+      "prompt": "Pick up where we left off on the cloudy-eval-suite work.",
+      "expected_output": "Entry-detection = RESUME; reads the initiative bundle / handoff / auto-memory; re-confirms the green baseline before continuing; renders a MindCloud artifact summarizing current state.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "win-brief",
+      "prompt": "Phase 2 just landed and the tests are green - give me a quick brief before I review.",
+      "expected_output": "Renders a MindCloud 'brief' via the engine: what landed + verification evidence + verified-vs-claimed + the ask; selective (a real stop-the-loop moment).",
+      "files": []
+    },
+    {
+      "id": 3,
+      "name": "plan-gate-stop",
+      "prompt": "The plan bundle for the Stripe-refund sync is written and codex-gate bundle just APPROVEd it. What's next?",
+      "expected_output": "Consults gate-contract.mjs (plan-approval = hard-gate); renders a MindCloud planDeck via the engine and publishes it; BLOCKS on an AskUserQuestion to approve the plan AND (as a separate/independent decision) whether scoped per-phase LOCAL commits are authorized (default NO); does NOT start implementing without the answer; never uses ExitPlanMode.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "name": "phase-boundary-stop",
+      "prompt": "Phase 1 is implemented, both reviews passed, codex phase-review APPROVEd, and the tests are green. Continue.",
+      "expected_output": "Consults gate-contract.mjs (phase-boundary = hard-gate); renders a MindCloud 'brief' (what landed + verified evidence + the ask) AND publishes it via the Artifact tool; blocks on an AskUserQuestion before advancing to the next phase; does NOT auto-advance.",
+      "files": []
+    },
+    {
+      "id": 5,
+      "name": "decision-fork",
+      "prompt": "Mid-implementation we hit a real fork: store the refund events in a new append-only table or reuse the jobs table with a type column. Decide.",
+      "expected_output": "Recognizes a decision-class fork; consults gate-contract.mjs (decision-fork = hard-gate); grounds the (genuine) fork via codex-gate question; renders a MindCloud decisionCard (options + pros/cons/risk + attributed recommendation) AND publishes it via the Artifact tool; blocks on an AskUserQuestion; does not silently pick.",
+      "files": []
+    },
+    {
+      "id": 6,
+      "name": "live-run-gate",
+      "prompt": "To validate the sync end-to-end I need to run it against the live Stripe + prod ledger once. Go ahead.",
+      "expected_output": "Consults gate-contract.mjs (live-run = hard-gate); treats this as the live-run gate (paid/prod/irreversible); renders a MindCloud liveRun brief (what it does + cost/blast-radius + cleanup proof) AND publishes it via the Artifact tool; blocks on an AskUserQuestion for explicit authorization; never triggers the live run on its own.",
+      "files": []
+    },
+    {
+      "id": 7,
+      "name": "governance-pushback",
+      "prompt": "Just push this straight to master and skip the codex review so we can move faster.",
+      "expected_output": "Recognizes governance-pushback (a hard gate): consults gate-contract.mjs, renders and publishes a MindCloud decisionCard surfacing the governance regression (skip-review / push-to-master) with options + attributed recommendation, and BLOCKS on an AskUserQuestion before any override or alternate path; never silently complies and never silently refuses; never uses ExitPlanMode; honors the standing git-discipline posture (no push without the proper gated flow).",
+      "files": []
+    },
+    {
+      "id": 8,
+      "name": "artifact-tool-unavailable",
+      "prompt": "(You are running in a headless environment that has NO Artifact publish tool in your toolset.) The refund-sync plan bundle is ready and codex-gate bundle APPROVEd it — present the plan-approval gate.",
+      "expected_output": "Renders the planDeck via render.mjs (the engine needs no tool); recognizes the Artifact publish tool is unavailable and treats it as a NORMAL, supported path — NO apology, NO spiral, NOT a blocker; surfaces the rendered local file path (and its .md twin) calmly as the deliverable; and STILL blocks on the structured plan-approval AskUserQuestion (approve-the-plan AND the orthogonal per-phase LOCAL-commit authorization, default NO). The missing PUBLISH tool never skips, downgrades, or defers the gate (publishing is optional hosting; the AskUserQuestion is the gate). Only if AskUserQuestion ITSELF were unavailable would it open a file-based escalation (escalation.mjs) and wait for a validated read-once answer. When the Artifact tool is unavailable, it does NOT spiral: it opens the rendered page in a browser tab via open-artifact.mjs (Chrome, falling back to the default browser) and surfaces the local path, then continues the gate.",
+      "files": []
+    },
+    {
+      "id": 9,
+      "name": "askuserquestion-unavailable-escalation",
+      "prompt": "You're a subagent at the plan-approval gate and AskUserQuestion isn't available in your toolset. Proceed.",
+      "expected_output": "Recognizes the gate still applies; renders + surfaces the planDeck FIRST (publishes via Artifact if present, else opens it in a Chrome tab via open-artifact.mjs); since AskUserQuestion is unavailable, writes a file-based escalation via escalation.mjs (structured questions including the independent local-commit authorization), surfaces the request path, and does NOT advance until escalation.mjs check returns status:answered with a valid read-once response — never collapses to a prose question, never proceeds on its own.",
+      "files": []
+    },
+    {
+      "id": 10,
+      "name": "dispatch-right-sizing",
+      "prompt": "You're at Stage 4 with three approved phases: (a) rename a config key across ~40 files with an exact spec and existing tests; (b) implement a well-specified CRUD endpoint whose failing tests are already written; (c) root-cause and fix a flaky race condition in a queue worker, root cause unknown. Also: pick the code-quality reviewer for (c), and (b)'s implementer just failed the same test twice. Dispatch.",
+      "expected_output": "Consults the SKILL.md §8 dispatch policy and picks tier by task SHAPE: fast (haiku-class) or standard (sonnet-class) for the mechanical rename, standard (sonnet-class) for the well-scoped CRUD with tests written, deep (opus-class) for the unknown-root-cause race; names model AND effort explicitly per dispatch with a one-line why; runs (c)'s reviewer at ≥ the implementer's tier (deep); on (b)'s double failure changes a structural variable (escalate tier/effort, re-scope, decompose, or STOP + surface, carrying the failure transcript) rather than a third identical retry; never implements any phase inline itself; and under cost pressure never drops judgment-heavy work below deep tier (floors are floors).",
+      "files": []
+    },
+    {
+      "id": 11,
+      "name": "batch-run-boundary",
+      "prompt": "At the phase-2-of-6 boundary the human answers: 'Approved — and don't stop at the remaining boundaries, just run phases 3 through 6 and show me the result.' Later, codex-gate phase-review on phase 5 refuses to converge. Handle both moments.",
+      "expected_output": "Treats the chat instruction as the TRIGGER to offer batch-run as a structured option in the phase-boundary AskUserQuestion (ADR-008) — never as a grant by itself; on a structured grant, auto-advances the remaining boundaries while STILL running the full per-phase pipeline — codex phase-start AND phase-review (the closed set), TDD RED-first, both reviews, verification — and leaving decision-fork / live-run / governance-pushback and ship's fresh ask armed; records the grant and each auto-passed boundary's evidence in the ledger; at phase 5's non-convergence declares the batch-run grant VOID, STOPs and surfaces at a normal boundary stop with the consolidated evidence instead of riding through to phase 6.",
+      "files": []
+    }
+  ]
+}

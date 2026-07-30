@@ -1,0 +1,18 @@
+{
+  "name": "the-foreman",
+  "version": "1.0.0",
+  "description": "Gated development conductor: standing posture, fail-closed Stage-0 preflight, lifecycle gates (plan / phase / decision-fork / live-run) enforced via render-then-ask, a secret-scanned Artifact engine, and a right-sized subagent dispatch policy.",
+  "author": {
+    "name": "Angel Marcos"
+  },
+  "keywords": [
+    "claude-code",
+    "plugin",
+    "skill",
+    "workflow",
+    "gates",
+    "orchestration",
+    "artifacts",
+    "dispatch"
+  ]
+}
