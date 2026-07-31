@@ -1,0 +1,41 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "verdict": { "type": "string", "enum": ["approve", "request_changes"] },
+    "summary": { "type": "string", "minLength": 1 },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "class": { "type": "string", "enum": ["agent_fixable", "decision"] },
+          "severity": { "type": "string", "enum": ["P0", "P1", "P2", "P3"] },
+          "file": { "type": "string" },
+          "line": { "type": "integer", "minimum": 0 },
+          "issue": { "type": "string", "minLength": 1 },
+          "suggestion": { "type": "string", "minLength": 1 }
+        },
+        "required": ["class", "severity", "file", "line", "issue", "suggestion"]
+      }
+    },
+    "nonBlocking": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "class": { "type": "string", "enum": ["agent_fixable", "decision"] },
+          "severity": { "type": "string", "enum": ["P0", "P1", "P2", "P3"] },
+          "file": { "type": "string" },
+          "line": { "type": "integer", "minimum": 0 },
+          "issue": { "type": "string", "minLength": 1 },
+          "suggestion": { "type": "string", "minLength": 1 }
+        },
+        "required": ["class", "severity", "file", "line", "issue", "suggestion"]
+      }
+    }
+  },
+  "required": ["verdict", "summary", "blockers", "nonBlocking"]
+}

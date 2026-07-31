@@ -10,7 +10,7 @@
     {
       "name": "the-foreman",
       "source": "./plugin",
-      "description": "Gated development conductor: preflight rails, lifecycle gates enforced via render-then-ask, secret-scanned Artifact briefs, and a right-sized subagent dispatch policy."
+      "description": "Gated development conductor: preflight rails, lifecycle gates enforced via render-then-ask, secret-scanned Artifact briefs, and a right-sized subagent dispatch policy. Bundles codex-gate (independent Codex second-reviewer gate), handoff, and keep-it-simple."
     }
   ]
 }

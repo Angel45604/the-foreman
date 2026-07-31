@@ -1,0 +1,39 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "outcome": { "type": "string", "enum": ["root_cause_found", "needs_more_evidence", "unsafe_or_blocked"] },
+    "rootCause": { "type": "string" },
+    "confidence": { "type": "string", "enum": ["low", "medium", "high"] },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "observation": { "type": "string", "minLength": 1 },
+          "source": { "type": "string", "minLength": 1 }
+        },
+        "required": ["observation", "source"]
+      }
+    },
+    "hypothesesTested": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "hypothesis": { "type": "string", "minLength": 1 },
+          "verdict": { "type": "string", "enum": ["confirmed", "refuted", "inconclusive"] },
+          "evidence": { "type": "string" }
+        },
+        "required": ["hypothesis", "verdict", "evidence"]
+      }
+    },
+    "commandsRun": { "type": "array", "items": { "type": "string" } },
+    "forbiddenActionsAvoided": { "type": "array", "items": { "type": "string" } },
+    "minimalFix": { "type": "string" },
+    "nextSafeProbe": { "type": "string" }
+  },
+  "required": ["outcome", "rootCause", "confidence", "evidence", "hypothesesTested", "commandsRun", "forbiddenActionsAvoided", "minimalFix", "nextSafeProbe"]
+}

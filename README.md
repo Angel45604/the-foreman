@@ -2,7 +2,9 @@
 
 A Claude Code plugin that turns Claude into a **gated development conductor**: it drives a
 feature from idea → shipped through an explicit, fail-closed state machine instead of
-free-running.
+free-running. The plugin bundles four skills: **the-foreman** (the conductor),
+**codex-gate** (the independent Codex second-reviewer gate), **handoff** (cold-start handoff
+docs + kickoff prompts), and **keep-it-simple** (the complexity killer).
 
 What the skill owns:
 
@@ -30,12 +32,18 @@ Everything above is backed by a `node:test` suite (contract-drift guards include
 
 ```
 .claude-plugin/marketplace.json   # this repo doubles as its own single-plugin marketplace
+LICENSE                           # MIT
 plugin/
   .claude-plugin/plugin.json      # the plugin manifest
-  skills/the-foreman/
-    SKILL.md                      # the skill itself
-    references/                   # scripts (render, preflight, gates, dispatch log) + tests
-    evals/                        # skill-eval definitions + harness
+  LICENSE                         # MIT (the ./plugin dir is what the marketplace distributes)
+  skills/
+    the-foreman/
+      SKILL.md                    # the conductor skill
+      references/                 # scripts (render, preflight, gates, dispatch log) + tests
+      evals/                      # skill-eval definitions + harness
+    codex-gate/                   # independent Codex second-reviewer gate (CLI + test suite)
+    handoff/                      # cold-start handoff doc + kickoff prompt templates
+    keep-it-simple/               # ruthless complexity killer
 ```
 
 ## Install
@@ -43,12 +51,13 @@ plugin/
 ### As a plugin (recommended)
 
 ```
-/plugin marketplace add <your-github-username>/the-foreman
+/plugin marketplace add Angel45604/the-foreman
 /plugin install the-foreman@angelm
 ```
 
-The skill then loads automatically (its description triggers it at the start of development
-work) and can be invoked explicitly as `/the-foreman:the-foreman`.
+All four skills then load automatically (each description triggers it at the right moment) and
+can be invoked explicitly as `/the-foreman:the-foreman`, `/the-foreman:codex-gate`,
+`/the-foreman:handoff`, and `/the-foreman:keep-it-simple`.
 
 To try it locally before pushing anywhere:
 
@@ -57,31 +66,41 @@ To try it locally before pushing anywhere:
 /plugin install the-foreman@angelm
 ```
 
-### As a personal skill (no plugin system)
+### As personal skills (no plugin system)
 
-Symlink the skill directory into your personal skills folder — then `/the-foreman` works
-unnamespaced:
+Symlink each skill directory you want into your personal skills folder — then the bare names
+(`/the-foreman`, `/codex-gate`, …) work unnamespaced:
 
 ```bash
-git clone <repo-url> ~/personal/the-foreman
-ln -s ~/personal/the-foreman/plugin/skills/the-foreman ~/.claude/skills/the-foreman
+git clone https://github.com/Angel45604/the-foreman ~/personal/the-foreman
+for s in the-foreman codex-gate handoff keep-it-simple; do
+  ln -s ~/personal/the-foreman/plugin/skills/$s ~/.claude/skills/$s
+done
 ```
 
-**Pick one install mode.** Both at once loads the skill twice.
+**Pick one install mode.** Both at once loads each skill twice.
 
-## Dependencies (not bundled)
+## Bundled skills
 
-The skill *orchestrates* — it delegates to other skills by name and degrades loudly, not
-silently, when they're absent:
+- **`the-foreman`** — the gated development conductor (posture, preflight, lifecycle gates,
+  Artifact engine, dispatch policy).
+- **`codex-gate`** — the independent Codex second-reviewer gate (`codex-gate.sh`): review a
+  plan/bundle/phase/pre-PR branch, ground decisions, investigate — with a fail-closed contract.
+- **`handoff`** — produces the cold-start handoff doc + paste-ready kickoff prompt a fresh
+  agent resumes from.
+- **`keep-it-simple`** — ruthless complexity killer; challenge every layer before it ships.
 
-- **`codex-gate`** (hard dependency for the gate lifecycle) — the independent second-reviewer
-  gate the Non-negotiables require. Expected as a personal skill at `~/.claude/skills/codex-gate`.
-- **`handoff`** (hard dependency for §5) — produces the cold-start handoff doc + kickoff prompt.
-  Expected at `~/.claude/skills/handoff`.
+## External prerequisites (not bundled)
+
+- **Codex CLI + OpenAI/ChatGPT login** — required by `codex-gate` (it drives the `codex`
+  binary; set `CODEX_BIN` if it's not on PATH).
 - **superpowers plugin** — `brainstorming`, `writing-plans`, `subagent-driven-development`,
   `requesting-code-review`, `test-driven-development`, `systematic-debugging`,
-  `verification-before-completion`, `using-git-worktrees`.
-- **`commit-push-pr`** — repo-specific ship skill; any repo-local equivalent works, the skill
+  `verification-before-completion`, `using-git-worktrees`. Install via
+  `/plugin marketplace add obra/superpowers-marketplace` then
+  `/plugin install superpowers@superpowers-marketplace` (skip if a superpowers provider is
+  already installed — exactly one should exist).
+- **`commit-push-pr`** — repo-specific ship skill; any repo-local equivalent works, the-foreman
   references it by name at the ship stage only.
 
 Runtime state (ledgers, rendered artifacts, dispatch log, escalations) lives under
@@ -96,15 +115,15 @@ node --test plugin/skills/the-foreman/references/*.test.mjs plugin/skills/the-fo
 
 (Node 22+: explicit globs are required — a bare directory no longer auto-discovers.)
 
-## Before you publish (TODOs)
+## Notes
 
-- [ ] `.claude-plugin/marketplace.json` — the marketplace `name` is `angelm`; change it if you
-      want a different install handle (`/plugin install the-foreman@<name>`).
-- [ ] Add `"repository"` + `"homepage"` to `plugin/.claude-plugin/plugin.json` once the GitHub
-      URL exists.
-- [ ] Choose a license and add a `LICENSE` file (none is set — the repo is all-rights-reserved
-      until you pick one).
-- [ ] The deck styling defaults to the MindCloud house style (accent `#009ACC`, crumb
-      `MINDCLOUD · DEV WORKFLOW`) — both are per-ledger overridable (`meta.accent`,
-      `meta.crumb`); genericize the defaults in `references/templates.mjs` / `style.css` if you
-      ever want a brand-neutral public release.
+- License: **MIT** (repo root + `plugin/LICENSE`).
+- The marketplace `name` is `angelm`; change it if you want a different install handle
+  (`/plugin install the-foreman@<name>`).
+- The deck styling defaults to the MindCloud house style (accent `#009ACC`, crumb
+  `MINDCLOUD · DEV WORKFLOW`) — both are per-ledger overridable (`meta.accent`, `meta.crumb`);
+  genericize the defaults in `references/templates.mjs` / `style.css` if you ever want a
+  brand-neutral release.
+- A pre-publish audit initiative (four-skill hardening: guard-parser closure, CODEX_HOME
+  bootstrap, cutover tooling, owner dials, low sweep) is specified and deferred — it resumes
+  from the local initiative bundle, not this README.

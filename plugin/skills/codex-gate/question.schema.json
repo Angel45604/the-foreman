@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "settledByCanon": { "type": "boolean" },
+    "canonAnswer": { "type": "string" },
+    "recommendation": { "type": "string" },
+    "rationale": { "type": "string", "minLength": 1 },
+    "optionAssessments": {
+      "type": "array",
+      "items": { "type": "object", "additionalProperties": false,
+        "properties": { "option": {"type":"string"}, "pros": {"type":"string"}, "cons": {"type":"string"}, "risk": {"type":"string"} },
+        "required": ["option","pros","cons","risk"] }
+    },
+    "missingOptions": {
+      "type": "array",
+      "items": { "type": "object", "additionalProperties": false,
+        "properties": { "option": {"type":"string"}, "why": {"type":"string"} },
+        "required": ["option","why"] }
+    },
+    "considerations": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": ["settledByCanon","canonAnswer","recommendation","rationale","optionAssessments","missingOptions","considerations"]
+}

@@ -10,8 +10,9 @@ authorizes. This document is the human narrative; it deliberately does **not** r
 Render the authoritative table on demand:
 
 ```
-node ~/.claude/skills/the-foreman/references/gate-contract.mjs --print
+node <skill-dir>/references/gate-contract.mjs --print
 ```
+(`<skill-dir>` is defined in SKILL.md.)
 
 **Orchestrate, don't duplicate.** The conductor never re-encodes what another skill already does —
 it sequences them and wires the Artifact moments in. Delegate `brainstorming`, `writing-plans`,

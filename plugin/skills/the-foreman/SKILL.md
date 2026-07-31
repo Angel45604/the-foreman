@@ -21,7 +21,10 @@ This skill **orchestrates** — it never re-encodes what another skill already d
 > `…/plugins/cache/<marketplace>/the-foreman/<version>/skills/the-foreman`; installed as a personal
 > skill it is `~/.claude/skills/the-foreman`. Substitute the real absolute path when running the
 > `node` commands — the scripts themselves are path-independent (state lives under
-> `~/.claude/the-foreman/`, never under the install dir).
+> `~/.claude/the-foreman/`, never under the install dir). Bundled sibling skills live at
+> `<skill-dir>/../<name>/`. Siblings appear in the skills list bare (e.g. `codex-gate`) or
+> plugin-namespaced (e.g. `the-foreman:codex-gate`) depending on install — invoke whichever the
+> session lists.
 
 ## 🚦 Non-negotiables (read BEFORE acting — these are the gates this skill exists to enforce)
 
@@ -32,7 +35,7 @@ turn* — not describe it, not approximate it, not defer it.
 1. **`codex-gate` = INVOKE the `codex-gate` skill.** EVERY codex-gate call named in a §6 stage is
    mandatory AT that stage — the closed set: `question` at genuine forks (§6·1), `bundle`/`plan` at
    §6·3, `phase-start` AND `phase-review` for **every** phase (§6·4), `prepr` at §6·6. Skipping any one
-   of them is skipping the gate. Invoke it — `Skill(codex-gate)` or `bash ~/.claude/skills/codex-gate/codex-gate.sh …`
+   of them is skipping the gate. Invoke it — `Skill(codex-gate)` or `bash <skill-dir>/../codex-gate/codex-gate.sh …`
    — and drive it to **APPROVE**. It is the independent second pair of eyes (§1). It is **NOT** satisfied
    by: a homegrown/"completeness" critic · your own self-review · the-foreman's OWN scripts
    (`gate-contract.mjs --print`, `preflight.mjs`) · a ledger/handoff that *records* a prior "codex-gate
