@@ -6,6 +6,10 @@ Local-only: nothing is committed to any repo; all state lives under `~/.claude/c
 
 The contract source of truth is this README.
 
+**Tests:** run `bash codex-gate.test.sh` and expect `FAIL=0`. The printed `PASS=` count is the
+authoritative assert total (245 as of 2026-08-01); the per-tier Status lines below list what each
+tier added, not running totals. No npm packages — the suite is bash + Node stdlib only.
+
 ---
 
 ## Phase 0 — contract smoke results (PINNED against the real CLI)
@@ -141,7 +145,7 @@ Applies to **`prepr` / `prepr-delta` ONLY** (`phase-review`/`plan`/`bundle`/`que
   **plus** the additive Tier-2 `coverage` object **and** a `shards` summary `[{group, files, outcome, verdictPath}]`.
   Additive only — existing consumers read `outcome`/`blockers` unchanged; `shards` is present only on a sharded run.
 
-Status: **Tier 3 contracts GREEN** — exercised by `codex-gate.test.sh` (137 asserts total: the original 109 plus
+Status: **Tier 3 contracts GREEN** — exercised by `codex-gate.test.sh` (adds
 shard-partition complete/disjoint, auto-shard trigger + per-shard verdicts + once-per-shard invocation + shards[]
 summary, aggregate blocker/nonBlocking union, fail-closed on an inconclusive shard, and `CODEX_GATE_SHARD=off`
 keeping the Tier-1 OVERFLOW).
@@ -229,7 +233,7 @@ schema, and outcome mapping differ.
 - **No fix-loop, no ledger** — investigation proposes `minimalFix` but never applies it (code changes go through
   `plan`/`phase-review`/`prepr`), and it NEVER writes the review ledger (no approved surface; like plan/bundle/question).
 
-Status: **Investigation contracts GREEN** — exercised by `codex-gate.test.sh` (155 asserts total: the prior 137
-plus the `investigate` outcome mappings (root_cause_found/needs_more_evidence/unsafe_or_blocked + infra/overflow),
+Status: **Investigation contracts GREEN** — exercised by `codex-gate.test.sh` (adds
+the `investigate` outcome mappings (root_cause_found/needs_more_evidence/unsafe_or_blocked + infra/overflow),
 schema pinning to `investigate.schema.json`, code-tier read-only posture, brief+persona in packet, no-ledger,
 read-only invariant, and the `exec resume` round folding in `<RUNDIR>/evidence.md`).

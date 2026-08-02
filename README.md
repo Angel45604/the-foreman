@@ -115,6 +115,16 @@ node --test plugin/skills/the-foreman/references/*.test.mjs plugin/skills/the-fo
 
 (Node 22+: explicit globs are required — a bare directory no longer auto-discovers.)
 
+```bash
+bash plugin/skills/codex-gate/codex-gate.test.sh
+```
+
+(Green run ends with `PASS=<n> FAIL=0`; the printed count is the authoritative assert total.)
+
+Both suites use no npm packages — Node stdlib + bash only. The runtime prerequisites (Codex CLI +
+ChatGPT seat, superpowers skills, Claude Code host) are listed under
+[External prerequisites](#external-prerequisites-not-bundled).
+
 ## Notes
 
 - License: **MIT** (repo root + `plugin/LICENSE`).
