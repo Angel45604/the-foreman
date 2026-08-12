@@ -1450,6 +1450,34 @@ _prepr_common() {
   set_round_paths
   mkdir -p "$RUN_DIR"
 
+  # ultra + multi-lens fan-out refusal (fail-closed; RUN_DIR is set, so die_infra's status
+  # carries proper paths). `ultra` performs its OWN automatic, model-driven task delegation
+  # (observed ~3 wrapper-invisible sub-reviewers per round across a controlled sweep — 0
+  # spawn_agent calls off-ultra vs ~1,060 under ultra — and descendants attempting FURTHER
+  # nested delegation, stopped only by a global thread limit: 3 is a capped floor, not a
+  # ceiling). Multi-lens ALSO fans out (arch/security/tests[/frontend]). Stacking them
+  # multiplies reviewers — lenses × ultra's own native children — wrapper-invisible and
+  # unbounded by CODEX_GATE_FANOUT_MAX_LENSES (that cap only counts OUR lenses). Refuse
+  # before any codex call rather than run an unbounded review.
+  # Reads the RESOLVED `$multilens` (both --multi and CODEX_GATE_FANOUT=1 already folded in
+  # above — checking `$multi_flag` alone would leave the env-only path wide open) and the
+  # RESOLVED `$CODEX_GATE_EFFORT` (a plain global var assigned once at the top of this file;
+  # by the time this function runs it already reflects any env override, so
+  # CODEX_GATE_EFFORT=ultra is caught the same as a hypothetical file default would be).
+  # NO bypass env var is offered — two legitimate escape hatches already exist without one:
+  # (1) drop --multi / unset CODEX_GATE_FANOUT and run single-lens ultra, or (2) keep
+  # --multi and pick a non-delegating CODEX_GATE_EFFORT. A silent override would defeat the
+  # whole point of failing closed here.
+  if [ "$multilens" = "1" ] && [ "$CODEX_GATE_EFFORT" = "ultra" ]; then
+    local ultra_trig=""
+    [ "$multi_flag" != "1" ] || ultra_trig="--multi"
+    if [ "${CODEX_GATE_FANOUT:-0}" = "1" ]; then
+      if [ -n "$ultra_trig" ]; then ultra_trig="$ultra_trig and CODEX_GATE_FANOUT=1"
+      else ultra_trig="CODEX_GATE_FANOUT=1"; fi
+    fi
+    die_infra "refusing: multi-lens fan-out ($ultra_trig) combined with CODEX_GATE_EFFORT=ultra would multiply reviewers — ultra runs its OWN automatic, wrapper-invisible sub-reviewer delegation on top of every lens this run would fan out to (unbounded by CODEX_GATE_FANOUT_MAX_LENSES). Fail-closed, ZERO codex calls. To proceed: lower CODEX_GATE_EFFORT below ultra and keep $ultra_trig, or drop $ultra_trig and run a normal single-lens ultra review."
+  fi
+
   # Validate the packet-budget knob ONCE, before ANY size comparison downstream (the normal
   # enforce_packet_budget, the shard per-job check, AND the multi-lens over-budget preflight all
   # compare against it). A malformed value makes `[ N -gt "$CODEX_GATE_PACKET_BUDGET" ]` error and

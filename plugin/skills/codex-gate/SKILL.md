@@ -345,6 +345,16 @@ high-impact feature the multi-lens pass is the pre-PR `prepr --multi`.) NOT defa
   missing lens persona ⇒ fail closed; a coverage gap (`coverage.unreviewed > 0`) ⇒ OVERFLOW **even if all lenses
   approved**. A lens APPROVE is a dimensional (whole-diff) certification, NOT a per-file-surface approval, so a
   `--multi` APPROVE does **not** write per-file ledger rows — a later `prepr-delta` will still review those files.
+- **Refuses to combine with `CODEX_GATE_EFFORT=ultra`:** `ultra` performs its OWN automatic, model-driven
+  sub-reviewer delegation (observed ~3 wrapper-invisible children per round, unbounded by `CODEX_GATE_FANOUT_MAX_LENSES`
+  — that cap only counts OUR lenses, not ultra's own descendants). Stacking it with multi-lens multiplies
+  reviewers (lenses × ultra's native children), so `prepr`/`prepr-delta` **refuse** (`INFRA_ERROR`, ZERO codex
+  calls) whenever the *resolved* multi-lens state (`--multi` **or** `CODEX_GATE_FANOUT=1` — either one, read
+  AFTER both triggers are evaluated) is active **and** the *resolved* `CODEX_GATE_EFFORT` is `ultra`. The
+  refusal summary names both the trigger and the tier. **No bypass env var exists** — the two ways to proceed
+  are (1) drop `--multi` / unset `CODEX_GATE_FANOUT` and run a normal single-lens `ultra` review, or (2) keep
+  the fan-out and pick a non-delegating `CODEX_GATE_EFFORT`. `bundle`/`plan` never consult `CODEX_GATE_FANOUT`
+  and never parse `--multi`, so they are unaffected even at `ultra` with `CODEX_GATE_FANOUT=1` set globally.
 
 ### Write `<RUNDIR>/context.md` before `phase-review` (gives Codex the phase intent)
 `phase-review` packets only the diff + touched-file contents, so on its own Codex cannot judge whether
@@ -377,7 +387,9 @@ bash <skill-dir>/codex-gate.sh phase-review P2
 > copy that actually runs, and whether it still matches the versioned source.
 
 `CODEX_GATE_MODEL`, `CODEX_GATE_EFFORT` (defaults: `gpt-5.6-sol`/`xhigh` — **not** `ultra`, which performs
-wrapper-invisible automatic task delegation; both remain env-overridable, and `CODEX_GATE_MODEL=""` is a real
+wrapper-invisible automatic task delegation; both remain env-overridable, and `CODEX_GATE_EFFORT=ultra` combined
+with multi-lens `--multi`/`CODEX_GATE_FANOUT=1` on `prepr`/`prepr-delta` is refused — see the multi-lens section
+above; `CODEX_GATE_MODEL=""` is a real
 override meaning "omit `-m`, use Codex's own default"), `CODEX_GATE_FAST` (**default 0 = OFF, opt-in**; Codex
 "fast mode" — same model, ~1.5× faster at **~2.5× credit cost**; set exactly `1` to enable — **any other
 value, including `2`, leaves it OFF** — it does NOT change model/effort, fast≠dumb), `CODEX_GATE_MAX_ROUNDS`

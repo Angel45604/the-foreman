@@ -3337,6 +3337,152 @@ run_test_52() {
 }
 
 #############################################################################
+# TEST 53 — ultra + multi-lens fan-out refuses BEFORE any codex call [ULTRA-GUARD]
+#   `ultra` performs its OWN automatic sub-reviewer delegation (observed ~3 wrapper-
+#   invisible children per round; a capped floor, not a ceiling — see codex-gate.sh's
+#   CODEX_GATE_EFFORT comment). Combined with our OWN multi-lens fan-out (lenses ×
+#   ultra's native children) that is unbounded review, so the wrapper must refuse
+#   rather than proceed. The guard must read the RESOLVED multilens state (BOTH
+#   --multi and CODEX_GATE_FANOUT=1 trigger it identically) — a guard on the flag
+#   alone would leave the env path wide open (the bug this test locks closed).
+#   (A)+(B) --multi and CODEX_GATE_FANOUT=1, each + ultra -> INFRA_ERROR, ZERO codex
+#       calls, summary names BOTH the trigger and the tier.
+#   (C) either trigger + the DEFAULT xhigh -> proceeds exactly as today (multi-lens
+#       dispatch fires, 3 stub calls, APPROVE).
+#   (D) NEITHER trigger + ultra -> unaffected: a normal single-lens ultra run still
+#       goes through (1 stub call, model_reasoning_effort="ultra" reaches argv,
+#       APPROVE). This IS the owner's documented escape hatch — no separate bypass
+#       env var exists; dropping --multi/CODEX_GATE_FANOUT is the only way to keep ultra.
+#   (E) bundle / plan at ultra -> completely unaffected, even with a GLOBAL
+#       CODEX_GATE_FANOUT=1 in the environment (they never parse --multi and never
+#       consult CODEX_GATE_FANOUT; the guard lives only in the prepr/prepr-delta path).
+#############################################################################
+run_test_53() {
+  local repo status outcome summary ncalls trigger planfile
+
+  # ---- (A)+(B): --multi / CODEX_GATE_FANOUT=1, each + ultra -> refused, 0 calls ----
+  for trigger in flag env; do
+    repo="$(make_repo)"
+    printf 'seed\n' > "$repo/seed.txt"
+    git -C "$repo" add seed.txt && git -C "$repo" commit -qm init
+    printf 'a change\n' >> "$repo/seed.txt"
+    reset_argv_log
+    if [ "$trigger" = "flag" ]; then
+      ( cd "$repo" && STUB_MODE=approve CODEX_GATE_EFFORT=ultra bash "$WRAPPER" prepr --multi ) \
+        > "$SANDBOX/u53.txt" 2>"$SANDBOX/u53.err"
+    else
+      ( cd "$repo" && STUB_MODE=approve CODEX_GATE_EFFORT=ultra CODEX_GATE_FANOUT=1 bash "$WRAPPER" prepr ) \
+        > "$SANDBOX/u53.txt" 2>"$SANDBOX/u53.err"
+    fi
+    status="$(last_json_line "$SANDBOX/u53.txt")"
+    outcome="$(printf '%s' "$status" | jq -r '.outcome // empty')"
+    summary="$(printf '%s' "$status" | jq -r '.summary // ""')"
+
+    if [ "$outcome" = "INFRA_ERROR" ]; then
+      pass "ultra-guard[$trigger]: multi-lens + ultra refuses (INFRA_ERROR)"
+    else
+      fail "ultra-guard[$trigger]: expected INFRA_ERROR got '$outcome' :: $status :: $(cat "$SANDBOX/u53.err")"
+    fi
+    if [ "$trigger" = "flag" ]; then
+      if printf '%s' "$summary" | grep -q -- '--multi'; then
+        pass "ultra-guard[$trigger]: refusal names the --multi trigger"
+      else
+        fail "ultra-guard[$trigger]: refusal does not name --multi :: $summary"
+      fi
+    else
+      if printf '%s' "$summary" | grep -q 'CODEX_GATE_FANOUT'; then
+        pass "ultra-guard[$trigger]: refusal names the CODEX_GATE_FANOUT trigger"
+      else
+        fail "ultra-guard[$trigger]: refusal does not name CODEX_GATE_FANOUT :: $summary"
+      fi
+    fi
+    if printf '%s' "$summary" | grep -qi 'ultra'; then
+      pass "ultra-guard[$trigger]: refusal names the ultra tier"
+    else
+      fail "ultra-guard[$trigger]: refusal does not name ultra :: $summary"
+    fi
+    ncalls="$(grep -c -- '---END-ARGV---' "$STUB_ARGV_LOG" 2>/dev/null)"; [ -n "$ncalls" ] || ncalls=0
+    if [ "$ncalls" -eq 0 ]; then
+      pass "ultra-guard[$trigger]: ZERO codex calls on the refusal path"
+    else
+      fail "ultra-guard[$trigger]: expected 0 codex calls got $ncalls :: $(cat "$STUB_ARGV_LOG")"
+    fi
+  done
+
+  # ---- (C): either trigger + the DEFAULT xhigh -> proceeds exactly as today ----
+  repo="$(make_repo)"
+  printf 'seed\n' > "$repo/seed.txt"
+  git -C "$repo" add seed.txt && git -C "$repo" commit -qm init
+  printf 'a change\n' >> "$repo/seed.txt"
+  reset_argv_log
+  ( cd "$repo" && STUB_MODE=approve bash "$WRAPPER" prepr --multi ) > "$SANDBOX/u53c.txt" 2>"$SANDBOX/u53c.err"
+  status="$(last_json_line "$SANDBOX/u53c.txt")"
+  outcome="$(printf '%s' "$status" | jq -r '.outcome // empty')"
+  ncalls="$(grep -c -- '---END-ARGV---' "$STUB_ARGV_LOG" 2>/dev/null)"; [ -n "$ncalls" ] || ncalls=0
+  if [ "$outcome" = "APPROVE" ] && [ "$ncalls" -eq 3 ]; then
+    pass "ultra-guard[xhigh]: --multi at the DEFAULT effort still dispatches multi-lens (3 calls, APPROVE)"
+  else
+    fail "ultra-guard[xhigh]: expected APPROVE/3 calls got outcome='$outcome' calls=$ncalls :: $status :: $(cat "$SANDBOX/u53c.err")"
+  fi
+
+  # ---- (D): NEITHER trigger + ultra -> unaffected (single-lens ultra still runs) ----
+  repo="$(make_repo)"
+  printf 'seed\n' > "$repo/seed.txt"
+  git -C "$repo" add seed.txt && git -C "$repo" commit -qm init
+  printf 'a change\n' >> "$repo/seed.txt"
+  reset_argv_log
+  ( cd "$repo" && STUB_MODE=approve CODEX_GATE_EFFORT=ultra bash "$WRAPPER" prepr ) > "$SANDBOX/u53d.txt" 2>"$SANDBOX/u53d.err"
+  status="$(last_json_line "$SANDBOX/u53d.txt")"
+  outcome="$(printf '%s' "$status" | jq -r '.outcome // empty')"
+  ncalls="$(grep -c -- '---END-ARGV---' "$STUB_ARGV_LOG" 2>/dev/null)"; [ -n "$ncalls" ] || ncalls=0
+  if [ "$outcome" = "APPROVE" ] && [ "$ncalls" -eq 1 ]; then
+    pass "ultra-guard[single-lens]: NEITHER trigger set -> plain ultra prepr still runs (1 call, APPROVE)"
+  else
+    fail "ultra-guard[single-lens]: expected APPROVE/1 call got outcome='$outcome' calls=$ncalls :: $status :: $(cat "$SANDBOX/u53d.err")"
+  fi
+  if grep -q 'model_reasoning_effort="ultra"' "$STUB_ARGV_LOG"; then
+    pass "ultra-guard[single-lens]: the ultra effort actually reached argv (proves it ran, not silently downgraded)"
+  else
+    fail "ultra-guard[single-lens]: model_reasoning_effort=\"ultra\" missing from argv :: $(cat "$STUB_ARGV_LOG")"
+  fi
+
+  # ---- (E): bundle / plan at ultra -> completely unaffected (even with a GLOBAL
+  #      CODEX_GATE_FANOUT=1 in the environment; they never look at it) ----
+  repo="$(make_repo)"
+  printf 'seed\n' > "$repo/seed.txt"
+  git -C "$repo" add seed.txt && git -C "$repo" commit -qm init
+  mkdir -p "$repo/docs/pdr"
+  printf 'pdr-agents\n' > "$repo/docs/pdr/AGENTS.md"
+  printf '# plan\n' > "$repo/docs/pdr/plan.md"
+  git -C "$repo" add . && git -C "$repo" commit -qm pdr
+  reset_argv_log
+  ( cd "$repo" && STUB_MODE=approve CODEX_GATE_EFFORT=ultra CODEX_GATE_FANOUT=1 bash "$WRAPPER" bundle docs/pdr ) \
+    > "$SANDBOX/u53e_b.txt" 2>"$SANDBOX/u53e_b.err"
+  status="$(last_json_line "$SANDBOX/u53e_b.txt")"
+  outcome="$(printf '%s' "$status" | jq -r '.outcome // empty')"
+  ncalls="$(grep -c -- '---END-ARGV---' "$STUB_ARGV_LOG" 2>/dev/null)"; [ -n "$ncalls" ] || ncalls=0
+  if [ "$outcome" = "APPROVE" ] && [ "$ncalls" -eq 1 ]; then
+    pass "ultra-guard[bundle]: bundle at ultra + a global CODEX_GATE_FANOUT=1 is unaffected (1 call, APPROVE)"
+  else
+    fail "ultra-guard[bundle]: expected APPROVE/1 call got outcome='$outcome' calls=$ncalls :: $status :: $(cat "$SANDBOX/u53e_b.err")"
+  fi
+
+  planfile="$SANDBOX/u53-plan.md"
+  printf '# A plan\n\nDo the thing.\n' > "$planfile"
+  reset_argv_log
+  ( cd "$repo" && STUB_MODE=approve CODEX_GATE_EFFORT=ultra CODEX_GATE_FANOUT=1 bash "$WRAPPER" plan "$planfile" ) \
+    > "$SANDBOX/u53e_p.txt" 2>"$SANDBOX/u53e_p.err"
+  status="$(last_json_line "$SANDBOX/u53e_p.txt")"
+  outcome="$(printf '%s' "$status" | jq -r '.outcome // empty')"
+  ncalls="$(grep -c -- '---END-ARGV---' "$STUB_ARGV_LOG" 2>/dev/null)"; [ -n "$ncalls" ] || ncalls=0
+  if [ "$outcome" = "APPROVE" ] && [ "$ncalls" -eq 1 ]; then
+    pass "ultra-guard[plan]: plan at ultra + a global CODEX_GATE_FANOUT=1 is unaffected (1 call, APPROVE)"
+  else
+    fail "ultra-guard[plan]: expected APPROVE/1 call got outcome='$outcome' calls=$ncalls :: $status :: $(cat "$SANDBOX/u53e_p.err")"
+  fi
+}
+
+#############################################################################
 # run everything
 #############################################################################
 printf '======== codex-gate.test.sh ========\n'
@@ -3398,6 +3544,7 @@ run_test_49
 run_test_50
 run_test_51
 run_test_52
+run_test_53
 
 printf '====================================\n'
 printf 'PASS=%d FAIL=%d\n' "$PASS_COUNT" "$FAIL_COUNT"
