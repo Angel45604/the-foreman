@@ -6,9 +6,10 @@ Local-only: nothing is committed to any repo; all state lives under `~/.claude/c
 
 The contract source of truth is this README.
 
-**Tests:** run `bash codex-gate.test.sh` and expect `FAIL=0`. The printed `PASS=` count is the
-authoritative assert total (316 as of 2026-08-12); the per-tier Status lines below list what each
-tier added, not running totals. No npm packages — the suite is bash + Node stdlib only.
+**Tests:** run `bash codex-gate.test.sh` and expect `FAIL=0`. **`FAIL=0` is the contract.** No assertion
+total is quoted here: a hand-maintained count is stale the moment an assertion lands, nothing verifies it, and
+this one went stale three separate times during one initiative — each time costing a review cycle to flag. Run
+the suite if you want the number. The per-tier Status lines below list what each tier added, not running totals. No npm packages — the suite is bash + Node stdlib only.
 
 ---
 
@@ -259,10 +260,10 @@ the running gate. This subcommand makes that condition observable.
 
 | field | meaning |
 | --- | --- |
-| `defaults` | the **literal** fallback values baked into the running script (`model`, `effort`, `fast`) |
-| `effective` | the values actually in force after env overrides. `fast` is normalized to its **real trigger** — `run_codex` arms fast mode on an exact `"1"` and nothing else, so `CODEX_GATE_FAST=2` reports `fast:false`; `fastRaw` keeps the raw value visible |
-| `origin` | per dial: `"default"`, or the **name of the env var** that overrode it |
-| `running` | `{path, digest}` of the script that produced the report — so "the digest of the running script" is unambiguous even when it is neither endpoint |
+| `defaults` | the **literal** fallback values baked into the **reporting** script (`model`, `effort`, `fast`). The other two copies' literals are `runtimeDefaults` / `sourceDefaults` |
+| `effective` | the dials in force **at the runtime endpoint**: `runtimeDefaults` with this environment's overrides applied. **Invariant to which copy runs `config`** — see the note below. `null` when the runtime's dials cannot be read at all. `fast` is normalized to its **real trigger** — `run_codex` arms fast mode on an exact `"1"` and nothing else, so `CODEX_GATE_FAST=2` reports `fast:false`; `fastRaw` keeps the raw value visible |
+| `origin` | per dial: `"default"`, or the **name of the env var** that overrode it. A fact about the *environment*, so it describes `effective` and `reporter.dials` alike; `"default"` means "no override — that endpoint's own declared literal is what is in force" |
+| `reporter` | the process that produced the report: `{path, digest, dials}`, so "the digest of the running script" is unambiguous even when it is neither endpoint. `dials` is `defaults` with the same env overrides applied — **this is what `effective` used to be** |
 | `runtimePath` / `runtimeDigest` / `runtimeKind` / `runtimeDefaults` | the gate that actually runs: path, sha256, `file`\|`symlink`\|`other`\|`missing`, and the dials that copy **declares**. `symlink` is reported when **any component** of the path is a symlink, not merely the leaf — the documented personal-skill setup symlinks the *directory*, and a leaf-only `-L` would call that install a plain physical one |
 | `runtimeExecutable` | whether the runtime script carries the executable bit — `true`\|`false`, or `null` when there is no runtime file to test. **A diagnostic only: it does not affect `parity` or `completeness`.** Every documented invocation runs the wrapper as `bash codex-gate.sh …`, and `bash <file>` needs only read permission, so a mode-0644 runtime runs fine. Worth noticing (a copy tool that drops the mode is a real thing), not worth failing on |
 | `sourcePath` / `sourceDigest` / `sourceKind` / `sourceDefaults` | the same four for the versioned copy. `sourceKind` is a **leaf** classification: the source is only ever read, and a checkout legitimately living behind a symlinked parent is not a hazard — the any-component rule exists because the *runtime* is the copy whose topology an operator is about to act on |
@@ -272,9 +273,31 @@ the running gate. This subcommand makes that condition observable.
 | `inventoryMissing` | the members **absent from an endpoint**: `{file, endpoint}` where endpoint is `source` \| `runtime` \| `both`. Distinct from drift: a member missing from *both* copies is not a difference between them, but it is still a hole in each |
 | `completeness` | `COMPLETE` when every inventory member is present on both endpoints, `INCOMPLETE` when any is not, `UNAVAILABLE` when an endpoint could not be located |
 | `digestParity` | sha256 byte identity across the **whole inventory**, not just the script |
-| `effectiveParity` | the dials **in force** vs the dials the versioned source **declares** — reported separately because byte-identical files still behave differently under env overrides |
+| `effectiveParity` | the **runtime-effective** dials (`effective`) vs the dials the versioned source **declares** — reported separately because byte-identical files still behave differently under env overrides |
 | `parity` | the roll-up: `MATCH` only when digest **and** effective matched **and** the pair is complete; a known difference ⇒ `MISMATCH` (it wins — a real divergence is the more actionable answer); agreement over an incomplete pair ⇒ `INCOMPLETE`; anything undetermined ⇒ `UNAVAILABLE` |
+| `remediation` | the machine-readable action list — a closed set: `sync-files` \| `clear-env-override` \| `rerun-from-source` \| `resolve-source` \| `resolve-runtime`. Empty **exactly when there is nothing to act on** (see below) |
 
+- **Three copies are in play, and the report keeps them apart.** The **runtime** (the gate that will actually
+  run), the **source** (the versioned copy) and the **reporter** (whichever copy you happened to invoke).
+  `effective` describes the **runtime**: its declared defaults with this environment's overrides applied. It
+  used to describe the *reporter*, which meant the answer to "what will this gate use?" changed with the copy
+  you asked — a runtime declaring `gpt-5.6-terra`/`ultra` was reported as `runtimeDefaults: {terra, ultra}`
+  alongside `effective: {sol, xhigh}` whenever `config` ran from the source checkout. Useless for reasoning
+  about the configured runtime, and most misleading in precisely the drift scenario this mode exists for.
+  **Same configured runtime + same environment now yields the same `effective` from either copy**; the
+  reporter is reported separately (`reporter.path`, `reporter.digest`, `reporter.dials`) so nothing is lost.
+  When the reporter's own dials are not the source's, the report says so as a `CAVEAT` and asks for
+  `rerun-from-source` — the one case where a `parity: MATCH` legitimately carries an action, because the
+  endpoints can agree perfectly while the report *about* them came from a third copy.
+- **The inventory enumeration is validated before any comparison is trusted.** The digest/completeness loop is
+  fed by enumerating `syncInventory`; when that enumeration yielded **no rows** the loop body never executed,
+  so `drift` and `missing` stayed empty and the roll-up fell straight through to `digestParity: MATCH`,
+  `completeness: COMPLETE`, `parity: MATCH` — a drift detector certifying agreement having compared *nothing*.
+  The enumeration is now materialized and checked against the exact expected member set (right **count**,
+  right **names**, in the declared **order**) before any verdict may depend on it; a mismatch is `INFRA_ERROR`.
+  The count is pinned independently of the list (`CODEX_GATE_SYNC_INVENTORY_COUNT`), because checking a
+  truncated enumeration against a truncated constant is a tautology — they agree, on nothing. Changing the
+  inventory is therefore a deliberate two-place edit in this script, and the suite pins the members as a third.
 - **`parity` never guesses.** A source copy that cannot be located or read reports **`UNAVAILABLE`**, never
   a silent `MATCH`. A `missing` or `symlink` endpoint is reported as such via `*Kind` rather than assumed —
   the owner-decided authoritative runtime `~/.claude/skills/codex-gate/codex-gate.sh` is a real directory
@@ -297,7 +320,17 @@ the running gate. This subcommand makes that condition observable.
   [Manual sync](#manual-sync--keeping-the-runtime-equal-to-the-source-pinned-contract)); effective-only
   drift ⇒ the summary **names the overriding variable** from `origin` and says to clear or change it, because
   copying files cannot clear an env override; both ⇒ both. (The supported `CODEX_GATE_MODEL=''` hatch used to
-  produce "a fix in the source may not be reaching the running gate" over two byte-identical copies.)
+  produce "a fix in the source may not be reaching the running gate" over two byte-identical copies.) A runtime
+  whose *declared* dials differ from the source's is a **file** difference by construction — different literals
+  mean different bytes — so it is folded into the sync clause and named there rather than prescribed as a
+  second, independent action for one fault.
+- **`remediation` is empty exactly when there is nothing to act on** — `parity: MATCH` **and** the reporter's own
+  dials are the ones the source declares. It is **never** empty for `MISMATCH`, `INCOMPLETE` or `UNAVAILABLE`,
+  and `config` fails closed (`INFRA_ERROR`) rather than emit an empty list for one of those. `UNAVAILABLE` used
+  to emit `[]` — byte for byte the same signal as a clean `MATCH`, so a consumer branching on "empty means all
+  good" read *"we could not tell"* as *"everything agrees"*. Undetermined always has a cause worth naming: the
+  endpoint that could not be located, read, or parsed as a codex-gate script gets `resolve-source` or
+  `resolve-runtime`, and the `summary` says which knob to point where.
 - **Endpoint knobs** (both exist so tests use temp fixtures instead of a machine's real `~/.claude/skills`,
   and so an operator can compare any two copies):
   - `CODEX_GATE_RUNTIME` — the gate that actually runs. Default: `$HOME/.claude/skills/codex-gate/codex-gate.sh`.
@@ -333,7 +366,12 @@ skill *running* `config` to exit 0 as the proof, and `+x` restored as the contro
 a git work tree refusing to self-certify (`sourcePath` empty, `UNAVAILABLE`), a tracked-but-off-path copy
 likewise, against a real checkout that still auto-discovers to a full MATCH, an explicit `CODEX_GATE_SOURCE`
 still honoured, and the cwd-checkout rule intact; the MISMATCH remedy branching by cause across all four
-combinations of file drift × env override; and the read-only invariants — zero Codex calls, no run dir, an
+combinations of file drift × env override; four independent ways of reaching a short inventory enumeration —
+two that break the enumeration with the constant intact, two that corrupt the constant with the enumeration
+intact — each failing closed to `INFRA_ERROR` against a control pair that genuinely IS a MATCH; `effective`
+proven **identical** whether `config` is invoked from the source copy or from the runtime copy, with and
+without an env override, while `reporter` shows the two really are different processes; and every non-MATCH
+parity carrying a non-empty, cause-specific action list; and the read-only invariants — zero Codex calls, no run dir, an
 unchanged repo, the runtime path's own mtime and inode untouched under both a review and `config` itself,
 exit 0, and exit 2 on a bogus argument. `install` is pinned as an **unknown, non-mutating** mode).
 

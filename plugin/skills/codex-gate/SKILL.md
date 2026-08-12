@@ -225,12 +225,17 @@ Use it when: a dial change you committed doesn't seem to be taking effect; a rev
 didn't expect; before trusting `prepr` on a machine you haven't run the gate on; or as the first step of
 debugging any "but I fixed that" report about the gate itself.
 
-- `defaults` — the literal fallbacks in the running script. `effective` — what is actually in force after env
-  overrides, with **`fast` normalized to its real trigger**: fast mode arms on an exact `1` and nothing else,
-  so `CODEX_GATE_FAST=2` reports `fast:false` (`fastRaw` keeps the raw value visible). `origin` — per dial,
-  `"default"` or the **name of the env var** that overrode it.
+- **Three copies, kept apart.** `effective` — the dials in force **at the runtime endpoint** (`runtimeDefaults`
+  plus this environment's overrides), with **`fast` normalized to its real trigger**: fast mode arms on an
+  exact `1` and nothing else, so `CODEX_GATE_FAST=2` reports `fast:false` (`fastRaw` keeps the raw value
+  visible). It is **invariant to which copy you ran `config` from** — it used to be the *reporter's* dials, so
+  a runtime declaring `terra`/`ultra` read as `sol`/`xhigh` whenever the report came from the source checkout.
+  `reporter` — `{path, digest, dials}` of the process that produced the report. `defaults` — the *reporter's*
+  literal fallbacks (`runtimeDefaults`/`sourceDefaults` are the other two copies'). `origin` — per dial,
+  `"default"` or the **name of the env var** that overrode it; it is a fact about the environment, so it
+  applies to `effective` and `reporter.dials` alike.
 - `parity` — `MATCH` / `MISMATCH` / `INCOMPLETE` / `UNAVAILABLE`, rolled up from `digestParity`,
-  `effectiveParity` (the dials in force vs the dials the source **declares**) and `completeness`, reported
+  `effectiveParity` (the **runtime-effective** dials vs the dials the source **declares**) and `completeness`, reported
   separately because two identical files still behave differently under env overrides — and can still be
   half a skill. `digestParity` is a **directory-level** claim over the documented sync inventory (reported as
   `syncInventory`), so `MATCH` means the installed skill matches the source *including its schemas, reviewer
@@ -261,9 +266,15 @@ debugging any "but I fixed that" report about the gate itself.
   fix may not be reaching the reviewer. **Read the `summary` before acting** — it branches by cause: file
   drift says sync (a manual copy, see below), an env override **names the variable** to clear or change, and
   both says both. Copying files cannot clear an override.
+- **Do not read `remediation: []` as "all good" without checking `parity`.** The list is empty exactly when
+  there is nothing to act on — `MATCH` *and* the reporter's own dials are the source's. It is never empty for
+  `MISMATCH` / `INCOMPLETE` / `UNAVAILABLE`: the closed set is `sync-files` | `clear-env-override` |
+  `rerun-from-source` | `resolve-source` | `resolve-runtime`. `UNAVAILABLE` used to emit `[]`, which is the
+  same signal as a clean `MATCH` — "we could not tell" is not "everything agrees". Conversely a `MATCH` *can*
+  carry `rerun-from-source`: the endpoints agree, but the report came from a copy that is not the source.
 
 ```
-bash <skill-dir>/codex-gate.sh config | jq '{parity, digestParity, effectiveParity, completeness, runtimeExecutable, effective, origin}'
+bash <skill-dir>/codex-gate.sh config | jq '{parity, digestParity, effectiveParity, completeness, runtimeExecutable, effective, reporter, origin, remediation}'
 ```
 
 ## Syncing the drift away (manual)

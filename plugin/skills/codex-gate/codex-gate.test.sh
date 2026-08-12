@@ -344,6 +344,45 @@ copy_real_skill() { # <dir>
   chmod +x "$d/codex-gate.sh"
 }
 
+# Helper: rewrite a COPY's `CODEX_GATE_SYNC_INVENTORY` constant (a multi-line
+# single-quoted assignment) to <members>, so a TRUNCATED or EMPTY inventory can be driven
+# without touching the checkout. <members> is passed through `awk -v`, so `\n` separates
+# members and an empty string yields an empty constant.
+# Deliberately anchored on `CODEX_GATE_SYNC_INVENTORY=` (with the `=`), so the sibling
+# `CODEX_GATE_SYNC_INVENTORY_COUNT=` pin is LEFT ALONE — the point of these fixtures is a
+# constant that disagrees with the pin.
+set_fixture_inventory() { # <script> <members>
+  local f="$1" tmp="$1.tmpmut"
+  awk -v repl="$2" -v q="'" '
+    index($0, "CODEX_GATE_SYNC_INVENTORY=")==1 { print "CODEX_GATE_SYNC_INVENTORY=" q repl q; skip=1; next }
+    skip==1 { if (substr($0, length($0), 1) == q) skip=0; next }
+    { print }
+  ' "$f" > "$tmp" && mv "$tmp" "$f"
+  chmod +x "$f"
+}
+
+# Helper: break the ENUMERATION without touching the constant. `inventory_pairs`' heredoc
+# body is the single line `$CODEX_GATE_SYNC_INVENTORY`; replacing it with <body> ("" for a
+# zero-row enumeration) reproduces "the command substitution yielded fewer rows than the
+# inventory declares" — enumeration failure, not constant corruption.
+break_fixture_enumeration() { # <script> <heredoc-body>
+  local f="$1" tmp="$1.tmpmut"
+  awk -v body="$2" '$0=="$CODEX_GATE_SYNC_INVENTORY" { print body; next } { print }' "$f" > "$tmp" && mv "$tmp" "$f"
+  chmod +x "$f"
+}
+
+# Helper: retune a REAL copy's three dial declarations in place, keeping each dial's
+# expansion form (`-` for model, `:-` for effort/fast) so the copy stays a valid,
+# runnable gate whose `config` parser-trust gate is satisfied.
+retune_gate_dials() { # <script> <model> <effort> <fast>
+  local f="$1" tmp="$1.tmpdial"
+  sed -e "s|^CODEX_GATE_MODEL=.*|CODEX_GATE_MODEL=\"\${CODEX_GATE_MODEL-$2}\"|" \
+      -e "s|^CODEX_GATE_EFFORT=.*|CODEX_GATE_EFFORT=\"\${CODEX_GATE_EFFORT:-$3}\"|" \
+      -e "s|^CODEX_GATE_FAST=.*|CODEX_GATE_FAST=\"\${CODEX_GATE_FAST:-$4}\"|" \
+      "$f" > "$tmp" && mv "$tmp" "$f"
+  chmod +x "$f"
+}
+
 # Helper: an identity fingerprint that changes on ANY write — mtime with sub-second
 # precision AND the inode. A rewrite-with-identical-bytes moves the mtime; a
 # temp-file+rename moves the inode. Digest comparison alone sees neither, which is
@@ -4098,13 +4137,23 @@ run_test_58() {
   fi
 
   # ---- (B) FILE-ONLY drift: no override in play ----
+  #   Both parities report MISMATCH here, and both for the SAME cause. The runtime's file
+  #   differs from the source's, and one of the things it differs in is its declared dials
+  #   — so the dials that will actually be in force at that runtime are not the source's
+  #   either. That is one fault with one fix (copy the files), not two, which is why the
+  #   action list below must be sync-files ALONE and the prose must carry no ALSO-join.
   ( CODEX_GATE_RUNTIME="$fx/drift/codex-gate.sh" CODEX_GATE_SOURCE="$fx/src/codex-gate.sh" \
     bash "$WRAPPER" config ) > "$SANDBOX/rem58b.txt" 2>"$SANDBOX/rem58b.err"
   status="$(last_json_line "$SANDBOX/rem58b.txt")"
-  if printf '%s' "$status" | jq -e '.digestParity=="MISMATCH" and .effectiveParity=="MATCH" and .origin=={model:"default",effort:"default",fast:"default"}' >/dev/null 2>&1; then
-    pass "config-remedy (premise): a divergent runtime with no override is a digest-ONLY mismatch"
+  if printf '%s' "$status" | jq -e '.digestParity=="MISMATCH" and .origin=={model:"default",effort:"default",fast:"default"}' >/dev/null 2>&1; then
+    pass "config-remedy (premise): a divergent runtime with NO env override in play is a file-caused mismatch"
   else
     fail "config-remedy: the file-only fixture is not the state under test :: $(printf '%s' "$status" | jq -c '{digestParity,effectiveParity,origin}')"
+  fi
+  if printf '%s' "$status" | jq -e '.effectiveParity=="MISMATCH" and .effective.model=="gpt-5.6-terra" and .sourceDefaults.model=="gpt-5.6-sol"' >/dev/null 2>&1; then
+    pass "config-remedy (premise): the drifted runtime's OWN dials are what will be in force, so effectiveParity reports the divergence too"
+  else
+    fail "config-remedy: effectiveParity did not see the runtime's declared drift :: $(printf '%s' "$status" | jq -c '{effectiveParity,effective,sourceDefaults}')"
   fi
   if printf '%s' "$status" | jq -e --arg t "$syncText" '.summary | contains($t)' >/dev/null 2>&1; then
     pass "config-remedy: a file-only mismatch's PROSE carries the exact single-sourced sync sentence"
@@ -4155,31 +4204,43 @@ run_test_58() {
     fail "config-remedy: both-causes prose is missing the sync sentence or the join :: $(printf '%s' "$status" | jq -r '.summary')"
   fi
 
-  # ---- (D) effective drift with NO override: the running script itself is not the source ----
+  # ---- (D) the REPORTER is the outlier: both endpoints agree, the reporting copy does not ----
+  #   Runtime and source are the SAME drifted file, so the two endpoints genuinely match —
+  #   parity MATCH is the honest verdict, and `effective` says terra/ultra/fast because that
+  #   is what the configured runtime will use. What is off is the copy that produced the
+  #   report: this suite's checkout declares sol/xhigh/0. That is not a parity fault, but it
+  #   does mean the report was not computed by the source's code, so it must be SAID (a
+  #   CAVEAT, not an ALSO-join) and it must ask for rerun-from-source — the one case where a
+  #   MATCH legitimately carries an action.
   ( CODEX_GATE_RUNTIME="$fx/drift/codex-gate.sh" CODEX_GATE_SOURCE="$fx/drift/codex-gate.sh" \
     bash "$WRAPPER" config ) > "$SANDBOX/rem58d.txt" 2>"$SANDBOX/rem58d.err"
   status="$(last_json_line "$SANDBOX/rem58d.txt")"
-  if printf '%s' "$status" | jq -e '.digestParity=="MATCH" and .effectiveParity=="MISMATCH" and .origin.model=="default"' >/dev/null 2>&1; then
-    pass "config-remedy (premise): a source declaring dials the RUNNING script does not carry is effective drift with no override"
+  if printf '%s' "$status" | jq -e '.digestParity=="MATCH" and .effectiveParity=="MATCH" and .parity=="MATCH" and .origin=={model:"default",effort:"default",fast:"default"}' >/dev/null 2>&1; then
+    pass "config-remedy (premise): one file used as BOTH endpoints is a real MATCH, with no env override in play"
   else
-    fail "config-remedy: the no-override effective-drift fixture is not the state under test :: $(printf '%s' "$status" | jq -c '{digestParity,effectiveParity,origin}')"
+    fail "config-remedy: the reporter-outlier fixture is not the state under test :: $(printf '%s' "$status" | jq -c '{digestParity,effectiveParity,parity,origin}')"
+  fi
+  if printf '%s' "$status" | jq -e '.effective.model=="gpt-5.6-terra" and .reporter.dials.model=="gpt-5.6-sol" and (.effective.model != .reporter.dials.model)' >/dev/null 2>&1; then
+    pass "config-remedy (premise): the reporter really is the outlier — effective is the runtime's terra, reporter.dials is the checkout's sol"
+  else
+    fail "config-remedy: the reporter is not distinguishable from the endpoints here :: $(printf '%s' "$status" | jq -c '{effective,reporter:.reporter.dials}')"
   fi
   if printf '%s' "$status" | jq -e '(.summary | test("no environment override|with NO environment"; "i")) and (.summary | test("CODEX_GATE_(MODEL|EFFORT|FAST)") | not)' >/dev/null 2>&1; then
-    pass "config-remedy: effective drift with no override says so, and still blames no variable"
+    pass "config-remedy: the reporter caveat says there is no environment override, and still blames no variable"
   else
-    fail "config-remedy: no-override effective drift mis-attributed :: $(printf '%s' "$status" | jq -r '.summary')"
+    fail "config-remedy: reporter drift mis-attributed :: $(printf '%s' "$status" | jq -r '.summary')"
   fi
-  if printf '%s' "$status" | jq -e '(.remediation | index("rerun-from-source") != null) and (.remediation | index("clear-env-override") == null) and (.remediation | index("sync-files") == null)' >/dev/null 2>&1; then
-    pass "config-remedy: no-override effective drift's action list is rerun-from-source ONLY"
+  if printf '%s' "$status" | jq -e '.remediation == ["rerun-from-source"]' >/dev/null 2>&1; then
+    pass "config-remedy: reporter drift's action list is rerun-from-source ONLY — even over a MATCH"
   else
-    fail "config-remedy: no-override effective drift has the wrong action list :: $(printf '%s' "$status" | jq -c '.remediation')"
+    fail "config-remedy: reporter drift has the wrong action list :: $(printf '%s' "$status" | jq -c '.remediation')"
   fi
-  # digestParity is MATCH here too — same PROSE invariant as case (A): no sync sentence,
-  # no ALSO-join (nothing else fired ahead of the self-drift clause).
-  if printf '%s' "$status" | jq -e --arg t "$syncText" '(.summary | contains($t) | not) and (.summary | contains(". ALSO: ") | not)' >/dev/null 2>&1; then
-    pass "config-remedy: no-override effective drift's PROSE carries no sync sentence and no ALSO-join"
+  # PROSE: no sync sentence (nothing on disk differs) and no ALSO-join — the caveat is not
+  # a second PARITY cause, and the ALSO token must keep meaning only that.
+  if printf '%s' "$status" | jq -e --arg t "$syncText" '(.summary | contains($t) | not) and (.summary | contains(". ALSO: ") | not) and (.summary | contains(". CAVEAT: "))' >/dev/null 2>&1; then
+    pass "config-remedy: reporter drift's PROSE carries no sync sentence and no ALSO-join, and is flagged as a CAVEAT"
   else
-    fail "config-remedy: no-override effective drift's prose leaks a sync instruction :: $(printf '%s' "$status" | jq -r '.summary')"
+    fail "config-remedy: reporter drift's prose leaks a sync instruction or mis-joins :: $(printf '%s' "$status" | jq -r '.summary')"
   fi
 
   # ---- (E) NO drift at all: a clean MATCH must carry an EMPTY action list ----
@@ -4268,6 +4329,269 @@ run_test_59() {
 }
 
 #############################################################################
+# TEST 60 — the inventory ENUMERATION is VALIDATED before any comparison [CONFIG]
+#   `inventory_pairs` feeds the digest/completeness loop through a command substitution
+#   inside a heredoc. When that substitution yields ZERO rows the loop body simply never
+#   executes: `drift` and `missing` stay empty and the code falls straight through to
+#   `digestParity: MATCH`, `completeness: COMPLETE`, `parity: MATCH`. A drift detector
+#   that compared NOTHING certified perfect agreement — the loudest possible false green,
+#   and precisely the state an operator reads as "the installed gate is the repo's code".
+#   Four independent ways to reach a short enumeration are driven here — two that break
+#   the ENUMERATION with the constant intact, two that corrupt the CONSTANT with the
+#   enumeration intact — each against a pair that (control, case E) genuinely IS a MATCH,
+#   so an INFRA_ERROR is attributable to the truncation and to nothing else.
+#############################################################################
+run_test_60() {
+  local fx status desc
+  fx="$SANDBOX/invguard60"
+  # a pair that really would be a full MATCH — the comparison is sound, only the
+  # enumeration feeding it is broken
+  make_skill_fixture "$fx/src" gpt-5.6-sol xhigh 0 same-docs
+  make_skill_fixture "$fx/rt"  gpt-5.6-sol xhigh 0 same-docs
+
+  # ---- (E) control FIRST: the UNMUTATED copy over this very pair is a clean MATCH ----
+  copy_real_skill "$fx/gate-control"
+  ( cd "$SANDBOX" && CODEX_GATE_RUNTIME="$fx/rt/codex-gate.sh" CODEX_GATE_SOURCE="$fx/src/codex-gate.sh" \
+    bash "$fx/gate-control/codex-gate.sh" config ) > "$SANDBOX/inv60e.txt" 2>"$SANDBOX/inv60e.err"
+  status="$(last_json_line "$SANDBOX/inv60e.txt")"
+  if printf '%s' "$status" | jq -e '.outcome=="CONFIG" and .parity=="MATCH" and (.syncInventory|length)==13' >/dev/null 2>&1; then
+    pass "inventory-guard (control): an intact gate compares all 13 members over this pair and reports MATCH"
+  else
+    fail "inventory-guard (control): the fixture pair is not a MATCH-able pair :: $status :: $(cat "$SANDBOX/inv60e.err")"
+  fi
+
+  # ---- (A)-(D) every way of reaching a short enumeration must be INFRA_ERROR ----
+  #   Driven as a table so each case is asserted identically: outcome INFRA_ERROR, and —
+  #   said separately because it is the actual harm — the report must NOT claim MATCH.
+  # NB: every field is split in its OWN statement — a single `local a=… b=$a` expands all
+  # of its words BEFORE the builtin runs, so `b` would carry the PREVIOUS iteration's value.
+  local dir tag rest slug what
+  for desc in \
+    "A|enum-zero|zero rows from inventory_pairs (constant intact)" \
+    "B|enum-one|a TRUNCATED enumeration of 1 row (constant intact)" \
+    "C|const-empty|an EMPTY CODEX_GATE_SYNC_INVENTORY constant" \
+    "D|const-short|a TRUNCATED 2-member CODEX_GATE_SYNC_INVENTORY constant" ; do
+    tag="${desc%%|*}"
+    rest="${desc#*|}"
+    slug="${rest%%|*}"
+    what="${rest#*|}"
+    dir="$fx/gate-$slug"
+    copy_real_skill "$dir"
+    case "$tag" in
+      A) break_fixture_enumeration "$dir/codex-gate.sh" "" ;;
+      B) break_fixture_enumeration "$dir/codex-gate.sh" "codex-gate.sh" ;;
+      C) set_fixture_inventory     "$dir/codex-gate.sh" "" ;;
+      D) set_fixture_inventory     "$dir/codex-gate.sh" 'codex-gate.sh\nverdict.schema.json' ;;
+    esac
+    ( cd "$SANDBOX" && CODEX_GATE_RUNTIME="$fx/rt/codex-gate.sh" CODEX_GATE_SOURCE="$fx/src/codex-gate.sh" \
+      bash "$dir/codex-gate.sh" config ) > "$SANDBOX/inv60$tag.txt" 2>"$SANDBOX/inv60$tag.err"
+    status="$(last_json_line "$SANDBOX/inv60$tag.txt")"
+    local seen
+    seen="$(printf '%s' "$status" | jq -c '{outcome, parity, completeness, digestParity, inventoryMembersReported:(.syncInventory|length)}' 2>/dev/null)"
+    if printf '%s' "$status" | jq -e '.outcome=="INFRA_ERROR"' >/dev/null 2>&1; then
+      pass "inventory-guard: $what => INFRA_ERROR (the enumeration is validated before it is trusted)"
+    else
+      fail "inventory-guard: $what did NOT fail closed :: $seen :: $(cat "$SANDBOX/inv60$tag.err")"
+    fi
+    if printf '%s' "$status" | jq -e '(.parity // "ABSENT") != "MATCH" and (.completeness // "ABSENT") != "COMPLETE"' >/dev/null 2>&1; then
+      pass "inventory-guard: $what never reaches MATCH/COMPLETE (a comparison over nothing is not agreement)"
+    else
+      fail "inventory-guard: $what certified agreement over an incomplete comparison :: $seen"
+    fi
+    # WHY it refused — and gated on the refusal itself, because the MATCH summary this
+    # defect produces already contains the phrase "sync inventory": asserting the wording
+    # alone would pass vacuously on the very output it is meant to reject.
+    if printf '%s' "$status" | jq -e '.outcome=="INFRA_ERROR" and (.summary | test("inventor"; "i"))' >/dev/null 2>&1; then
+      pass "inventory-guard: $what says WHY it refused (an INFRA_ERROR summary naming the inventory)"
+    else
+      fail "inventory-guard: $what refused without naming the cause :: $(printf '%s' "$status" | jq -r '.outcome + " :: " + (.summary // "<no summary>")')"
+    fi
+  done
+}
+
+#############################################################################
+# TEST 61 — `effective` describes the RUNTIME, not the reporter [CONFIG]
+#   `effective` was the REPORTING process's own resolved dials, so the answer to "what
+#   will the gate that actually runs use?" changed depending on which copy you happened
+#   to invoke `config` from: a runtime declaring gpt-5.6-terra/ultra reported
+#   `runtimeDefaults: {terra, ultra}` alongside `effective: {sol, xhigh}` whenever the
+#   report was produced from the source checkout — useless for reasoning about the
+#   configured runtime, and actively misleading in exactly the drift scenario this
+#   subcommand exists for.
+#   `effective` must therefore be the RUNTIME's declared defaults with the same
+#   environment overrides applied that would apply when that runtime is invoked, and it
+#   must be INVARIANT to which copy reports it. The reporting process is not lost — it is
+#   reported separately as `reporter` (path, digest and its own resolved dials), which
+#   this test also pins by showing the two invocations really are different reporters.
+#############################################################################
+run_test_61() {
+  local fx a b
+  fx="$SANDBOX/effinv61"
+  copy_real_skill "$fx/src"                                         # sol / xhigh / 0
+  copy_real_skill "$fx/rt"
+  retune_gate_dials "$fx/rt/codex-gate.sh" gpt-5.6-terra ultra 1    # terra / ultra / 1
+
+  # premise: the two copies really do declare different dials
+  ( cd "$SANDBOX" && CODEX_GATE_RUNTIME="$fx/rt/codex-gate.sh" CODEX_GATE_SOURCE="$fx/src/codex-gate.sh" \
+    bash "$fx/src/codex-gate.sh" config ) > "$SANDBOX/eff61a.txt" 2>"$SANDBOX/eff61a.err"
+  a="$(last_json_line "$SANDBOX/eff61a.txt")"
+  ( cd "$SANDBOX" && CODEX_GATE_RUNTIME="$fx/rt/codex-gate.sh" CODEX_GATE_SOURCE="$fx/src/codex-gate.sh" \
+    bash "$fx/rt/codex-gate.sh" config ) > "$SANDBOX/eff61b.txt" 2>"$SANDBOX/eff61b.err"
+  b="$(last_json_line "$SANDBOX/eff61b.txt")"
+
+  if printf '%s' "$a" | jq -e '.runtimeDefaults=={model:"gpt-5.6-terra",effort:"ultra",fast:"1"} and .sourceDefaults=={model:"gpt-5.6-sol",effort:"xhigh",fast:"0"}' >/dev/null 2>&1; then
+    pass "config-effective (premise): the runtime declares terra/ultra/1 and the source declares sol/xhigh/0"
+  else
+    fail "config-effective: the drifted-runtime fixture is not the state under test :: $(printf '%s' "$a" | jq -c '{runtimeDefaults,sourceDefaults}') :: $(cat "$SANDBOX/eff61a.err")"
+    return
+  fi
+
+  # ---- the INVARIANCE itself: same configured runtime + same env, either reporter ----
+  if [ -n "$a" ] && [ -n "$b" ] && \
+     printf '%s\n%s\n' "$a" "$b" | jq -se '.[0].effective == .[1].effective' >/dev/null 2>&1; then
+    pass "config-effective: \`effective\` is IDENTICAL whether config is run from the source copy or from the runtime copy"
+  else
+    fail "config-effective: \`effective\` depends on which copy reported it :: fromSource=$(printf '%s' "$a" | jq -c '.effective') fromRuntime=$(printf '%s' "$b" | jq -c '.effective')"
+  fi
+  # …and it is the RUNTIME's configuration that both agree on, not the reporter's
+  if printf '%s' "$a" | jq -e '.effective=={model:"gpt-5.6-terra",effort:"ultra",fast:true,fastRaw:"1"}' >/dev/null 2>&1; then
+    pass "config-effective: reported FROM THE SOURCE copy, \`effective\` still describes the runtime endpoint (terra/ultra/fast)"
+  else
+    fail "config-effective: from the source copy, effective does not describe the runtime :: $(printf '%s' "$a" | jq -c '.effective')"
+  fi
+  if printf '%s' "$b" | jq -e '.effective=={model:"gpt-5.6-terra",effort:"ultra",fast:true,fastRaw:"1"}' >/dev/null 2>&1; then
+    pass "config-effective: reported FROM THE RUNTIME copy, \`effective\` describes that same runtime endpoint"
+  else
+    fail "config-effective: from the runtime copy, effective is wrong :: $(printf '%s' "$b" | jq -c '.effective')"
+  fi
+  # structural restatement: with no override in play, effective IS runtimeDefaults
+  if printf '%s\n%s\n' "$a" "$b" | jq -se 'all(.[]; .effective.model==.runtimeDefaults.model and .effective.effort==.runtimeDefaults.effort and .effective.fastRaw==.runtimeDefaults.fast)' >/dev/null 2>&1; then
+    pass "config-effective: with no env override, effective equals runtimeDefaults dial-for-dial in BOTH directions"
+  else
+    fail "config-effective: effective diverges from runtimeDefaults with no override :: A=$(printf '%s' "$a" | jq -c '{effective,runtimeDefaults}') B=$(printf '%s' "$b" | jq -c '{effective,runtimeDefaults}')"
+  fi
+  # effectiveParity is the runtime-effective dials vs what the SOURCE declares — also invariant
+  if printf '%s\n%s\n' "$a" "$b" | jq -se 'all(.[]; .effectiveParity=="MISMATCH") and (.[0].effectiveParity==.[1].effectiveParity)' >/dev/null 2>&1; then
+    pass "config-effective: effectiveParity compares the RUNTIME-effective dials with the source's, identically from either copy"
+  else
+    fail "config-effective: effectiveParity is not the runtime-vs-source comparison :: A=$(printf '%s' "$a" | jq -r '.effectiveParity') B=$(printf '%s' "$b" | jq -r '.effectiveParity')"
+  fi
+
+  # ---- the reporter is NOT lost: it is reported separately, and it really differs ----
+  if printf '%s' "$a" | jq -e --arg p "$fx/src/codex-gate.sh" '.reporter.path==$p and (.reporter.digest|test("^[0-9a-f]{64}$")) and .reporter.dials.model=="gpt-5.6-sol" and .reporter.dials.effort=="xhigh" and .reporter.dials.fast==false' >/dev/null 2>&1; then
+    pass "config-effective: the SOURCE-copy run reports its own identity + dials under \`reporter\` (path, digest, sol/xhigh/off)"
+  else
+    fail "config-effective: reporter block missing/wrong on the source-copy run :: $(printf '%s' "$a" | jq -c '.reporter')"
+  fi
+  if printf '%s' "$b" | jq -e --arg p "$fx/rt/codex-gate.sh" '.reporter.path==$p and .reporter.dials.model=="gpt-5.6-terra" and .reporter.dials.effort=="ultra" and .reporter.dials.fast==true' >/dev/null 2>&1; then
+    pass "config-effective: the RUNTIME-copy run reports a DIFFERENT reporter (terra/ultra/fast) — the two really are different processes"
+  else
+    fail "config-effective: reporter block missing/wrong on the runtime-copy run :: $(printf '%s' "$b" | jq -c '.reporter')"
+  fi
+
+  # ---- env overrides apply to the RUNTIME's declared defaults, from either copy ----
+  ( cd "$SANDBOX" && CODEX_GATE_EFFORT=low CODEX_GATE_RUNTIME="$fx/rt/codex-gate.sh" CODEX_GATE_SOURCE="$fx/src/codex-gate.sh" \
+    bash "$fx/src/codex-gate.sh" config ) > "$SANDBOX/eff61c.txt" 2>"$SANDBOX/eff61c.err"
+  a="$(last_json_line "$SANDBOX/eff61c.txt")"
+  ( cd "$SANDBOX" && CODEX_GATE_EFFORT=low CODEX_GATE_RUNTIME="$fx/rt/codex-gate.sh" CODEX_GATE_SOURCE="$fx/src/codex-gate.sh" \
+    bash "$fx/rt/codex-gate.sh" config ) > "$SANDBOX/eff61d.txt" 2>"$SANDBOX/eff61d.err"
+  b="$(last_json_line "$SANDBOX/eff61d.txt")"
+  if [ -n "$a" ] && [ -n "$b" ] && printf '%s\n%s\n' "$a" "$b" | jq -se '.[0].effective == .[1].effective and .[0].origin == .[1].origin' >/dev/null 2>&1; then
+    pass "config-effective: under an env override, effective + origin are STILL identical from either copy"
+  else
+    fail "config-effective: an env override reintroduced reporter-dependence :: A=$(printf '%s' "$a" | jq -c '{effective,origin}') B=$(printf '%s' "$b" | jq -c '{effective,origin}')"
+  fi
+  if printf '%s' "$a" | jq -e '.effective.effort=="low" and .effective.model=="gpt-5.6-terra" and .origin.effort=="CODEX_GATE_EFFORT" and .origin.model=="default"' >/dev/null 2>&1; then
+    pass "config-effective: the override lands on the RUNTIME's dials (effort=low over terra), and origin names the variable"
+  else
+    fail "config-effective: env override not applied to the runtime's declared defaults :: $(printf '%s' "$a" | jq -c '{effective,origin}')"
+  fi
+}
+
+#############################################################################
+# TEST 62 — `UNAVAILABLE` must carry a cause-specific remediation [CONFIG]
+#   `remediation` was documented as "empty exactly when MATCH", but a complete skill
+#   outside any checkout reported `parity: UNAVAILABLE` with `remediation: []` — byte for
+#   byte the same signal as a clean MATCH. A consumer branching on "empty means all good"
+#   reads "we could not tell" as "everything agrees", which is the one inference this
+#   subcommand exists to prevent. Every non-MATCH parity must name something to DO:
+#   `resolve-source` when the versioned copy cannot be located/read/parsed,
+#   `resolve-runtime` when the installed gate cannot be.
+#############################################################################
+run_test_62() {
+  local fx status
+  fx="$SANDBOX/unavail62"
+
+  # ---- (A) a COMPLETE skill outside any checkout: no source can be proven ----
+  copy_real_skill "$fx/orphan"
+  ( cd "$SANDBOX" && CODEX_GATE_RUNTIME="$fx/orphan/codex-gate.sh" \
+    bash "$fx/orphan/codex-gate.sh" config ) > "$SANDBOX/un62a.txt" 2>"$SANDBOX/un62a.err"
+  status="$(last_json_line "$SANDBOX/un62a.txt")"
+  if printf '%s' "$status" | jq -e '.parity=="UNAVAILABLE" and .sourcePath==""' >/dev/null 2>&1; then
+    pass "config-unavailable (premise): a complete skill outside any checkout reports UNAVAILABLE with no source"
+  else
+    fail "config-unavailable: the orphan fixture is not the state under test :: $(printf '%s' "$status" | jq -c '{parity,sourcePath,sourceDiscovery}') :: $(cat "$SANDBOX/un62a.err")"
+    return
+  fi
+  if printf '%s' "$status" | jq -e '.remediation | length > 0' >/dev/null 2>&1; then
+    pass "config-unavailable: UNAVAILABLE does NOT emit an empty action list (that is the MATCH signal)"
+  else
+    fail "config-unavailable: UNAVAILABLE emitted remediation [] — indistinguishable from a clean MATCH :: $(printf '%s' "$status" | jq -c '{parity,remediation}')"
+  fi
+  if printf '%s' "$status" | jq -e '(.remediation | index("resolve-source") != null) and (.remediation | index("sync-files") == null)' >/dev/null 2>&1; then
+    pass "config-unavailable: the action is CAUSE-specific — resolve-source, never a sync of files it could not compare"
+  else
+    fail "config-unavailable: wrong action for an unresolvable source :: $(printf '%s' "$status" | jq -c '.remediation')"
+  fi
+  if printf '%s' "$status" | jq -e '.summary | test("CODEX_GATE_SOURCE")' >/dev/null 2>&1; then
+    pass "config-unavailable: the prose says how to resolve it (names CODEX_GATE_SOURCE)"
+  else
+    fail "config-unavailable: the prose gives no way out :: $(printf '%s' "$status" | jq -r '.summary')"
+  fi
+
+  # ---- (B) the other endpoint: an unlocatable RUNTIME is its own cause ----
+  make_skill_fixture "$fx/src" gpt-5.6-sol xhigh 0 same-docs
+  ( cd "$SANDBOX" && CODEX_GATE_RUNTIME="$fx/nowhere/codex-gate.sh" CODEX_GATE_SOURCE="$fx/src/codex-gate.sh" \
+    bash "$WRAPPER" config ) > "$SANDBOX/un62b.txt" 2>"$SANDBOX/un62b.err"
+  status="$(last_json_line "$SANDBOX/un62b.txt")"
+  if printf '%s' "$status" | jq -e '.parity=="UNAVAILABLE" and .runtimeKind=="missing"' >/dev/null 2>&1; then
+    pass "config-unavailable (premise): a missing runtime endpoint also rolls up to UNAVAILABLE"
+  else
+    fail "config-unavailable: the missing-runtime fixture is not the state under test :: $(printf '%s' "$status" | jq -c '{parity,runtimeKind}')"
+  fi
+  if printf '%s' "$status" | jq -e '(.remediation | index("resolve-runtime") != null) and (.remediation | index("resolve-source") == null)' >/dev/null 2>&1; then
+    pass "config-unavailable: an unlocatable RUNTIME asks for resolve-runtime, not resolve-source"
+  else
+    fail "config-unavailable: wrong action for an unresolvable runtime :: $(printf '%s' "$status" | jq -c '.remediation')"
+  fi
+
+  # ---- (C) the CONTRACT, stated as behaviour: non-MATCH is never an empty list ----
+  #   Asserted over every parity state the suite can produce cheaply, so the invariant is
+  #   pinned as a property rather than case by case.
+  local caseSpec rt src label
+  for caseSpec in \
+    "MISMATCH|$fx/drift/codex-gate.sh|$fx/src/codex-gate.sh" \
+    "INCOMPLETE|$fx/thin-rt/codex-gate.sh|$fx/thin-src/codex-gate.sh" \
+    "UNAVAILABLE|$fx/nowhere/codex-gate.sh|$fx/src/codex-gate.sh" ; do
+    label="${caseSpec%%|*}"; rt="${caseSpec#*|}"; src="${rt#*|}"; rt="${rt%%|*}"
+    case "$label" in
+      MISMATCH)   make_skill_fixture "$fx/drift" gpt-5.6-terra ultra 1 drifted-docs ;;
+      INCOMPLETE) make_skill_fixture "$fx/thin-rt"  gpt-5.6-sol xhigh 0 same-docs
+                  make_skill_fixture "$fx/thin-src" gpt-5.6-sol xhigh 0 same-docs
+                  rm -f "$fx/thin-rt/question.schema.json" "$fx/thin-src/question.schema.json" ;;
+    esac
+    ( cd "$SANDBOX" && CODEX_GATE_RUNTIME="$rt" CODEX_GATE_SOURCE="$src" bash "$WRAPPER" config ) \
+      > "$SANDBOX/un62c-$label.txt" 2>"$SANDBOX/un62c-$label.err"
+    status="$(last_json_line "$SANDBOX/un62c-$label.txt")"
+    if printf '%s' "$status" | jq -e --arg p "$label" '.parity==$p and (.remediation|length)>0' >/dev/null 2>&1; then
+      pass "config-unavailable: parity $label carries a NON-EMPTY remediation (empty is reserved for 'nothing to act on')"
+    else
+      fail "config-unavailable: parity $label produced no action :: $(printf '%s' "$status" | jq -c '{parity,remediation}') :: $(cat "$SANDBOX/un62c-$label.err")"
+    fi
+  done
+}
+
+#############################################################################
 # run everything
 #############################################################################
 printf '======== codex-gate.test.sh ========\n'
@@ -4336,6 +4660,9 @@ run_test_56
 run_test_57
 run_test_58
 run_test_59
+run_test_60
+run_test_61
+run_test_62
 
 printf '====================================\n'
 printf 'PASS=%d FAIL=%d\n' "$PASS_COUNT" "$FAIL_COUNT"
