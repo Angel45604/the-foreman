@@ -383,6 +383,20 @@ retune_gate_dials() { # <script> <model> <effort> <fast>
   chmod +x "$f"
 }
 
+# Helper: retune a REAL copy's three dial declarations INCLUDING their expansion
+# operators. `retune_gate_dials` above pins the operators to this repo's own (`-` for the
+# model, `:-` for effort/fast); this variant lets a fixture declare EITHER operator per
+# dial, which is the whole point of the cross-product in TEST 63 — `${VAR-lit}` and
+# `${VAR:-lit}` disagree about an EMPTY override, and a copy is free to use either.
+retune_gate_dial_ops() { # <script> <modelOp> <model> <effortOp> <effort> <fastOp> <fast>
+  local f="$1" tmp="$1.tmpdialop"
+  sed -e "s|^CODEX_GATE_MODEL=.*|CODEX_GATE_MODEL=\"\${CODEX_GATE_MODEL$2$3}\"|" \
+      -e "s|^CODEX_GATE_EFFORT=.*|CODEX_GATE_EFFORT=\"\${CODEX_GATE_EFFORT$4$5}\"|" \
+      -e "s|^CODEX_GATE_FAST=.*|CODEX_GATE_FAST=\"\${CODEX_GATE_FAST$6$7}\"|" \
+      "$f" > "$tmp" && mv "$tmp" "$f"
+  chmod +x "$f"
+}
+
 # Helper: an identity fingerprint that changes on ANY write — mtime with sub-second
 # precision AND the inode. A rewrite-with-identical-bytes moves the mtime; a
 # temp-file+rename moves the inode. Digest comparison alone sees neither, which is
@@ -4592,6 +4606,223 @@ run_test_62() {
 }
 
 #############################################################################
+# TEST 63 — each copy's OWN expansion operator decides its dials [CONFIG]
+#   `config` parsed every dial's declared default out of the target script but threw the
+#   EXPANSION OPERATOR away, then resolved the RUNTIME's dials under the REPORTER's
+#   operator. The two are NOT interchangeable: `${VAR:-lit}` falls back to `lit` when the
+#   variable is set but EMPTY, `${VAR-lit}` keeps the empty value and overrides with it.
+#   Against a runtime declaring `${CODEX_GATE_MODEL:-…}` with `CODEX_GATE_MODEL=''`
+#   exported — the drift shape live on this machine today — the report claimed
+#   `effective.model: ""`, `origin.model: CODEX_GATE_MODEL`, and told the operator to
+#   CLEAR a variable that was changing nothing, about a value that runtime never uses
+#   (its own shell resolves the literal). A copy declaring `:-` for the model could not
+#   even report: the hardcoded operator gate refused it as INFRA_ERROR.
+#   So: every dial is resolved under the operator of the SCRIPT BEING DESCRIBED — the
+#   runtime's `effective`/`origin` under the RUNTIME's operators, `reporter.dials` under
+#   the reporter's own — and those may legitimately differ from each other, per dial.
+#############################################################################
+run_test_63() {
+  local fx fxs status a b
+  fx="$SANDBOX/dialop63"
+
+  # ---- (A) THE REPRODUCED CASE: a `:-` runtime + an EMPTY override -------------------
+  # Byte-identical endpoints declaring the SAME literal with `:-` instead of `-`. The
+  # empty value cannot reach the dial, so the declared default is what runs: nothing
+  # drifted, nothing to clear, and `remediation` must be the empty all-clear.
+  copy_real_skill "$fx/colon"
+  retune_gate_dial_ops "$fx/colon/codex-gate.sh" ":-" gpt-5.6-sol ":-" xhigh ":-" 0
+  fxs="$fx/colon/codex-gate.sh"
+  ( hermetic CODEX_GATE_MODEL= CODEX_GATE_RUNTIME="$fxs" CODEX_GATE_SOURCE="$fxs" \
+      bash "$WRAPPER" config ) > "$SANDBOX/op63a.txt" 2>"$SANDBOX/op63a.err"
+  status="$(last_json_line "$SANDBOX/op63a.txt")"
+  if printf '%s' "$status" | jq -e '.effective.model=="gpt-5.6-sol"' >/dev/null 2>&1; then
+    pass "config-operator: a \`:-\` runtime with CODEX_GATE_MODEL='' resolves to its DECLARED default (gpt-5.6-sol), as its own shell would"
+  else
+    fail "config-operator: the \`:-\` runtime's empty override was applied as if it were \`-\` :: $(printf '%s' "$status" | jq -c '{effective,runtimeDefaults}') :: $(cat "$SANDBOX/op63a.err")"
+  fi
+  if printf '%s' "$status" | jq -e '.origin.model=="default"' >/dev/null 2>&1; then
+    pass "config-operator: origin says \`default\` — under \`:-\` the empty variable did NOT override"
+  else
+    fail "config-operator: origin named CODEX_GATE_MODEL for a value that never reached the dial :: $(printf '%s' "$status" | jq -c '.origin')"
+  fi
+  if printf '%s' "$status" | jq -e '.effectiveParity=="MATCH" and .parity=="MATCH" and (.remediation|length)==0' >/dev/null 2>&1; then
+    pass "config-operator: no drift and NOTHING to act on — remediation is the empty all-clear"
+  else
+    fail "config-operator: an inert empty override was reported as drift :: $(printf '%s' "$status" | jq -c '{digestParity,effectiveParity,parity,remediation}')"
+  fi
+  if printf '%s' "$status" | jq -e '(.remediation|index("clear-env-override"))==null and (.summary|test("clear or change")|not)' >/dev/null 2>&1; then
+    pass "config-operator: the remediation does NOT tell the operator to clear a variable that changes nothing"
+  else
+    fail "config-operator: still advising a no-op clear :: $(printf '%s' "$status" | jq -c '{remediation,summary}')"
+  fi
+  # …and the same answer when the `:-` copy reports on ITSELF (the hardcoded operator
+  # gate used to refuse this copy outright with INFRA_ERROR).
+  ( hermetic CODEX_GATE_MODEL= CODEX_GATE_RUNTIME="$fxs" CODEX_GATE_SOURCE="$fxs" \
+      bash "$fxs" config ) > "$SANDBOX/op63b.txt" 2>"$SANDBOX/op63b.err"
+  b="$(last_json_line "$SANDBOX/op63b.txt")"
+  if printf '%s\n%s\n' "$status" "$b" | jq -se '.[0].outcome=="CONFIG" and .[1].outcome=="CONFIG" and .[0].effective==.[1].effective and .[0].origin==.[1].origin' >/dev/null 2>&1; then
+    pass "config-operator: a copy declaring \`:-\` can report at all, and gives the SAME effective+origin as the pristine reporter"
+  else
+    fail "config-operator: the \`:-\` copy could not report, or reported differently :: $(printf '%s' "$b" | jq -c '{outcome,summary,effective,origin}')"
+  fi
+
+  # ---- (B) THE CONTRAST: with `-`, an EMPTY value genuinely DOES override ------------
+  # Same fixture, same empty variable, only the operator differs — and now the empty
+  # value really is what the gate runs with, so the advice to clear it is correct.
+  copy_real_skill "$fx/dash"
+  retune_gate_dial_ops "$fx/dash/codex-gate.sh" "-" gpt-5.6-sol ":-" xhigh ":-" 0
+  fxs="$fx/dash/codex-gate.sh"
+  ( hermetic CODEX_GATE_MODEL= CODEX_GATE_RUNTIME="$fxs" CODEX_GATE_SOURCE="$fxs" \
+      bash "$WRAPPER" config ) > "$SANDBOX/op63c.txt" 2>"$SANDBOX/op63c.err"
+  status="$(last_json_line "$SANDBOX/op63c.txt")"
+  if printf '%s' "$status" | jq -e '.effective.model=="" and .origin.model=="CODEX_GATE_MODEL"' >/dev/null 2>&1; then
+    pass "config-operator (contrast): with \`-\`, CODEX_GATE_MODEL='' DOES override — effective.model is empty and origin names the variable"
+  else
+    fail "config-operator (contrast): the \`-\` runtime lost its legitimate empty override :: $(printf '%s' "$status" | jq -c '{effective,origin}') :: $(cat "$SANDBOX/op63c.err")"
+  fi
+  if printf '%s' "$status" | jq -e '.effectiveParity=="MISMATCH" and (.remediation|index("clear-env-override"))!=null' >/dev/null 2>&1; then
+    pass "config-operator (contrast): the real override is reported as drift, with clear-env-override as the action"
+  else
+    fail "config-operator (contrast): a real env override stopped being actionable :: $(printf '%s' "$status" | jq -c '{effectiveParity,remediation}')"
+  fi
+
+  # ---- (C) SOURCE and RUNTIME operators DIFFER, each honoured on its own terms -------
+  # Exactly the drift on this machine: the versioned source declares `${VAR-…}`, the
+  # installed runtime declares `${VAR:-…}`. `effective` follows the RUNTIME's operator
+  # from either reporter, while `reporter.origin` follows whichever copy is reporting —
+  # so the two really are decoupled rather than one standing in for the other.
+  copy_real_skill "$fx/src"
+  copy_real_skill "$fx/rt"
+  retune_gate_dial_ops "$fx/src/codex-gate.sh" "-"  gpt-5.6-sol   ":-" xhigh ":-" 0
+  retune_gate_dial_ops "$fx/rt/codex-gate.sh"  ":-" gpt-5.6-terra ":-" xhigh ":-" 0
+  ( hermetic CODEX_GATE_MODEL= CODEX_GATE_RUNTIME="$fx/rt/codex-gate.sh" CODEX_GATE_SOURCE="$fx/src/codex-gate.sh" \
+      bash "$fx/src/codex-gate.sh" config ) > "$SANDBOX/op63d.txt" 2>"$SANDBOX/op63d.err"
+  a="$(last_json_line "$SANDBOX/op63d.txt")"
+  ( hermetic CODEX_GATE_MODEL= CODEX_GATE_RUNTIME="$fx/rt/codex-gate.sh" CODEX_GATE_SOURCE="$fx/src/codex-gate.sh" \
+      bash "$fx/rt/codex-gate.sh" config ) > "$SANDBOX/op63e.txt" 2>"$SANDBOX/op63e.err"
+  b="$(last_json_line "$SANDBOX/op63e.txt")"
+  if printf '%s' "$a" | jq -e '.sourceDefaults.model=="gpt-5.6-sol" and .runtimeDefaults.model=="gpt-5.6-terra"' >/dev/null 2>&1; then
+    pass "config-operator (premise): the source declares sol with \`-\` and the runtime declares terra with \`:-\`"
+  else
+    fail "config-operator: the mixed-operator fixture is not the state under test :: $(printf '%s' "$a" | jq -c '{sourceDefaults,runtimeDefaults}') :: $(cat "$SANDBOX/op63d.err")"
+    return
+  fi
+  if printf '%s' "$a" | jq -e '.effective.model=="gpt-5.6-terra" and .origin.model=="default"' >/dev/null 2>&1; then
+    pass "config-operator: reported FROM the \`-\` source, \`effective\` still follows the RUNTIME's \`:-\` (terra, origin default)"
+  else
+    fail "config-operator: the reporter's operator leaked into the runtime's effective :: $(printf '%s' "$a" | jq -c '{effective,origin}')"
+  fi
+  if printf '%s\n%s\n' "$a" "$b" | jq -se '.[0].effective==.[1].effective and .[0].origin==.[1].origin' >/dev/null 2>&1; then
+    pass "config-operator: effective + origin are IDENTICAL from either copy even when the two copies' operators differ"
+  else
+    fail "config-operator: mixed operators reintroduced reporter-dependence :: A=$(printf '%s' "$a" | jq -c '{effective,origin}') B=$(printf '%s' "$b" | jq -c '{effective,origin}')"
+  fi
+  # The reporter is resolved under ITS OWN operator, and the two reporters disagree —
+  # correctly, because they really do expand the same empty variable differently.
+  if printf '%s' "$a" | jq -e '.reporter.origin.model=="CODEX_GATE_MODEL" and .reporter.dials.model==""' >/dev/null 2>&1; then
+    pass "config-operator: the \`-\` reporter reports its OWN dials as overridden-to-empty"
+  else
+    fail "config-operator: the \`-\` reporter's own origin/dials are wrong :: $(printf '%s' "$a" | jq -c '.reporter')"
+  fi
+  if printf '%s' "$b" | jq -e '.reporter.origin.model=="default" and .reporter.dials.model=="gpt-5.6-terra"' >/dev/null 2>&1; then
+    pass "config-operator: the \`:-\` reporter reports its OWN dials as defaulted — each script's operator honoured independently"
+  else
+    fail "config-operator: the \`:-\` reporter's own origin/dials are wrong :: $(printf '%s' "$b" | jq -c '.reporter')"
+  fi
+  # The runtime's dials were NOT moved by the environment, so the remedy is the file
+  # sync alone — clearing the variable would change nothing at that runtime.
+  if printf '%s' "$a" | jq -e '(.remediation|index("sync-files"))!=null and (.remediation|index("clear-env-override"))==null' >/dev/null 2>&1; then
+    pass "config-operator: the mixed-operator drift is a FILE fix, not an env one"
+  else
+    fail "config-operator: wrong cause attributed to the mixed-operator drift :: $(printf '%s' "$a" | jq -c '{remediation,summary}')"
+  fi
+
+  # ---- (D) THE CROSS-PRODUCT: every dial × both operators × {unset, empty, set} ------
+  # One byte-identical endpoint pair per row (runtime and source are the same file, so
+  # the only thing under test is the resolution), reported from the pristine wrapper so
+  # the reporter's own operators are never the ones being read.
+  copy_real_skill "$fx/xp"
+  fxs="$fx/xp/codex-gate.sh"
+  local dial op lit state expVal expOrigin mOp mLit eOp eLit fOp fLit var ovr key
+  while IFS='|' read -r dial op lit state expVal expOrigin; do
+    [ -n "$dial" ] || continue
+    mOp="-"; mLit="gpt-5.6-sol"; eOp=":-"; eLit="xhigh"; fOp=":-"; fLit="0"
+    case "$dial" in
+      model)  mOp="$op"; mLit="$lit"; var="CODEX_GATE_MODEL";  ovr="gpt-5.6-ultra"; key="model" ;;
+      effort) eOp="$op"; eLit="$lit"; var="CODEX_GATE_EFFORT"; ovr="low";           key="effort" ;;
+      fast)   fOp="$op"; fLit="$lit"; var="CODEX_GATE_FAST";   ovr="1";             key="fastRaw" ;;
+    esac
+    retune_gate_dial_ops "$fxs" "$mOp" "$mLit" "$eOp" "$eLit" "$fOp" "$fLit"
+    case "$state" in
+      unset) ( hermetic CODEX_GATE_RUNTIME="$fxs" CODEX_GATE_SOURCE="$fxs" bash "$WRAPPER" config ) ;;
+      empty) ( hermetic "$var=" CODEX_GATE_RUNTIME="$fxs" CODEX_GATE_SOURCE="$fxs" bash "$WRAPPER" config ) ;;
+      set)   ( hermetic "$var=$ovr" CODEX_GATE_RUNTIME="$fxs" CODEX_GATE_SOURCE="$fxs" bash "$WRAPPER" config ) ;;
+    esac > "$SANDBOX/op63xp.txt" 2>"$SANDBOX/op63xp.err"
+    status="$(last_json_line "$SANDBOX/op63xp.txt")"
+    if printf '%s' "$status" | jq -e --arg v "$expVal" ".effective.$key==\$v" >/dev/null 2>&1; then
+      pass "config-operator [\${$var$op$lit} + $state]: effective.$key is '$expVal'"
+    else
+      fail "config-operator [\${$var$op$lit} + $state]: expected effective.$key '$expVal', got $(printf '%s' "$status" | jq -c ".effective.$key // \"<none>\"") :: $(cat "$SANDBOX/op63xp.err")"
+    fi
+    if printf '%s' "$status" | jq -e --arg o "$expOrigin" ".origin.$dial==\$o" >/dev/null 2>&1; then
+      pass "config-operator [\${$var$op$lit} + $state]: origin.$dial is '$expOrigin'"
+    else
+      fail "config-operator [\${$var$op$lit} + $state]: expected origin.$dial '$expOrigin', got $(printf '%s' "$status" | jq -c ".origin.$dial // \"<none>\"")"
+    fi
+  done <<'DIALROWS'
+model|:-|gpt-5.6-terra|unset|gpt-5.6-terra|default
+model|:-|gpt-5.6-terra|empty|gpt-5.6-terra|default
+model|:-|gpt-5.6-terra|set|gpt-5.6-ultra|CODEX_GATE_MODEL
+model|-|gpt-5.6-terra|unset|gpt-5.6-terra|default
+model|-|gpt-5.6-terra|empty||CODEX_GATE_MODEL
+model|-|gpt-5.6-terra|set|gpt-5.6-ultra|CODEX_GATE_MODEL
+effort|:-|ultra|unset|ultra|default
+effort|:-|ultra|empty|ultra|default
+effort|:-|ultra|set|low|CODEX_GATE_EFFORT
+effort|-|ultra|unset|ultra|default
+effort|-|ultra|empty||CODEX_GATE_EFFORT
+effort|-|ultra|set|low|CODEX_GATE_EFFORT
+fast|:-|0|unset|0|default
+fast|:-|0|empty|0|default
+fast|:-|0|set|1|CODEX_GATE_FAST
+fast|-|0|unset|0|default
+fast|-|0|empty||CODEX_GATE_FAST
+fast|-|0|set|1|CODEX_GATE_FAST
+DIALROWS
+
+  # ---- (E) an UNPARSEABLE operator fails closed; it is never guessed ----------------
+  # `${VAR:=lit}` is a legal expansion this parser does not model. Guessing an operator
+  # is what produced the bug above, so the reporter refuses to report at all, and an
+  # unreadable RUNTIME yields a null `effective` with a null `origin` beside it — there
+  # is no operator to resolve under, so there is nothing origin could honestly say.
+  copy_real_skill "$fx/noop"
+  local nf="$fx/noop/codex-gate.sh" tmp="$fx/noop/codex-gate.sh.t"
+  sed -e 's|^CODEX_GATE_MODEL=.*|CODEX_GATE_MODEL="${CODEX_GATE_MODEL:=gpt-5.6-sol}"|' "$nf" > "$tmp" && mv "$tmp" "$nf"
+  chmod +x "$nf"
+  ( hermetic CODEX_GATE_RUNTIME="$WRAPPER" CODEX_GATE_SOURCE="$WRAPPER" bash "$nf" config ) \
+    > "$SANDBOX/op63f.txt" 2>"$SANDBOX/op63f.err"
+  status="$(last_json_line "$SANDBOX/op63f.txt")"
+  if printf '%s' "$status" | jq -e '.outcome=="INFRA_ERROR" and (.summary|test("CODEX_GATE_MODEL"))' >/dev/null 2>&1; then
+    pass "config-operator: a reporter whose model dial uses an unmodelled operator REFUSES to report rather than guess one"
+  else
+    fail "config-operator: an unparseable dial did not fail closed :: $(printf '%s' "$status" | jq -c '{outcome,summary}') :: $(cat "$SANDBOX/op63f.err")"
+  fi
+  ( hermetic CODEX_GATE_RUNTIME="$nf" CODEX_GATE_SOURCE="$WRAPPER" bash "$WRAPPER" config ) \
+    > "$SANDBOX/op63g.txt" 2>"$SANDBOX/op63g.err"
+  status="$(last_json_line "$SANDBOX/op63g.txt")"
+  if printf '%s' "$status" | jq -e '.effective==null and .origin==null and .effectiveParity=="UNAVAILABLE"' >/dev/null 2>&1; then
+    pass "config-operator: an unparseable RUNTIME yields effective:null AND origin:null — no operator, nothing to attribute"
+  else
+    fail "config-operator: origin claimed an attribution for a runtime whose operator is unknown :: $(printf '%s' "$status" | jq -c '{effective,origin,effectiveParity}') :: $(cat "$SANDBOX/op63g.err")"
+  fi
+  if printf '%s' "$status" | jq -e '.reporter.origin=={model:"default",effort:"default",fast:"default"}' >/dev/null 2>&1; then
+    pass "config-operator: the reporter still carries its OWN origin even when the runtime's cannot be known"
+  else
+    fail "config-operator: reporter.origin lost when the runtime is unparseable :: $(printf '%s' "$status" | jq -c '.reporter')"
+  fi
+}
+
+#############################################################################
 # run everything
 #############################################################################
 printf '======== codex-gate.test.sh ========\n'
@@ -4663,6 +4894,7 @@ run_test_59
 run_test_60
 run_test_61
 run_test_62
+run_test_63
 
 printf '====================================\n'
 printf 'PASS=%d FAIL=%d\n' "$PASS_COUNT" "$FAIL_COUNT"

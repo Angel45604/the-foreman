@@ -38,9 +38,12 @@
 #    sourceDefaults, syncInventory, inventoryDrift, inventoryMissing, completeness,
 #    digestParity, effectiveParity, parity, summary, remediation}
 #   Three copies are in play and the report keeps them apart: `effective` is the RUNTIME
-#   endpoint's declared dials with this environment's overrides applied (so it is invariant
-#   to which copy ran `config`); `reporter` is the process that produced the report — its
-#   path, digest and its OWN resolved dials; `defaults` are the reporter's declared literals.
+#   endpoint's declared dials with this environment's overrides applied UNDER THAT FILE'S OWN
+#   expansion operators (so it is invariant to which copy ran `config`), with `origin` beside
+#   it saying which side won each dial — both `null` when the runtime cannot be parsed;
+#   `reporter` is the process that produced the report — its path, digest, its OWN resolved
+#   dials and its OWN `origin`, resolved under ITS operators, which may legitimately differ
+#   from the runtime's; `defaults` are the reporter's declared literals.
 #   outcome ∈ CONFIG | INFRA_ERROR.  Makes source↔runtime DRIFT observable; calls Codex zero
 #   times, creates no run dir, writes no ledger.  parity NEVER reports MATCH on a guess.
 #   digestParity is a DIRECTORY-level claim over CODEX_GATE_SYNC_INVENTORY, so MATCH means
@@ -71,14 +74,23 @@ CODEX_GATE_RUNS="${CODEX_GATE_RUNS:-$HOME/.claude/codex-gate/runs}"
 SCHEMA_FILE="$SKILL_DIR/verdict.schema.json"
 INSTRUCTIONS_FILE="$SKILL_DIR/reviewer-instructions.md"
 
-# Dial ORIGIN capture — read ONLY by `config`, and it MUST stay directly above the three
+# Dial ENV capture — read ONLY by `config`, and it MUST stay directly above the three
 # assignments below: once they run, an overridden var is indistinguishable from a defaulted
-# one. Each test mirrors its dial's expansion form exactly — `+` (SET, even if empty) for the
-# model's `${VAR-default}`, `:+` (set AND non-empty) for the `${VAR:-default}` pair. `config`
-# re-reads the forms out of this file and fails closed if they ever stop matching.
-CODEX_GATE_MODEL_FROM_ENV="${CODEX_GATE_MODEL+1}"
-CODEX_GATE_EFFORT_FROM_ENV="${CODEX_GATE_EFFORT:+1}"
-CODEX_GATE_FAST_FROM_ENV="${CODEX_GATE_FAST:+1}"
+# one. TWO facts per dial, and deliberately NOT mirrored to this file's own expansion forms:
+# whether an override wins depends on the operator of the SCRIPT BEING DESCRIBED, and
+# `config` describes other copies (the installed runtime, the versioned source) as well as
+# this one. `${VAR+1}` = SET at all, which is what `${VAR-default}` keys off; `${VAR:+1}` =
+# set AND non-empty, which is what `${VAR:-default}` keys off. Capturing both lets `config`
+# resolve any dial under EITHER operator; baking one operator in here is what made it report
+# a `:-` runtime's empty override as though that runtime used `-`.
+# The INBOUND value is recoverable from these two plus the live variable: non-empty survives
+# both operators unchanged, and "set but empty" is by definition the empty string.
+CODEX_GATE_MODEL_SET="${CODEX_GATE_MODEL+1}"
+CODEX_GATE_MODEL_NONEMPTY="${CODEX_GATE_MODEL:+1}"
+CODEX_GATE_EFFORT_SET="${CODEX_GATE_EFFORT+1}"
+CODEX_GATE_EFFORT_NONEMPTY="${CODEX_GATE_EFFORT:+1}"
+CODEX_GATE_FAST_SET="${CODEX_GATE_FAST+1}"
+CODEX_GATE_FAST_NONEMPTY="${CODEX_GATE_FAST:+1}"
 
 # Model / reasoning-effort. Default tier is gpt-5.6-sol / xhigh — NOT ultra: ultra performs
 # automatic task delegation (observed spawning ~3 sub-reviewers per round, wrapper-invisible
@@ -2238,13 +2250,19 @@ parse_thread_id_noop() { THREAD_ID=""; }
 #               enables fast mode only on an exact "1", so CODEX_GATE_FAST=2 reports
 #               fast:false. `fastRaw` keeps the raw value visible so a 2 is not silently
 #               rounded to either state.
-#   origin      per dial: "default", or the name of the env var that overrode it. A fact
-#               about the ENVIRONMENT, so it describes `effective` and `reporter.dials`
-#               alike; "default" means "no override — that endpoint's own literal is in force".
-#   reporter    the process that produced this report: {path, digest, dials}. `dials` is
-#               `defaults` with the same env overrides applied — i.e. what `effective` used
-#               to be, kept so the information is not lost and so a report computed by a
-#               copy that is not the source can say so (see remediation rerun-from-source).
+#   origin      per dial: "default", or the name of the env var that overrode it. It
+#               describes `effective`, and ONLY `effective` — whether an override wins is
+#               decided by the operator of the declaration it is competing with, so this is
+#               a fact about the environment AND the runtime's own `${VAR-…}` / `${VAR:-…}`
+#               forms, not a portable one. `null` when `effective` is. It used to be shared
+#               with `reporter.dials`, which is wrong the moment the two copies declare a
+#               dial differently — and they do; see the note on `effective`.
+#   reporter    the process that produced this report: {path, digest, dials, origin}. `dials`
+#               is `defaults` with the same env overrides applied under THIS script's
+#               operators — i.e. what `effective` used to be, kept so the information is not
+#               lost and so a report computed by a copy that is not the source can say so
+#               (see remediation rerun-from-source) — and `origin` explains those dials the
+#               way the top-level `origin` explains `effective`.
 #   parity      MATCH / MISMATCH / INCOMPLETE / UNAVAILABLE, rolled up from three
 #               checks reported separately, because byte-identical files can still
 #               behave differently under env overrides — and can still be half a skill:
@@ -2402,6 +2420,26 @@ parse_dial() { # <file> <VAR> -> "<op>|<literal>", or EMPTY when absent/malforme
   printf '%s|%s' "$op" "$rest"
 }
 
+resolve_dial() { # <op> <literal> <VAR> <isSet> <isNonEmpty> <inbound> -> "<origin>|<value>"
+  # Resolve ONE dial exactly as the SCRIPT THAT DECLARES IT would, and say which side won.
+  # The operator is not a formality and the two are NOT interchangeable: `${VAR:-lit}` reads
+  # an EMPTY value as absent and falls back to `lit`; `${VAR-lit}` reads it as a deliberate
+  # empty override and keeps it. Resolving one script's dial under ANOTHER script's operator
+  # is exactly how `config` came to report a `:-` runtime's model as "" — a value that
+  # runtime never uses — and to advise clearing a variable that was changing nothing.
+  # <isSet>/<isNonEmpty> are the operator-INDEPENDENT captures from the top of this file;
+  # <inbound> is the value the environment actually supplied ("" when unset or set-empty).
+  # `origin` is "default" when the declared literal won, else the variable's own name.
+  # Fails (nonzero, no output) on an operator this parser does not model — never guesses.
+  local op="$1" lit="$2" var="$3" isSet="$4" isNonEmpty="$5" inbound="$6" wins=""
+  case "$op" in
+    ':-') [ -z "$isNonEmpty" ] || wins=1 ;;
+    '-')  [ -z "$isSet" ]      || wins=1 ;;
+    *)    return 1 ;;
+  esac
+  if [ -n "$wins" ]; then printf '%s|%s' "$var" "$inbound"; else printf 'default|%s' "$lit"; fi
+}
+
 # The repo-relative path a checkout of this project carries the gate at. Auto-discovery
 # claims a file is "the versioned copy" only when git tracks it AT THIS PATH.
 CODEX_GATE_CANONICAL_RELPATH='plugin/skills/codex-gate/codex-gate.sh'
@@ -2485,41 +2523,57 @@ mode_config() {
   [ -f "$selfPath" ] || die_infra "config: the running script is not readable at $selfPath"
   selfDigest="$(sha256_of "$selfPath")"
 
-  # ---- defaults: the literal fallbacks, read back out of the running script ----
-  # Each dial's expansion form is checked against the ORIGIN capture at the top of this
-  # file. If someone changes `-` to `:-` (or back) without moving the capture with it,
-  # `origin` would start lying about which dials the environment set => fail closed.
-  local pair op defModel defEffort defFast
+  # ---- defaults: the literal fallbacks AND their expansion operators, read back out of
+  # the running script. The operator is HALF of a dial's declaration and is kept WITH it:
+  # `${VAR-lit}` and `${VAR:-lit}` disagree about an EMPTY value, so no dial can be resolved
+  # from its literal alone. The operator used to be parsed and thrown away, leaving every
+  # dial — this script's, the runtime's, the source's — resolved under THIS file's forms.
+  local pair defModel defEffort defFast selfOpModel selfOpEffort selfOpFast
   pair="$(parse_dial "$selfPath" CODEX_GATE_MODEL)"
   [ -n "$pair" ] || die_infra "config: cannot read the CODEX_GATE_MODEL default from $selfPath"
-  op="${pair%%|*}"; defModel="${pair#*|}"
-  [ "$op" = "-" ] || die_infra "config: CODEX_GATE_MODEL now expands with '$op' — update CODEX_GATE_MODEL_FROM_ENV to match"
+  selfOpModel="${pair%%|*}"; defModel="${pair#*|}"
   pair="$(parse_dial "$selfPath" CODEX_GATE_EFFORT)"
   [ -n "$pair" ] || die_infra "config: cannot read the CODEX_GATE_EFFORT default from $selfPath"
-  op="${pair%%|*}"; defEffort="${pair#*|}"
-  [ "$op" = ":-" ] || die_infra "config: CODEX_GATE_EFFORT now expands with '$op' — update CODEX_GATE_EFFORT_FROM_ENV to match"
+  selfOpEffort="${pair%%|*}"; defEffort="${pair#*|}"
   pair="$(parse_dial "$selfPath" CODEX_GATE_FAST)"
   [ -n "$pair" ] || die_infra "config: cannot read the CODEX_GATE_FAST default from $selfPath"
-  op="${pair%%|*}"; defFast="${pair#*|}"
-  [ "$op" = ":-" ] || die_infra "config: CODEX_GATE_FAST now expands with '$op' — update CODEX_GATE_FAST_FROM_ENV to match"
+  selfOpFast="${pair%%|*}"; defFast="${pair#*|}"
 
-  # ---- origin ----
-  # ORIGIN is a fact about the ENVIRONMENT, not about any one copy of the script: the same
-  # variables are in force whichever gate runs. It therefore describes BOTH dial sets
-  # reported below — `effective` (the RUNTIME endpoint's) and `reporter.dials` (this
-  # process's) — identically, and "default" means the same thing for each: no env var
-  # overrode this dial, so that endpoint's OWN declared literal is what is in force.
-  local oModel="default" oEffort="default" oFast="default"
-  [ -z "${CODEX_GATE_MODEL_FROM_ENV:-}" ]  || oModel="CODEX_GATE_MODEL"
-  [ -z "${CODEX_GATE_EFFORT_FROM_ENV:-}" ] || oEffort="CODEX_GATE_EFFORT"
-  [ -z "${CODEX_GATE_FAST_FROM_ENV:-}" ]   || oFast="CODEX_GATE_FAST"
+  # ---- what the environment actually supplied ----
+  # The SET / NON-EMPTY captures at the top of this file are operator-independent, so they
+  # answer for any copy. The inbound VALUE is recovered from them: a non-empty value passes
+  # through both operators unchanged (so the live variable still holds it), and "set but
+  # empty" is the empty string by definition — which a `:-` declaration would already have
+  # replaced with its literal in the live variable, hence the reconstruction.
+  local inModel="" inEffort="" inFast=""
+  [ -z "${CODEX_GATE_MODEL_NONEMPTY:-}" ]  || inModel="$CODEX_GATE_MODEL"
+  [ -z "${CODEX_GATE_EFFORT_NONEMPTY:-}" ] || inEffort="$CODEX_GATE_EFFORT"
+  [ -z "${CODEX_GATE_FAST_NONEMPTY:-}" ]   || inFast="$CODEX_GATE_FAST"
 
-  # Parser trust gate: with NO override in play the live dial MUST equal the literal just
-  # parsed. A disagreement means the PARSER is wrong, and every parity claim below would
-  # silently inherit that error — so refuse to report rather than report a guess.
-  [ "$oModel"  != "default" ] || [ "$CODEX_GATE_MODEL"  = "$defModel" ]  || die_infra "config: parsed CODEX_GATE_MODEL default '$defModel' disagrees with the live '$CODEX_GATE_MODEL'"
-  [ "$oEffort" != "default" ] || [ "$CODEX_GATE_EFFORT" = "$defEffort" ] || die_infra "config: parsed CODEX_GATE_EFFORT default '$defEffort' disagrees with the live '$CODEX_GATE_EFFORT'"
-  [ "$oFast"   != "default" ] || [ "$CODEX_GATE_FAST"   = "$defFast" ]   || die_infra "config: parsed CODEX_GATE_FAST default '$defFast' disagrees with the live '$CODEX_GATE_FAST'"
+  # ---- the REPORTER's own origin, under the REPORTER's OWN operators ----
+  # "default" means: no env var overrode this dial UNDER THE FORM THIS SCRIPT DECLARES, so
+  # this script's declared literal is what is in force here. It is NOT transferable to the
+  # runtime — that endpoint gets its own resolution below, from its own operators.
+  local roModel roEffort roFast rvModel rvEffort rvFast
+  pair="$(resolve_dial "$selfOpModel" "$defModel" CODEX_GATE_MODEL "${CODEX_GATE_MODEL_SET:-}" "${CODEX_GATE_MODEL_NONEMPTY:-}" "$inModel")" \
+    || die_infra "config: CODEX_GATE_MODEL in $selfPath declares an expansion operator this parser does not model"
+  roModel="${pair%%|*}"; rvModel="${pair#*|}"
+  pair="$(resolve_dial "$selfOpEffort" "$defEffort" CODEX_GATE_EFFORT "${CODEX_GATE_EFFORT_SET:-}" "${CODEX_GATE_EFFORT_NONEMPTY:-}" "$inEffort")" \
+    || die_infra "config: CODEX_GATE_EFFORT in $selfPath declares an expansion operator this parser does not model"
+  roEffort="${pair%%|*}"; rvEffort="${pair#*|}"
+  pair="$(resolve_dial "$selfOpFast" "$defFast" CODEX_GATE_FAST "${CODEX_GATE_FAST_SET:-}" "${CODEX_GATE_FAST_NONEMPTY:-}" "$inFast")" \
+    || die_infra "config: CODEX_GATE_FAST in $selfPath declares an expansion operator this parser does not model"
+  roFast="${pair%%|*}"; rvFast="${pair#*|}"
+
+  # Parser trust gate: replaying this script's OWN declaration against this environment must
+  # reproduce the live variable — in every case, not merely when the default won. That makes
+  # it a check on the operator as well as the literal (a `:-` dial with an empty override
+  # resolves to the literal, a `-` dial to the empty value, and only one of those can match
+  # the live value). A disagreement means the PARSER is wrong and every claim below would
+  # silently inherit the error, so refuse to report rather than report a guess.
+  [ "$rvModel"  = "$CODEX_GATE_MODEL" ]  || die_infra "config: parsed CODEX_GATE_MODEL declaration \${CODEX_GATE_MODEL$selfOpModel$defModel} resolves to '$rvModel' but the live value is '$CODEX_GATE_MODEL'"
+  [ "$rvEffort" = "$CODEX_GATE_EFFORT" ] || die_infra "config: parsed CODEX_GATE_EFFORT declaration \${CODEX_GATE_EFFORT$selfOpEffort$defEffort} resolves to '$rvEffort' but the live value is '$CODEX_GATE_EFFORT'"
+  [ "$rvFast"   = "$CODEX_GATE_FAST" ]   || die_infra "config: parsed CODEX_GATE_FAST declaration \${CODEX_GATE_FAST$selfOpFast$defFast} resolves to '$rvFast' but the live value is '$CODEX_GATE_FAST'"
 
   # The REPORTER's own dials. By construction the LIVE variables already ARE this
   # process's resolved values (its declared literal when the env was silent, the inbound
@@ -2558,14 +2612,22 @@ mode_config() {
   sourceDigest="$RESOLVED_SOURCE_DIGEST"; sourceDiscovery="$RESOLVED_SOURCE_DISCOVERY"
 
   # ---- each endpoint's DECLARED dials (so a mismatch is legible, not just flagged) ----
+  # Each dial's OPERATOR is retained alongside its literal, per dial and per endpoint: the
+  # three dials of one script may use different operators, and the runtime's may differ from
+  # the source's (that is the drift shape this mode exists to expose). Only the runtime's
+  # operators are consumed below — the source's literals are what `effectiveParity` compares
+  # against, and a literal is operator-independent — but they are parsed the same way so a
+  # source declaring an operator this parser cannot model is caught, not silently accepted.
   local rtDefaults="null" srcDefaults="null" sdModel="" sdEffort="" sdFast="" sdParsed=0
   local rtModel="" rtEffort="" rtFast="" rtParsed=0
+  local rtOpModel="" rtOpEffort="" rtOpFast=""
   local pm pe pf
   if [ -n "$runtimeDigest" ]; then
     pm="$(parse_dial "$runtimePath" CODEX_GATE_MODEL)"
     pe="$(parse_dial "$runtimePath" CODEX_GATE_EFFORT)"
     pf="$(parse_dial "$runtimePath" CODEX_GATE_FAST)"
     if [ -n "$pm" ] && [ -n "$pe" ] && [ -n "$pf" ]; then
+      rtOpModel="${pm%%|*}"; rtOpEffort="${pe%%|*}"; rtOpFast="${pf%%|*}"
       rtModel="${pm#*|}"; rtEffort="${pe#*|}"; rtFast="${pf#*|}"; rtParsed=1
       rtDefaults="$(jq -nc --arg m "$rtModel" --arg e "$rtEffort" --arg f "$rtFast" '{model:$m, effort:$e, fast:$f}')"
     fi
@@ -2592,23 +2654,42 @@ mode_config() {
   # for. Same configured runtime + same environment now yields the same `effective` from
   # either copy; the reporting process is reported separately as `reporter` below, so
   # nothing is lost.
-  # The override RULE applied here is this script's own — `${VAR-…}` for model (SET wins,
-  # even when empty), `${VAR:-…}` for effort/fast (set AND non-empty wins) — reused because
-  # the runtime is a copy of this script. A runtime whose expansion FORMS differ is a byte
-  # difference, which digestParity already reports as MISMATCH.
-  # `null` when the runtime's dials cannot be read at all (endpoint missing, unreadable, or
-  # not a codex-gate script): inventing dials for a runtime we could not parse is exactly
-  # the guess this mode refuses to make.
-  local effective="null" rtEffModel="" rtEffEffort="" rtEffFastRaw="" rtEffFast="false"
+  # The override RULE applied here is the RUNTIME's OWN, dial by dial, taken from the
+  # operators parsed out of that file. It used to be this script's forms — `${VAR-…}` for
+  # model, `${VAR:-…}` for effort/fast — on the theory that "the runtime is a copy of this
+  # script, and a differing form is a byte difference digestParity already reports". Both
+  # halves were wrong: MISMATCH says the files differ, it does not say what the running gate
+  # will DO, which is the one question `effective` answers. A runtime declaring
+  # `${CODEX_GATE_MODEL:-…}` with CODEX_GATE_MODEL='' exported was reported as running an
+  # empty model — its shell resolves the literal — with `origin` naming the variable and the
+  # remedy telling the operator to clear something that changes nothing.
+  # `origin` is derived here for the same reason and from the same operators: "the default
+  # won" is a claim about a specific declaration, so it can only be made where that
+  # declaration is known. `null` — alongside a null `effective` — when the runtime's dials
+  # cannot be read at all (endpoint missing, unreadable, or not a codex-gate script):
+  # inventing dials, or an attribution for dials we could not parse, is exactly the guess
+  # this mode refuses to make. The REPORTER's own origin travels with `reporter` instead.
+  local effective="null" origin="null"
+  local oModel="default" oEffort="default" oFast="default"
+  local rtEffModel="" rtEffEffort="" rtEffFastRaw="" rtEffFast="false"
   if [ "$rtParsed" = "1" ]; then
-    rtEffModel="$rtModel";   [ -z "${CODEX_GATE_MODEL_FROM_ENV:-}" ]  || rtEffModel="$CODEX_GATE_MODEL"
-    rtEffEffort="$rtEffort"; [ -z "${CODEX_GATE_EFFORT_FROM_ENV:-}" ] || rtEffEffort="$CODEX_GATE_EFFORT"
-    rtEffFastRaw="$rtFast";  [ -z "${CODEX_GATE_FAST_FROM_ENV:-}" ]   || rtEffFastRaw="$CODEX_GATE_FAST"
+    pair="$(resolve_dial "$rtOpModel" "$rtModel" CODEX_GATE_MODEL "${CODEX_GATE_MODEL_SET:-}" "${CODEX_GATE_MODEL_NONEMPTY:-}" "$inModel")" \
+      || die_infra "config: CODEX_GATE_MODEL in $runtimePath declares an expansion operator this parser does not model"
+    oModel="${pair%%|*}"; rtEffModel="${pair#*|}"
+    pair="$(resolve_dial "$rtOpEffort" "$rtEffort" CODEX_GATE_EFFORT "${CODEX_GATE_EFFORT_SET:-}" "${CODEX_GATE_EFFORT_NONEMPTY:-}" "$inEffort")" \
+      || die_infra "config: CODEX_GATE_EFFORT in $runtimePath declares an expansion operator this parser does not model"
+    oEffort="${pair%%|*}"; rtEffEffort="${pair#*|}"
+    pair="$(resolve_dial "$rtOpFast" "$rtFast" CODEX_GATE_FAST "${CODEX_GATE_FAST_SET:-}" "${CODEX_GATE_FAST_NONEMPTY:-}" "$inFast")" \
+      || die_infra "config: CODEX_GATE_FAST in $runtimePath declares an expansion operator this parser does not model"
+    oFast="${pair%%|*}"; rtEffFastRaw="${pair#*|}"
     [ "$rtEffFastRaw" != "1" ] || rtEffFast="true"
     effective="$(jq -nc --arg m "$rtEffModel" --arg e "$rtEffEffort" \
         --argjson f "$rtEffFast" --arg fr "$rtEffFastRaw" \
         '{model:$m, effort:$e, fast:$f, fastRaw:$fr}')" \
       || die_infra "config: failed to render the runtime-effective dials"
+    origin="$(jq -nc --arg m "$oModel" --arg e "$oEffort" --arg f "$oFast" \
+        '{model:$m, effort:$e, fast:$f}')" \
+      || die_infra "config: failed to render the runtime-effective origins"
   fi
 
   # ---- reporter: WHO produced this report, kept distinct from what it describes -------
@@ -2616,11 +2697,17 @@ mode_config() {
   # the reporter is neither endpoint, and its own resolved dials are retained because
   # they are the thing `effective` used to be — a report produced by a copy that is not
   # the source can still be worth knowing about (see `rerun-from-source`).
+  # Its `origin` travels here rather than at top level because it is resolved under the
+  # REPORTER's operators, which are not necessarily the runtime's — two copies expanding the
+  # same empty variable differently is the whole point of the fix above, so one shared
+  # origin block could only be right about one of them.
   local reporter
   reporter="$(jq -nc --arg p "$selfPath" --arg d "$selfDigest" \
       --arg m "$CODEX_GATE_MODEL" --arg e "$CODEX_GATE_EFFORT" \
       --argjson f "$repFast" --arg fr "$CODEX_GATE_FAST" \
-      '{path:$p, digest:$d, dials:{model:$m, effort:$e, fast:$f, fastRaw:$fr}}')" \
+      --arg om "$roModel" --arg oe "$roEffort" --arg of "$roFast" \
+      '{path:$p, digest:$d, dials:{model:$m, effort:$e, fast:$f, fastRaw:$fr},
+        origin:{model:$om, effort:$oe, fast:$of}}')" \
     || die_infra "config: failed to render the reporter block"
 
   # ---- the parity checks + completeness, then the roll-up ----
@@ -2746,11 +2833,13 @@ PAIREOF
   # When the reporting script's own dials differ from the source's with no env override in
   # play, the report was computed by code that is not the versioned code, so it is worth
   # saying out loud (`rerun-from-source`) even when the endpoints themselves agree.
+  # Gated on the REPORTER's own origin (`ro*`), not the runtime's: whether an env var
+  # displaced THIS process's declared literal is decided by THIS file's operators.
   local driftDialsReporter=""
   if [ "$sdParsed" = "1" ]; then
-    [ "$oModel"  != "default" ] || [ "$CODEX_GATE_MODEL"  = "$sdModel" ]  || driftDialsReporter="$driftDialsReporter, model"
-    [ "$oEffort" != "default" ] || [ "$CODEX_GATE_EFFORT" = "$sdEffort" ] || driftDialsReporter="$driftDialsReporter, effort"
-    [ "$oFast"   != "default" ] || [ "$repFast"           = "$sdFastBool" ] || driftDialsReporter="$driftDialsReporter, fast"
+    [ "$roModel"  != "default" ] || [ "$CODEX_GATE_MODEL"  = "$sdModel" ]  || driftDialsReporter="$driftDialsReporter, model"
+    [ "$roEffort" != "default" ] || [ "$CODEX_GATE_EFFORT" = "$sdEffort" ] || driftDialsReporter="$driftDialsReporter, effort"
+    [ "$roFast"   != "default" ] || [ "$repFast"           = "$sdFastBool" ] || driftDialsReporter="$driftDialsReporter, fast"
     driftDialsReporter="${driftDialsReporter#, }"
   fi
   # Fail closed: MATCH only when BOTH checks affirmatively matched AND the thing they
@@ -2900,7 +2989,7 @@ rerun-from-source"
     --arg outcome "CONFIG" \
     --arg defModel "$defModel" --arg defEffort "$defEffort" --arg defFast "$defFast" \
     --argjson effective "$effective" --argjson reporter "$reporter" \
-    --arg oModel "$oModel" --arg oEffort "$oEffort" --arg oFast "$oFast" \
+    --argjson origin "$origin" \
     --arg runtimePath "$runtimePath" --arg runtimeDigest "$runtimeDigest" --arg runtimeKind "$runtimeKind" \
     --argjson runtimeExecutable "$runtimeExecutable" --argjson runtimeDefaults "$rtDefaults" \
     --arg sourcePath "$sourcePath" --arg sourceDigest "$sourceDigest" --arg sourceKind "$sourceKind" \
@@ -2913,7 +3002,7 @@ rerun-from-source"
     '{outcome:$outcome,
       defaults:{model:$defModel, effort:$defEffort, fast:$defFast},
       effective:$effective,
-      origin:{model:$oModel, effort:$oEffort, fast:$oFast},
+      origin:$origin,
       reporter:$reporter,
       runtimePath:$runtimePath, runtimeDigest:$runtimeDigest, runtimeKind:$runtimeKind,
       runtimeExecutable:$runtimeExecutable, runtimeDefaults:$runtimeDefaults,

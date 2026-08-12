@@ -226,14 +226,19 @@ didn't expect; before trusting `prepr` on a machine you haven't run the gate on;
 debugging any "but I fixed that" report about the gate itself.
 
 - **Three copies, kept apart.** `effective` — the dials in force **at the runtime endpoint** (`runtimeDefaults`
-  plus this environment's overrides), with **`fast` normalized to its real trigger**: fast mode arms on an
+  plus this environment's overrides, applied under **that file's own** `${VAR-…}` / `${VAR:-…}` operators),
+  with **`fast` normalized to its real trigger**: fast mode arms on an
   exact `1` and nothing else, so `CODEX_GATE_FAST=2` reports `fast:false` (`fastRaw` keeps the raw value
   visible). It is **invariant to which copy you ran `config` from** — it used to be the *reporter's* dials, so
   a runtime declaring `terra`/`ultra` read as `sol`/`xhigh` whenever the report came from the source checkout.
-  `reporter` — `{path, digest, dials}` of the process that produced the report. `defaults` — the *reporter's*
-  literal fallbacks (`runtimeDefaults`/`sourceDefaults` are the other two copies'). `origin` — per dial,
-  `"default"` or the **name of the env var** that overrode it; it is a fact about the environment, so it
-  applies to `effective` and `reporter.dials` alike.
+  `reporter` — `{path, digest, dials, origin}` of the process that produced the report. `defaults` — the
+  *reporter's* literal fallbacks (`runtimeDefaults`/`sourceDefaults` are the other two copies'). `origin` —
+  per dial, `"default"` or the **name of the env var** that overrode it. Whether an override wins depends on
+  the operator of the declaration it competes with (`${VAR:-lit}` treats an EMPTY value as absent; `${VAR-lit}`
+  treats it as a deliberate empty override), so the top-level `origin` describes `effective` **only** and
+  `reporter.origin` describes `reporter.dials` — the two copies may declare the same dial differently, and
+  applying one copy's operator to another is what made an inert `CODEX_GATE_MODEL=''` read as drift.
+  `effective` and `origin` are both `null` when the runtime's dials cannot be parsed.
 - `parity` — `MATCH` / `MISMATCH` / `INCOMPLETE` / `UNAVAILABLE`, rolled up from `digestParity`,
   `effectiveParity` (the **runtime-effective** dials vs the dials the source **declares**) and `completeness`, reported
   separately because two identical files still behave differently under env overrides — and can still be

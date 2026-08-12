@@ -346,10 +346,21 @@ the running gate. This subcommand makes that condition observable.
   neither can be proven, the source is `UNAVAILABLE`; an explicit `CODEX_GATE_SOURCE` is still honoured as
   given, tracked or not.
 - **`defaults` are parsed back out of the file, not hardcoded** (`parse_dial`, a column-1 fixed-string match
-  on `VAR="${VAR<op>literal}"`, so no value can be read as a regex metacharacter). Two guards keep that
-  honest: the parsed expansion form must still match the `CODEX_GATE_*_FROM_ENV` origin capture pinned
-  directly above the dial block, and — where no override is in play — the parsed literal must equal the live
-  value. Either disagreement ⇒ `INFRA_ERROR`, because every parity claim would inherit the parser's error.
+  on `VAR="${VAR<op>literal}"`, so no value can be read as a regex metacharacter). The guard that keeps it
+  honest is a replay: re-resolving the running script's own declaration against this environment must
+  reproduce the live variable, operator included. A disagreement ⇒ `INFRA_ERROR`, because every parity claim
+  would inherit the parser's error. A dial whose operator this parser does not model is never guessed at —
+  `INFRA_ERROR` for the reporter, `effective: null` / `origin: null` for an unparseable runtime.
+- **Each copy's own expansion operator decides its dials.** `${VAR-lit}` and `${VAR:-lit}` are *not*
+  interchangeable — an EMPTY value overrides under the first and falls back to the literal under the second —
+  and the runtime, the source and the reporter may each declare a dial either way, per dial. `effective` and
+  `origin` are therefore resolved under the **runtime's** operators; `reporter.dials` and `reporter.origin`
+  under the **reporter's own**. `config` used to parse the operator and discard it, applying the reporter's
+  form to everyone: against a runtime declaring `${CODEX_GATE_MODEL:-…}` with `CODEX_GATE_MODEL=''` exported
+  it reported `effective.model: ""` (that runtime's shell resolves the *literal*), named the variable in
+  `origin`, and told the operator to clear something that changes nothing — while a copy declaring `:-` for
+  the model could not report at all. `MISMATCH` on the bytes was never a substitute: it says the two files
+  differ, not what the running gate will *do*, which is the one question `effective` answers.
 
 Status: **Config contracts GREEN** — exercised by `codex-gate.test.sh` (all three dials by their EXACT
 effective values plus both digests and a parity state; an env override moving `effective` off `defaults`
