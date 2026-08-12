@@ -14,6 +14,7 @@
 #   codex-gate.sh investigate  <file>    [round] [threadId]   # root-cause a bug (sibling)
 #   codex-gate.sh prepr        [base]    [round] [threadId]
 #   codex-gate.sh prepr-delta  [base]    [round] [threadId]   # since-reviewed delta
+#   codex-gate.sh config                                      # read-only dials + parity report
 #
 # Contract source of truth is README.md (sibling of this file), including Phase-0 pins.
 #
@@ -30,6 +31,13 @@
 #   {outcome, threadId, round, verdictPath, runDir, confidence, nextSafeProbe, summary}
 #   outcome ∈ ROOT_CAUSE_FOUND | NEEDS_MORE_EVIDENCE | UNSAFE_OR_BLOCKED | INFRA_ERROR | OVERFLOW.
 #   (First three come from Codex's report; the wrapper adds INFRA_ERROR/OVERFLOW. Never auto-fixes.)
+#
+# Outcome (one JSON status line on stdout for the CONFIG read-only report):
+#   {outcome, defaults, effective, origin, running, runtimePath, runtimeDigest, runtimeKind,
+#    runtimeDefaults, sourcePath, sourceDigest, sourceKind, sourceDiscovery, sourceDefaults,
+#    digestParity, effectiveParity, parity, summary}
+#   outcome ∈ CONFIG | INFRA_ERROR.  Makes source↔runtime DRIFT observable; calls Codex zero
+#   times, creates no run dir, writes no ledger.  parity NEVER reports MATCH on a guess.
 
 set -u
 
@@ -42,6 +50,15 @@ CODEX_HOME_DIR="${CODEX_HOME_DIR:-$HOME/.claude/codex-gate/home}"
 CODEX_GATE_RUNS="${CODEX_GATE_RUNS:-$HOME/.claude/codex-gate/runs}"
 SCHEMA_FILE="$SKILL_DIR/verdict.schema.json"
 INSTRUCTIONS_FILE="$SKILL_DIR/reviewer-instructions.md"
+
+# Dial ORIGIN capture — read ONLY by `config`, and it MUST stay directly above the three
+# assignments below: once they run, an overridden var is indistinguishable from a defaulted
+# one. Each test mirrors its dial's expansion form exactly — `+` (SET, even if empty) for the
+# model's `${VAR-default}`, `:+` (set AND non-empty) for the `${VAR:-default}` pair. `config`
+# re-reads the forms out of this file and fails closed if they ever stop matching.
+CODEX_GATE_MODEL_FROM_ENV="${CODEX_GATE_MODEL+1}"
+CODEX_GATE_EFFORT_FROM_ENV="${CODEX_GATE_EFFORT:+1}"
+CODEX_GATE_FAST_FROM_ENV="${CODEX_GATE_FAST:+1}"
 
 # Model / reasoning-effort. Default tier is gpt-5.6-sol / xhigh — NOT ultra: ultra performs
 # automatic task delegation (observed spawning ~3 sub-reviewers per round, wrapper-invisible
@@ -2153,11 +2170,247 @@ emit_synthetic_approve() { # <summary>
 parse_thread_id_noop() { THREAD_ID=""; }
 
 # ============================================================================
+# MODE: config  (READ-ONLY report — ZERO Codex calls, no run dir, no ledger)
+# ----------------------------------------------------------------------------
+# Reports the gate's EFFECTIVE configuration and source/runtime PARITY, so the drift
+# this file has already suffered once — the versioned copy and the installed runtime
+# quietly diverging (different model, different fast default, different sha256), with
+# nobody noticing that a fix committed to the repo never reached the running gate — is
+# OBSERVABLE instead of invisible. Reads three files and one `git rev-parse`; writes
+# nothing anywhere. Safe to run while another gate is mid-review.
+#
+#   defaults    the LITERAL fallback values baked into the running script
+#   effective   the values actually in force (env overrides applied). `fast` is
+#               normalized to its REAL trigger — run_codex enables fast mode only on an
+#               exact "1", so CODEX_GATE_FAST=2 reports fast:false. `fastRaw` keeps the
+#               raw value visible so a 2 is not silently rounded to either state.
+#   origin      per dial: "default", or the name of the env var that overrode it
+#   parity      MATCH / MISMATCH / UNAVAILABLE, rolled up from TWO independent checks
+#               reported separately, because byte-identical files can still behave
+#               differently under env overrides:
+#                 digestParity     — sha256 byte identity of the two endpoints
+#                 effectiveParity  — the dials actually in force vs the dials the
+#                                    versioned SOURCE declares
+#               MATCH requires BOTH to be MATCH; anything unlocatable/unparseable is
+#               UNAVAILABLE. A copy that cannot be located NEVER reports MATCH.
+#
+# Endpoints (both overridable so tests can point at fixtures instead of a machine's
+# real ~/.claude/skills state):
+#   CODEX_GATE_RUNTIME  the gate that actually runs — default the owner-decided
+#                       authoritative install $HOME/.claude/skills/codex-gate/codex-gate.sh
+#                       (a real directory, NOT a symlink; symlink/missing is detected and
+#                       reported via runtimeKind rather than assumed).
+#   CODEX_GATE_SOURCE   the versioned copy — default auto-discovered (see below).
+# `running` always names the script that produced the report, so "the digest of the
+# running script" is unambiguous even when it is neither endpoint.
+# ============================================================================
+
+sha256_of() { # <file> -> 64-hex sha256, or EMPTY when unreadable (follows symlinks: the
+  # target is what would actually run). Caller treats empty as "no digest available".
+  [ -f "$1" ] || return 0
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" 2>/dev/null | awk '{print $1}'
+  fi
+}
+
+path_kind() { # <path> -> symlink | file | other | missing  (-L FIRST: -f follows links,
+  # so testing -f first would report a symlinked install as a plain file)
+  if   [ -L "$1" ]; then printf 'symlink'
+  elif [ -f "$1" ]; then printf 'file'
+  elif [ -e "$1" ]; then printf 'other'
+  else                   printf 'missing'
+  fi
+}
+
+parse_dial() { # <file> <VAR> -> "<op>|<literal>", or EMPTY when absent/malformed
+  # Reads a dial's declared fallback out of ANY codex-gate.sh: the assignment line
+  # `VAR="${VAR<op>literal}"` where <op> is `-` (unset only) or `:-` (unset or empty).
+  # Anchored at column 1 via awk index() — a fixed-string compare, so nothing in the
+  # value can be read as a regex metacharacter, and a comment mentioning the var is
+  # never matched. Pure; fails by echoing nothing (callers fail closed on empty).
+  local f="$1" v="$2" prefix line rest op
+  [ -f "$f" ] || return 0
+  prefix="$v=\"\${$v"
+  line="$(awk -v p="$prefix" 'index($0,p)==1 {print; exit}' "$f" 2>/dev/null)"
+  [ -n "$line" ] || return 0
+  rest="${line#"$prefix"}"                       # e.g.  -gpt-5.6-sol}"   or   :-xhigh}"
+  case "$rest" in
+    :-*) op=":-"; rest="${rest#:-}" ;;
+    -*)  op="-";  rest="${rest#-}"  ;;
+    *)   return 0 ;;
+  esac
+  case "$rest" in
+    *'}"') rest="${rest%\}\"}" ;;
+    *)     return 0 ;;
+  esac
+  printf '%s|%s' "$op" "$rest"
+}
+
+mode_config() {
+  [ $# -eq 0 ] || { echo "config takes no arguments" >&2; exit 2; }
+
+  # ---- the RUNNING script: the report's anchor, and the source of `defaults` ----
+  local selfDir selfPath selfDigest
+  selfDir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || selfDir=""
+  [ -n "$selfDir" ] || die_infra "config: cannot resolve the running script's directory"
+  selfPath="$selfDir/$(basename "${BASH_SOURCE[0]}")"
+  [ -f "$selfPath" ] || die_infra "config: the running script is not readable at $selfPath"
+  selfDigest="$(sha256_of "$selfPath")"
+
+  # ---- defaults: the literal fallbacks, read back out of the running script ----
+  # Each dial's expansion form is checked against the ORIGIN capture at the top of this
+  # file. If someone changes `-` to `:-` (or back) without moving the capture with it,
+  # `origin` would start lying about which dials the environment set => fail closed.
+  local pair op defModel defEffort defFast
+  pair="$(parse_dial "$selfPath" CODEX_GATE_MODEL)"
+  [ -n "$pair" ] || die_infra "config: cannot read the CODEX_GATE_MODEL default from $selfPath"
+  op="${pair%%|*}"; defModel="${pair#*|}"
+  [ "$op" = "-" ] || die_infra "config: CODEX_GATE_MODEL now expands with '$op' — update CODEX_GATE_MODEL_FROM_ENV to match"
+  pair="$(parse_dial "$selfPath" CODEX_GATE_EFFORT)"
+  [ -n "$pair" ] || die_infra "config: cannot read the CODEX_GATE_EFFORT default from $selfPath"
+  op="${pair%%|*}"; defEffort="${pair#*|}"
+  [ "$op" = ":-" ] || die_infra "config: CODEX_GATE_EFFORT now expands with '$op' — update CODEX_GATE_EFFORT_FROM_ENV to match"
+  pair="$(parse_dial "$selfPath" CODEX_GATE_FAST)"
+  [ -n "$pair" ] || die_infra "config: cannot read the CODEX_GATE_FAST default from $selfPath"
+  op="${pair%%|*}"; defFast="${pair#*|}"
+  [ "$op" = ":-" ] || die_infra "config: CODEX_GATE_FAST now expands with '$op' — update CODEX_GATE_FAST_FROM_ENV to match"
+
+  # ---- origin + effective ----
+  # By construction the LIVE variables already ARE the effective values (default when the
+  # env was silent, the inbound value when it was not), so `effective` needs no arithmetic.
+  local oModel="default" oEffort="default" oFast="default"
+  [ -z "${CODEX_GATE_MODEL_FROM_ENV:-}" ]  || oModel="CODEX_GATE_MODEL"
+  [ -z "${CODEX_GATE_EFFORT_FROM_ENV:-}" ] || oEffort="CODEX_GATE_EFFORT"
+  [ -z "${CODEX_GATE_FAST_FROM_ENV:-}" ]   || oFast="CODEX_GATE_FAST"
+
+  # Parser trust gate: with NO override in play the live dial MUST equal the literal just
+  # parsed. A disagreement means the PARSER is wrong, and every parity claim below would
+  # silently inherit that error — so refuse to report rather than report a guess.
+  [ "$oModel"  != "default" ] || [ "$CODEX_GATE_MODEL"  = "$defModel" ]  || die_infra "config: parsed CODEX_GATE_MODEL default '$defModel' disagrees with the live '$CODEX_GATE_MODEL'"
+  [ "$oEffort" != "default" ] || [ "$CODEX_GATE_EFFORT" = "$defEffort" ] || die_infra "config: parsed CODEX_GATE_EFFORT default '$defEffort' disagrees with the live '$CODEX_GATE_EFFORT'"
+  [ "$oFast"   != "default" ] || [ "$CODEX_GATE_FAST"   = "$defFast" ]   || die_infra "config: parsed CODEX_GATE_FAST default '$defFast' disagrees with the live '$CODEX_GATE_FAST'"
+
+  # fast is a TRIGGER, not a truthy value: run_codex arms it on an exact "1" and on
+  # nothing else, so 2/true/yes/on are all DISABLED. Report the trigger, not the intent.
+  local effFast="false"
+  [ "$CODEX_GATE_FAST" != "1" ] || effFast="true"
+
+  # ---- runtime endpoint: the authoritative installed gate ----
+  local runtimePath runtimeKind runtimeDigest
+  runtimePath="${CODEX_GATE_RUNTIME:-$HOME/.claude/skills/codex-gate/codex-gate.sh}"
+  runtimeKind="$(path_kind "$runtimePath")"
+  runtimeDigest="$(sha256_of "$runtimePath")"
+
+  # ---- source endpoint: the versioned copy ----
+  local sourcePath="" sourceKind="missing" sourceDigest="" sourceDiscovery="" top=""
+  if [ -n "${CODEX_GATE_SOURCE:-}" ]; then
+    sourcePath="$CODEX_GATE_SOURCE"
+    sourceDiscovery="CODEX_GATE_SOURCE"
+  elif top="$(git -C "$selfDir" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$top" ]; then
+    # the running script is checked out in a work tree => it IS the versioned copy
+    sourcePath="$selfPath"
+    sourceDiscovery="running script (checked out in git work tree $top)"
+  elif top="$(git rev-parse --show-toplevel 2>/dev/null)" && [ -n "$top" ] \
+       && [ -f "$top/plugin/skills/codex-gate/codex-gate.sh" ]; then
+    sourcePath="$top/plugin/skills/codex-gate/codex-gate.sh"
+    sourceDiscovery="cwd git work tree ($top)"
+  else
+    sourceDiscovery="none: no versioned copy located — set CODEX_GATE_SOURCE, or run from the repo that carries it"
+  fi
+  if [ -n "$sourcePath" ]; then
+    sourceKind="$(path_kind "$sourcePath")"
+    sourceDigest="$(sha256_of "$sourcePath")"
+    [ -n "$sourceDigest" ] || sourceDiscovery="$sourceDiscovery (unreadable: $sourcePath)"
+  fi
+
+  # ---- each endpoint's DECLARED dials (so a mismatch is legible, not just flagged) ----
+  local rtDefaults="null" srcDefaults="null" sdModel="" sdEffort="" sdFast="" sdParsed=0
+  local pm pe pf
+  if [ -n "$runtimeDigest" ]; then
+    pm="$(parse_dial "$runtimePath" CODEX_GATE_MODEL)"
+    pe="$(parse_dial "$runtimePath" CODEX_GATE_EFFORT)"
+    pf="$(parse_dial "$runtimePath" CODEX_GATE_FAST)"
+    if [ -n "$pm" ] && [ -n "$pe" ] && [ -n "$pf" ]; then
+      rtDefaults="$(jq -nc --arg m "${pm#*|}" --arg e "${pe#*|}" --arg f "${pf#*|}" '{model:$m, effort:$e, fast:$f}')"
+    fi
+  fi
+  if [ -n "$sourceDigest" ]; then
+    pm="$(parse_dial "$sourcePath" CODEX_GATE_MODEL)"
+    pe="$(parse_dial "$sourcePath" CODEX_GATE_EFFORT)"
+    pf="$(parse_dial "$sourcePath" CODEX_GATE_FAST)"
+    if [ -n "$pm" ] && [ -n "$pe" ] && [ -n "$pf" ]; then
+      sdModel="${pm#*|}"; sdEffort="${pe#*|}"; sdFast="${pf#*|}"; sdParsed=1
+      srcDefaults="$(jq -nc --arg m "$sdModel" --arg e "$sdEffort" --arg f "$sdFast" '{model:$m, effort:$e, fast:$f}')"
+    fi
+  fi
+
+  # ---- the two parity checks, then the roll-up ----
+  local digestParity="UNAVAILABLE" effectiveParity="UNAVAILABLE" parity
+  if [ -n "$runtimeDigest" ] && [ -n "$sourceDigest" ]; then
+    if [ "$runtimeDigest" = "$sourceDigest" ]; then digestParity="MATCH"; else digestParity="MISMATCH"; fi
+  fi
+  if [ "$sdParsed" = "1" ]; then
+    local sdFastBool="false"
+    [ "$sdFast" != "1" ] || sdFastBool="true"
+    if [ "$CODEX_GATE_MODEL" = "$sdModel" ] && [ "$CODEX_GATE_EFFORT" = "$sdEffort" ] \
+       && [ "$effFast" = "$sdFastBool" ]; then
+      effectiveParity="MATCH"
+    else
+      effectiveParity="MISMATCH"
+    fi
+  fi
+  # Fail closed: MATCH only when BOTH checks affirmatively matched. A known difference is
+  # MISMATCH; anything we could not determine stays UNAVAILABLE and never becomes MATCH.
+  if [ "$digestParity" = "MISMATCH" ] || [ "$effectiveParity" = "MISMATCH" ]; then
+    parity="MISMATCH"
+  elif [ "$digestParity" = "MATCH" ] && [ "$effectiveParity" = "MATCH" ]; then
+    parity="MATCH"
+  else
+    parity="UNAVAILABLE"
+  fi
+
+  local summary
+  case "$parity" in
+    MATCH)    summary="parity MATCH — the runtime is byte-identical to the versioned source and the dials in force are the ones it declares" ;;
+    MISMATCH) summary="parity MISMATCH (digest $digestParity, effective $effectiveParity) — runtime $runtimePath vs source $sourcePath; a fix in the source may not be reaching the running gate" ;;
+    *)        summary="parity UNAVAILABLE (digest $digestParity, effective $effectiveParity) — $sourceDiscovery; NOT a match, just undetermined" ;;
+  esac
+
+  jq -nc \
+    --arg outcome "CONFIG" \
+    --arg defModel "$defModel" --arg defEffort "$defEffort" --arg defFast "$defFast" \
+    --arg effModel "$CODEX_GATE_MODEL" --arg effEffort "$CODEX_GATE_EFFORT" \
+    --argjson effFast "$effFast" --arg effFastRaw "$CODEX_GATE_FAST" \
+    --arg oModel "$oModel" --arg oEffort "$oEffort" --arg oFast "$oFast" \
+    --arg selfPath "$selfPath" --arg selfDigest "$selfDigest" \
+    --arg runtimePath "$runtimePath" --arg runtimeDigest "$runtimeDigest" --arg runtimeKind "$runtimeKind" \
+    --argjson runtimeDefaults "$rtDefaults" \
+    --arg sourcePath "$sourcePath" --arg sourceDigest "$sourceDigest" --arg sourceKind "$sourceKind" \
+    --arg sourceDiscovery "$sourceDiscovery" --argjson sourceDefaults "$srcDefaults" \
+    --arg digestParity "$digestParity" --arg effectiveParity "$effectiveParity" --arg parity "$parity" \
+    --arg summary "$summary" \
+    '{outcome:$outcome,
+      defaults:{model:$defModel, effort:$defEffort, fast:$defFast},
+      effective:{model:$effModel, effort:$effEffort, fast:$effFast, fastRaw:$effFastRaw},
+      origin:{model:$oModel, effort:$oEffort, fast:$oFast},
+      running:{path:$selfPath, digest:$selfDigest},
+      runtimePath:$runtimePath, runtimeDigest:$runtimeDigest, runtimeKind:$runtimeKind,
+      runtimeDefaults:$runtimeDefaults,
+      sourcePath:$sourcePath, sourceDigest:$sourceDigest, sourceKind:$sourceKind,
+      sourceDiscovery:$sourceDiscovery, sourceDefaults:$sourceDefaults,
+      digestParity:$digestParity, effectiveParity:$effectiveParity, parity:$parity,
+      summary:$summary}' || die_infra "config: failed to render the status line"
+  exit 0
+}
+
+# ============================================================================
 # Dispatch
 # ============================================================================
 main() {
   local mode="${1:-}"
-  [ -n "$mode" ] || { echo "usage: codex-gate.sh <phase-start|phase-review|plan|bundle|question|investigate|prepr|prepr-delta> [args]" >&2; exit 2; }
+  [ -n "$mode" ] || { echo "usage: codex-gate.sh <phase-start|phase-review|plan|bundle|question|investigate|prepr|prepr-delta|config> [args]" >&2; exit 2; }
   shift
 
   # Sanity: required helper files exist.
@@ -2174,6 +2427,7 @@ main() {
     investigate)  mode_investigate  "$@" ;;
     prepr)        mode_prepr        "$@" ;;
     prepr-delta)  mode_prepr_delta  "$@" ;;
+    config)       mode_config       "$@" ;;
     *) echo "unknown mode: $mode" >&2; exit 2 ;;
   esac
 }

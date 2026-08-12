@@ -7,7 +7,7 @@ Local-only: nothing is committed to any repo; all state lives under `~/.claude/c
 The contract source of truth is this README.
 
 **Tests:** run `bash codex-gate.test.sh` and expect `FAIL=0`. The printed `PASS=` count is the
-authoritative assert total (245 as of 2026-08-01); the per-tier Status lines below list what each
+authoritative assert total (276 as of 2026-08-11); the per-tier Status lines below list what each
 tier added, not running totals. No npm packages — the suite is bash + Node stdlib only.
 
 ---
@@ -237,3 +237,58 @@ Status: **Investigation contracts GREEN** — exercised by `codex-gate.test.sh` 
 the `investigate` outcome mappings (root_cause_found/needs_more_evidence/unsafe_or_blocked + infra/overflow),
 schema pinning to `investigate.schema.json`, code-tier read-only posture, brief+persona in packet, no-ledger,
 read-only invariant, and the `exec resume` round folding in `<RUNDIR>/evidence.md`).
+
+---
+
+## Config report — `config` (PINNED contract)
+
+A **report, not a gate**. `codex-gate.sh config` prints ONE JSON line describing the gate's **effective
+configuration** and whether the gate that actually runs still matches its **versioned source**.
+
+It exists because those two copies drifted apart once already — the versioned script and the installed
+runtime at `~/.claude/skills/codex-gate/codex-gate.sh` ended up with a different model, a different fast
+default, and a different sha256. Nobody noticed, so a fix committed to the repo would never have reached
+the running gate. This subcommand makes that condition observable.
+
+- **Read-only, always.** ZERO Codex calls, **no run dir**, no ledger, no repo mutation — it reads three
+  files and runs `git rev-parse`. Exit **0** on success. Safe to run while another gate is mid-review.
+- **Fails closed** like the rest of the script: an unexpected argument ⇒ `exit 2` (the arg-validation
+  convention); anything that would make the report a guess ⇒ `die_infra` ⇒ an `INFRA_ERROR` status line.
+
+**Status line** (`outcome ∈ CONFIG | INFRA_ERROR`):
+
+| field | meaning |
+| --- | --- |
+| `defaults` | the **literal** fallback values baked into the running script (`model`, `effort`, `fast`) |
+| `effective` | the values actually in force after env overrides. `fast` is normalized to its **real trigger** — `run_codex` arms fast mode on an exact `"1"` and nothing else, so `CODEX_GATE_FAST=2` reports `fast:false`; `fastRaw` keeps the raw value visible |
+| `origin` | per dial: `"default"`, or the **name of the env var** that overrode it |
+| `running` | `{path, digest}` of the script that produced the report — so "the digest of the running script" is unambiguous even when it is neither endpoint |
+| `runtimePath` / `runtimeDigest` / `runtimeKind` / `runtimeDefaults` | the gate that actually runs: path, sha256, `file`\|`symlink`\|`other`\|`missing`, and the dials that copy **declares** |
+| `sourcePath` / `sourceDigest` / `sourceKind` / `sourceDefaults` | the same four for the versioned copy |
+| `sourceDiscovery` | how the source was resolved — or, when it wasn't, why not |
+| `digestParity` | sha256 **byte identity** of the two endpoints |
+| `effectiveParity` | the dials **in force** vs the dials the versioned source **declares** — reported separately because byte-identical files still behave differently under env overrides |
+| `parity` | the roll-up: `MATCH` only when **both** checks affirmatively matched; a known difference ⇒ `MISMATCH`; anything undetermined ⇒ `UNAVAILABLE` |
+
+- **`parity` never guesses.** A source copy that cannot be located or read reports **`UNAVAILABLE`**, never
+  a silent `MATCH`. A `missing` or `symlink` endpoint is reported as such via `*Kind` rather than assumed —
+  the owner-decided authoritative runtime `~/.claude/skills/codex-gate/codex-gate.sh` is a real directory
+  and a real file today, but the report **detects** that rather than trusting it.
+- **Endpoint knobs** (both exist so tests use temp fixtures instead of a machine's real `~/.claude/skills`,
+  and so an operator can compare any two copies):
+  - `CODEX_GATE_RUNTIME` — the gate that actually runs. Default: `$HOME/.claude/skills/codex-gate/codex-gate.sh`.
+  - `CODEX_GATE_SOURCE` — the versioned copy. Default: auto-discovered, first match wins — (1) the running
+    script when it is itself checked out in a git work tree, (2) `<cwd repo top>/plugin/skills/codex-gate/codex-gate.sh`,
+    (3) otherwise none ⇒ `UNAVAILABLE` with the reason stated in `sourceDiscovery`.
+- **`defaults` are parsed back out of the file, not hardcoded** (`parse_dial`, a column-1 fixed-string match
+  on `VAR="${VAR<op>literal}"`, so no value can be read as a regex metacharacter). Two guards keep that
+  honest: the parsed expansion form must still match the `CODEX_GATE_*_FROM_ENV` origin capture pinned
+  directly above the dial block, and — where no override is in play — the parsed literal must equal the live
+  value. Either disagreement ⇒ `INFRA_ERROR`, because every parity claim would inherit the parser's error.
+
+Status: **Config contracts GREEN** — exercised by `codex-gate.test.sh` (all three dials + both digests +
+a parity state; an env override moving `effective` off `defaults` with `origin` naming the variable;
+`CODEX_GATE_FAST=2` reporting DISABLED with `=1` as the contrast control; a divergent fixture pair reporting
+MISMATCH and naming both distinct digests plus each side's declared dials; an unlocatable source reporting
+UNAVAILABLE rather than MATCH; missing and symlinked endpoints reported honestly; and the read-only
+invariants — zero Codex calls, no run dir, an unchanged repo, exit 0, and exit 2 on a bogus argument).

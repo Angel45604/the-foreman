@@ -3065,6 +3065,278 @@ run_test_48() {
 }
 
 #############################################################################
+# TEST 49 — `config` reports the EFFECTIVE dials + both digests + a parity state [CONFIG]
+#   The read-only config subcommand must print ONE JSON object carrying all three
+#   dials as DEFAULTS (the literal fallbacks baked into the running script), the
+#   EFFECTIVE values, the per-dial ORIGIN, both endpoint digests, and a parity state.
+#   Hermetic: BOTH endpoints are pinned at the wrapper under test, so the assertion
+#   never depends on the developer's real ~/.claude/skills/ install.
+#############################################################################
+run_test_49() {
+  local status rc
+  ( CODEX_GATE_RUNTIME="$WRAPPER" CODEX_GATE_SOURCE="$WRAPPER" bash "$WRAPPER" config ) \
+    > "$SANDBOX/cfg49.txt" 2>"$SANDBOX/cfg49.err"
+  rc=$?
+  status="$(last_json_line "$SANDBOX/cfg49.txt")"
+
+  if [ "$rc" -eq 0 ]; then
+    pass "config: exits 0 on success"
+  else
+    fail "config: expected exit 0 got $rc :: $(cat "$SANDBOX/cfg49.err")"
+  fi
+  if printf '%s' "$status" | jq -e '.outcome=="CONFIG"' >/dev/null 2>&1; then
+    pass "config: emits a machine-readable status line with outcome=CONFIG"
+  else
+    fail "config: no CONFIG status line :: $(cat "$SANDBOX/cfg49.txt") :: $(cat "$SANDBOX/cfg49.err")"
+    return
+  fi
+
+  # all three dials, as the LITERAL fallbacks in the running script (the pinned pair)
+  if printf '%s' "$status" | jq -e '.defaults.model=="gpt-5.6-sol" and .defaults.effort=="xhigh" and .defaults.fast=="0"' >/dev/null 2>&1; then
+    pass "config: defaults report all three dials as the running script's literal fallbacks (sol/xhigh/0)"
+  else
+    fail "config: defaults do not match the script's literal fallbacks :: $status"
+  fi
+  # effective + origin present for every dial
+  if printf '%s' "$status" | jq -e '(.effective|has("model") and has("effort") and has("fast")) and (.origin|has("model") and has("effort") and has("fast"))' >/dev/null 2>&1; then
+    pass "config: effective + origin carry all three dials"
+  else
+    fail "config: effective/origin missing a dial :: $status"
+  fi
+  # with NO env override in play, every dial's origin is the file default and effective==defaults
+  if printf '%s' "$status" | jq -e '.origin.model=="default" and .origin.effort=="default" and .origin.fast=="default"' >/dev/null 2>&1; then
+    pass "config: with no env override, every dial's origin is the file default"
+  else
+    fail "config: origin should be default for every dial :: $status"
+  fi
+
+  # both digests, as real sha256 hex
+  if printf '%s' "$status" | jq -e '(.runtimeDigest|test("^[0-9a-f]{64}$")) and (.sourceDigest|test("^[0-9a-f]{64}$"))' >/dev/null 2>&1; then
+    pass "config: reports BOTH a runtimeDigest and a sourceDigest (sha256 hex)"
+  else
+    fail "config: missing/!sha256 runtime or source digest :: $status"
+  fi
+  if printf '%s' "$status" | jq -e '(.runtimePath|length>0) and (.sourcePath|length>0)' >/dev/null 2>&1; then
+    pass "config: reports both endpoint PATHS alongside their digests"
+  else
+    fail "config: missing runtimePath/sourcePath :: $status"
+  fi
+
+  # a parity state — and for a byte-identical, unoverridden pair it is MATCH,
+  # with digest parity and EFFECTIVE parity reported separately.
+  if printf '%s' "$status" | jq -e '(.parity|IN("MATCH","MISMATCH","UNAVAILABLE"))' >/dev/null 2>&1; then
+    pass "config: parity is one of MATCH/MISMATCH/UNAVAILABLE"
+  else
+    fail "config: parity missing or not a known state :: $status"
+  fi
+  if printf '%s' "$status" | jq -e '.digestParity=="MATCH" and .effectiveParity=="MATCH" and .parity=="MATCH"' >/dev/null 2>&1; then
+    pass "config: an identical, unoverridden pair reports digest + effective parity separately, both MATCH"
+  else
+    fail "config: identical pair did not report MATCH on both parities :: $status"
+  fi
+}
+
+#############################################################################
+# TEST 50 — env override shows up in `effective` + `origin`; fast is NORMALIZED [CONFIG]
+#   An override must make `effective` DIFFER from `defaults` and `origin` must NAME the
+#   variable that did it. And `fast` must be reported by its REAL trigger: the wrapper
+#   enables fast mode only when the value is exactly "1", so CODEX_GATE_FAST=2 is
+#   DISABLED — reporting it as enabled would be a lie about what argv Codex gets.
+#############################################################################
+run_test_50() {
+  local status
+
+  # ---- (A) an effort override: effective differs from defaults, origin names the var ----
+  ( CODEX_GATE_RUNTIME="$WRAPPER" CODEX_GATE_SOURCE="$WRAPPER" CODEX_GATE_EFFORT=low \
+      bash "$WRAPPER" config ) > "$SANDBOX/cfg50a.txt" 2>"$SANDBOX/cfg50a.err"
+  status="$(last_json_line "$SANDBOX/cfg50a.txt")"
+  if printf '%s' "$status" | jq -e '.effective.effort=="low" and .defaults.effort=="xhigh" and (.effective.effort != .defaults.effort)' >/dev/null 2>&1; then
+    pass "config-origin: CODEX_GATE_EFFORT=low makes effective differ from defaults"
+  else
+    fail "config-origin: effective.effort did not reflect the override :: $status"
+  fi
+  if printf '%s' "$status" | jq -e '.origin.effort=="CODEX_GATE_EFFORT" and .origin.model=="default"' >/dev/null 2>&1; then
+    pass "config-origin: origin NAMES the overriding env var (and leaves untouched dials as default)"
+  else
+    fail "config-origin: origin did not name CODEX_GATE_EFFORT :: $status"
+  fi
+
+  # ---- (B) fast normalization: only an exact "1" enables fast mode ----
+  ( CODEX_GATE_RUNTIME="$WRAPPER" CODEX_GATE_SOURCE="$WRAPPER" CODEX_GATE_FAST=2 \
+      bash "$WRAPPER" config ) > "$SANDBOX/cfg50b.txt" 2>"$SANDBOX/cfg50b.err"
+  status="$(last_json_line "$SANDBOX/cfg50b.txt")"
+  if printf '%s' "$status" | jq -e '.effective.fast==false' >/dev/null 2>&1; then
+    pass "config-fast: CODEX_GATE_FAST=2 reports fast DISABLED (only an exact 1 is the trigger)"
+  else
+    fail "config-fast: CODEX_GATE_FAST=2 did NOT report fast as disabled :: $status"
+  fi
+  if printf '%s' "$status" | jq -e '.effective.fastRaw=="2" and .origin.fast=="CODEX_GATE_FAST"' >/dev/null 2>&1; then
+    pass "config-fast: the raw overriding value stays visible and origin names CODEX_GATE_FAST"
+  else
+    fail "config-fast: raw value/origin lost for CODEX_GATE_FAST=2 :: $status"
+  fi
+
+  # ---- (C) contrast control: an exact 1 DOES report enabled ----
+  ( CODEX_GATE_RUNTIME="$WRAPPER" CODEX_GATE_SOURCE="$WRAPPER" CODEX_GATE_FAST=1 \
+      bash "$WRAPPER" config ) > "$SANDBOX/cfg50c.txt" 2>"$SANDBOX/cfg50c.err"
+  status="$(last_json_line "$SANDBOX/cfg50c.txt")"
+  if printf '%s' "$status" | jq -e '.effective.fast==true' >/dev/null 2>&1; then
+    pass "config-fast (control): CODEX_GATE_FAST=1 reports fast ENABLED"
+  else
+    fail "config-fast (control): CODEX_GATE_FAST=1 did not report enabled :: $status"
+  fi
+}
+
+#############################################################################
+# TEST 51 — parity states: MISMATCH names both digests; no source => UNAVAILABLE [CONFIG]
+#   A deliberately divergent fixture pair (mirroring the real drift that motivated this
+#   subcommand: a different model, a different fast default, a different sha256) must
+#   report MISMATCH and name BOTH digests. And when no source copy can be located the
+#   answer is UNAVAILABLE — NEVER a silent MATCH. Symlink/missing endpoints are reported
+#   honestly too. Temp fixtures only: never reads the developer's ~/.claude/skills state.
+#############################################################################
+run_test_51() {
+  local fx status rd sd
+  fx="$SANDBOX/cfgfx"
+  mkdir -p "$fx"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'CODEX_GATE_MODEL="${CODEX_GATE_MODEL-gpt-5.6-sol}"\n'
+    printf 'CODEX_GATE_EFFORT="${CODEX_GATE_EFFORT:-xhigh}"\n'
+    printf 'CODEX_GATE_FAST="${CODEX_GATE_FAST:-0}"\n'
+  } > "$fx/source.sh"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'CODEX_GATE_MODEL="${CODEX_GATE_MODEL:-gpt-5.6-terra}"\n'
+    printf 'CODEX_GATE_EFFORT="${CODEX_GATE_EFFORT:-ultra}"\n'
+    printf 'CODEX_GATE_FAST="${CODEX_GATE_FAST:-1}"\n'
+  } > "$fx/runtime.sh"
+
+  # ---- (A) divergent pair => MISMATCH, both digests named and different ----
+  ( CODEX_GATE_RUNTIME="$fx/runtime.sh" CODEX_GATE_SOURCE="$fx/source.sh" \
+      bash "$WRAPPER" config ) > "$SANDBOX/cfg51a.txt" 2>"$SANDBOX/cfg51a.err"
+  status="$(last_json_line "$SANDBOX/cfg51a.txt")"
+  if printf '%s' "$status" | jq -e '.parity=="MISMATCH" and .digestParity=="MISMATCH"' >/dev/null 2>&1; then
+    pass "config-parity: a divergent runtime/source pair reports MISMATCH"
+  else
+    fail "config-parity: divergent pair did not report MISMATCH :: $status :: $(cat "$SANDBOX/cfg51a.err")"
+  fi
+  rd="$(printf '%s' "$status" | jq -r '.runtimeDigest // ""')"
+  sd="$(printf '%s' "$status" | jq -r '.sourceDigest  // ""')"
+  if printf '%s' "$rd" | grep -qE '^[0-9a-f]{64}$' && printf '%s' "$sd" | grep -qE '^[0-9a-f]{64}$' && [ "$rd" != "$sd" ]; then
+    pass "config-parity: the MISMATCH names BOTH digests, and they differ"
+  else
+    fail "config-parity: MISMATCH did not name two distinct digests (runtime='$rd' source='$sd') :: $status"
+  fi
+  # the drift is legible, not just flagged: each side's declared dials are reported
+  if printf '%s' "$status" | jq -e '.runtimeDefaults.model=="gpt-5.6-terra" and .sourceDefaults.model=="gpt-5.6-sol"' >/dev/null 2>&1; then
+    pass "config-parity: both sides' DECLARED dials are reported, so the drift is legible"
+  else
+    fail "config-parity: declared dials of the two sides not reported :: $status"
+  fi
+
+  # ---- (B) no locatable source => UNAVAILABLE, never a silent MATCH ----
+  ( CODEX_GATE_RUNTIME="$WRAPPER" CODEX_GATE_SOURCE="$fx/does-not-exist.sh" \
+      bash "$WRAPPER" config ) > "$SANDBOX/cfg51b.txt" 2>"$SANDBOX/cfg51b.err"
+  status="$(last_json_line "$SANDBOX/cfg51b.txt")"
+  if printf '%s' "$status" | jq -e '.parity=="UNAVAILABLE"' >/dev/null 2>&1; then
+    pass "config-parity: no locatable source reports UNAVAILABLE (not MATCH)"
+  else
+    fail "config-parity: unlocatable source did not report UNAVAILABLE :: $status :: $(cat "$SANDBOX/cfg51b.err")"
+  fi
+  if printf '%s' "$status" | jq -e '.sourceKind=="missing" and (.sourceDigest=="") and (.sourceDiscovery|length>0)' >/dev/null 2>&1; then
+    pass "config-parity: the unlocatable source is reported honestly (kind=missing, empty digest, a stated reason)"
+  else
+    fail "config-parity: unlocatable source not reported honestly :: $status"
+  fi
+
+  # ---- (C) a MISSING runtime endpoint is reported, never assumed to MATCH ----
+  ( CODEX_GATE_RUNTIME="$fx/no-runtime-here.sh" CODEX_GATE_SOURCE="$fx/source.sh" \
+      bash "$WRAPPER" config ) > "$SANDBOX/cfg51c.txt" 2>"$SANDBOX/cfg51c.err"
+  status="$(last_json_line "$SANDBOX/cfg51c.txt")"
+  if printf '%s' "$status" | jq -e '.runtimeKind=="missing" and .parity!="MATCH"' >/dev/null 2>&1; then
+    pass "config-parity: a MISSING runtime is reported as missing and never pretends MATCH"
+  else
+    fail "config-parity: missing runtime mis-reported :: $status"
+  fi
+
+  # ---- (D) a SYMLINKED runtime is reported as a symlink (owner: the real install is not one) ----
+  ln -sf "$fx/source.sh" "$fx/runtime-link.sh"
+  ( CODEX_GATE_RUNTIME="$fx/runtime-link.sh" CODEX_GATE_SOURCE="$fx/source.sh" \
+      bash "$WRAPPER" config ) > "$SANDBOX/cfg51d.txt" 2>"$SANDBOX/cfg51d.err"
+  status="$(last_json_line "$SANDBOX/cfg51d.txt")"
+  if printf '%s' "$status" | jq -e '.runtimeKind=="symlink"' >/dev/null 2>&1; then
+    pass "config-parity: a symlinked runtime path is reported as a symlink, not silently as a file"
+  else
+    fail "config-parity: symlinked runtime not detected :: $status"
+  fi
+
+  # ---- (E) auto-discovery (source knob unset) still yields a stated origin + a legal parity ----
+  ( CODEX_GATE_RUNTIME="$WRAPPER" bash "$WRAPPER" config ) > "$SANDBOX/cfg51e.txt" 2>"$SANDBOX/cfg51e.err"
+  status="$(last_json_line "$SANDBOX/cfg51e.txt")"
+  if printf '%s' "$status" | jq -e '(.sourceDiscovery|length>0) and (.parity|IN("MATCH","MISMATCH","UNAVAILABLE"))' >/dev/null 2>&1; then
+    pass "config-parity: auto-discovery (no CODEX_GATE_SOURCE) states how it resolved and yields a legal parity"
+  else
+    fail "config-parity: auto-discovery produced no discovery note/parity :: $status"
+  fi
+}
+
+#############################################################################
+# TEST 52 — `config` is READ-ONLY: zero Codex calls, no run dir, no repo mutation [CONFIG]
+#   The whole point of a config report is that it is safe to run at any time — including
+#   while another gate is mid-review. It must invoke Codex ZERO times, create NO run dir
+#   (hence no ledger), leave a target repo byte-identical, and fail closed (exit 2) on
+#   malformed input like the rest of the script's arg validation.
+#############################################################################
+run_test_52() {
+  local repo runs before after rc argv_lines
+  runs="$SANDBOX/cfg-runs-absent"
+  rm -rf "$runs"
+  repo="$(make_repo)"
+  printf 'seed\n' > "$repo/seed.txt"
+  git -C "$repo" add seed.txt && git -C "$repo" commit -qm init
+  before="$(git -C "$repo" status --porcelain)"
+
+  reset_argv_log
+  ( cd "$repo" && CODEX_GATE_RUNS="$runs" CODEX_GATE_RUNTIME="$WRAPPER" CODEX_GATE_SOURCE="$WRAPPER" \
+      bash "$WRAPPER" config ) > "$SANDBOX/cfg52.txt" 2>"$SANDBOX/cfg52.err"
+  rc=$?
+  after="$(git -C "$repo" status --porcelain)"
+  argv_lines="$(wc -l < "$STUB_ARGV_LOG" | tr -d ' ')"
+
+  if [ "$argv_lines" = "0" ]; then
+    pass "config-readonly: ZERO codex invocations (stub argv log empty)"
+  else
+    fail "config-readonly: codex was invoked $argv_lines argv line(s) :: $(cat "$STUB_ARGV_LOG")"
+  fi
+  if [ ! -e "$runs" ]; then
+    pass "config-readonly: creates NO run dir (and therefore no ledger)"
+  else
+    fail "config-readonly: a run dir was created at $runs :: $(find "$runs" | head -5)"
+  fi
+  if [ "$before" = "$after" ]; then
+    pass "config-readonly: target repo git status is byte-identical before/after"
+  else
+    fail "config-readonly: repo mutated :: before='$before' after='$after'"
+  fi
+  if [ "$rc" -eq 0 ]; then
+    pass "config-readonly: exits 0 while another gate could be mid-review"
+  else
+    fail "config-readonly: expected exit 0 got $rc :: $(cat "$SANDBOX/cfg52.err")"
+  fi
+
+  # malformed input fails closed, matching the script's other arg validation (exit 2)
+  ( CODEX_GATE_RUNTIME="$WRAPPER" bash "$WRAPPER" config bogus-extra-arg ) \
+    > "$SANDBOX/cfg52b.txt" 2>"$SANDBOX/cfg52b.err"
+  rc=$?
+  if [ "$rc" -eq 2 ]; then
+    pass "config-readonly: an unexpected argument fails closed with exit 2 (arg-validation convention)"
+  else
+    fail "config-readonly: expected exit 2 on a bogus arg, got $rc :: $(cat "$SANDBOX/cfg52b.txt") :: $(cat "$SANDBOX/cfg52b.err")"
+  fi
+}
+
+#############################################################################
 # run everything
 #############################################################################
 printf '======== codex-gate.test.sh ========\n'
@@ -3122,6 +3394,10 @@ run_test_45b
 run_test_46
 run_test_47
 run_test_48
+run_test_49
+run_test_50
+run_test_51
+run_test_52
 
 printf '====================================\n'
 printf 'PASS=%d FAIL=%d\n' "$PASS_COUNT" "$FAIL_COUNT"

@@ -1,6 +1,6 @@
 ---
 name: codex-gate
-description: Automated, repo-agnostic Codex gate (the hands-free "third pair of eyes") for REVIEW and INVESTIGATION. Use to review a plan / PDR-ADR bundle / implementation phase / pre-PR branch and auto-loop fixes until it converges; to ground an architecture or feature decision before asking the user; OR to INVESTIGATE — root-cause a bug, narrow a flaky / orphaned / regression / "works-on-my-machine" symptom, or decide between competing hypotheses — under an explicit safety contract (read-only, fails closed on forbidden probes, proposes a fix but never applies one). Modes — plan <file> | bundle <dir> | phase-start <id> | phase-review <id> | question <file> | investigate <brief> | prepr [base] | prepr-delta [base]. Replaces manual copy-paste between Claude and the Codex app.
+description: Automated, repo-agnostic Codex gate (the hands-free "third pair of eyes") for REVIEW and INVESTIGATION. Use to review a plan / PDR-ADR bundle / implementation phase / pre-PR branch and auto-loop fixes until it converges; to ground an architecture or feature decision before asking the user; OR to INVESTIGATE — root-cause a bug, narrow a flaky / orphaned / regression / "works-on-my-machine" symptom, or decide between competing hypotheses — under an explicit safety contract (read-only, fails closed on forbidden probes, proposes a fix but never applies one). Modes — plan <file> | bundle <dir> | phase-start <id> | phase-review <id> | question <file> | investigate <brief> | prepr [base] | prepr-delta [base] | config. Replaces manual copy-paste between Claude and the Codex app.
 allowed-tools: Bash, Read, Edit, Write, Grep, Glob
 ---
 
@@ -47,6 +47,8 @@ Run the matching mode and drive the loop below. Modes:
   OVERFLOWed (huge diff) but most of the surface was already approved in earlier phases, or to re-PR
   after a small follow-up without re-reviewing the whole branch. Shares the budget guard + lean packet
   + OVERFLOW path with `prepr`; same `[base]` default (merge-base chain).
+- `config` — **report the gate's effective dials + source/runtime parity.** Not a gate and not a review:
+  a read-only diagnostic that calls Codex zero times, creates no run dir, and exits 0. See below.
 
 ## The loop (review modes: plan / bundle / phase-review / prepr / prepr-delta)
 1. **Round 1**: `bash <skill-dir>/codex-gate.sh <mode> <arg> 1` → capture the status JSON.
@@ -212,6 +214,36 @@ bash <skill-dir>/codex-gate.sh investigate /tmp/inv-orphaned-runs.md 1
 # read status → if NEEDS_MORE_EVIDENCE, run the SAFE nextSafeProbe, append to <runDir>/evidence.md, resume.
 ```
 
+## Checking what the gate is actually configured to do (`config`)
+`bash <skill-dir>/codex-gate.sh config` prints ONE JSON line: the gate's **effective** configuration and
+whether the gate that actually runs still matches its **versioned source**. Read-only — **zero Codex calls,
+no run dir, no ledger, exit 0** — so it is safe at any time, including while another gate is mid-review.
+
+Use it when: a dial change you committed doesn't seem to be taking effect; a review used a model/effort you
+didn't expect; before trusting `prepr` on a machine you haven't run the gate on; or as the first step of
+debugging any "but I fixed that" report about the gate itself.
+
+- `defaults` — the literal fallbacks in the running script. `effective` — what is actually in force after env
+  overrides, with **`fast` normalized to its real trigger**: fast mode arms on an exact `1` and nothing else,
+  so `CODEX_GATE_FAST=2` reports `fast:false` (`fastRaw` keeps the raw value visible). `origin` — per dial,
+  `"default"` or the **name of the env var** that overrode it.
+- `parity` — `MATCH` / `MISMATCH` / `UNAVAILABLE`, rolled up from `digestParity` (sha256 byte identity of the
+  two copies) and `effectiveParity` (the dials in force vs the dials the source **declares**), reported
+  separately because two identical files still behave differently under env overrides. **A source copy that
+  cannot be located reports `UNAVAILABLE`, never a silent `MATCH`**; a `missing`/`symlink` endpoint is
+  reported via `runtimeKind`/`sourceKind` rather than assumed. `runtimeDefaults`/`sourceDefaults` show each
+  side's declared dials, so a MISMATCH tells you *how* they differ, not just *that* they do.
+- **Endpoints** default to the installed gate (`~/.claude/skills/codex-gate/codex-gate.sh`) versus the
+  versioned copy (the running script when it is checked out in a git work tree, else
+  `<cwd repo top>/plugin/skills/codex-gate/codex-gate.sh`). Override either with `CODEX_GATE_RUNTIME` /
+  `CODEX_GATE_SOURCE` to compare any two copies.
+- On `MISMATCH`, surface it: the installed gate is not the code in the repo, so a committed fix may not be
+  reaching the reviewer. Reinstall/sync the skill, then re-run `config` and expect `MATCH`.
+
+```
+bash <skill-dir>/codex-gate.sh config | jq '{parity, digestParity, effectiveParity, effective, origin}'
+```
+
 ## Binding into a feature workflow (full auto-loop)
 ```
 draft plan ─▶ /codex-gate plan <planfile> ─▶ (loop) APPROVE ─▶ ExitPlanMode (user approves)
@@ -341,11 +373,22 @@ bash <skill-dir>/codex-gate.sh phase-review P2
 (Omitting `context.md` is harmless — the wrapper simply skips the section.)
 
 ## Env knobs (optional)
-`CODEX_GATE_MODEL`, `CODEX_GATE_EFFORT` (defaults: `gpt-5.6-sol`/`ultra`; both remain env-overridable),
-`CODEX_GATE_FAST` (**default 1 = ON**; Codex "fast mode" — same model, ~1.5× faster at **~2.5× credit cost**;
-set `0` to conserve credits — it does NOT change model/effort, fast≠dumb), `CODEX_GATE_MAX_ROUNDS` (default 8),
-`CODEX_GATE_EXCLUDES` (extra scratch globs; `.docker/` is NOT excluded by default), `CODEX_GATE_SESSION`
-(namespacing).
+> Don't trust this list over the gate itself — `codex-gate.sh config` reports the **effective** dials of the
+> copy that actually runs, and whether it still matches the versioned source.
+
+`CODEX_GATE_MODEL`, `CODEX_GATE_EFFORT` (defaults: `gpt-5.6-sol`/`xhigh` — **not** `ultra`, which performs
+wrapper-invisible automatic task delegation; both remain env-overridable, and `CODEX_GATE_MODEL=""` is a real
+override meaning "omit `-m`, use Codex's own default"), `CODEX_GATE_FAST` (**default 0 = OFF, opt-in**; Codex
+"fast mode" — same model, ~1.5× faster at **~2.5× credit cost**; set exactly `1` to enable — **any other
+value, including `2`, leaves it OFF** — it does NOT change model/effort, fast≠dumb), `CODEX_GATE_MAX_ROUNDS`
+(default 8), `CODEX_GATE_EXCLUDES` (extra scratch globs; `.docker/` is NOT excluded by default),
+`CODEX_GATE_SESSION` (namespacing).
+**Config report (`config` only):** `CODEX_GATE_RUNTIME` (the gate that actually runs; default
+`$HOME/.claude/skills/codex-gate/codex-gate.sh`) and `CODEX_GATE_SOURCE` (the versioned copy; default
+auto-discovered — the running script when it is checked out in a git work tree, else
+`<cwd repo top>/plugin/skills/codex-gate/codex-gate.sh`, else `parity: UNAVAILABLE`). Both exist so the test
+suite can point at temp fixtures instead of a machine's real `~/.claude/skills` state, and so an operator can
+compare any two copies. They affect **nothing but the `config` report**.
 **Context-overflow (Tier 1):** `CODEX_GATE_PACKET_BUDGET` (default **300000** chars — the max assembled-packet
 size before Codex is invoked; over budget ⇒ `OVERFLOW` fail-closed, Codex is never run — UNLESS Tier-3 sharding
 kicks in for `prepr`/`prepr-delta`) and `CODEX_GATE_INLINE_MAX_LINES` (default **120** — at code tier, a touched
