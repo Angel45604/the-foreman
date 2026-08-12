@@ -43,16 +43,18 @@ CODEX_GATE_RUNS="${CODEX_GATE_RUNS:-$HOME/.claude/codex-gate/runs}"
 SCHEMA_FILE="$SKILL_DIR/verdict.schema.json"
 INSTRUCTIONS_FILE="$SKILL_DIR/reviewer-instructions.md"
 
-# Model / reasoning-effort. Default to the user's quality-first Codex pair (gpt-5.6-sol / ultra);
-# override via env. (Added to argv only when non-empty; set CODEX_GATE_MODEL="" to use Codex's own default.)
-CODEX_GATE_MODEL="${CODEX_GATE_MODEL:-gpt-5.6-sol}"
-CODEX_GATE_EFFORT="${CODEX_GATE_EFFORT:-ultra}"
+# Model / reasoning-effort. Default tier is gpt-5.6-sol / xhigh — NOT ultra: ultra performs
+# automatic task delegation (observed spawning ~3 sub-reviewers per round, wrapper-invisible
+# and unbounded by --multi/CODEX_GATE_FANOUT); it remains available via explicit env override.
+# (Model added to argv only when non-empty; set CODEX_GATE_MODEL="" to use Codex's own default.)
+CODEX_GATE_MODEL="${CODEX_GATE_MODEL-gpt-5.6-sol}"
+CODEX_GATE_EFFORT="${CODEX_GATE_EFFORT:-xhigh}"
 
 # Fast mode (Codex "Speed"): keeps the SAME model (gpt-5.6-sol) but runs ~1.5x faster at ~2.5x credit
-# cost (per developers.openai.com/codex/speed). Default ON (enforced); set CODEX_GATE_FAST=0 to
-# conserve credits. The gate inherits none of the app's config (--ignore-user-config), so this is
-# the only way fast mode reaches the gate's Codex calls. NOT a quality knob — reasoning effort is separate.
-CODEX_GATE_FAST="${CODEX_GATE_FAST:-1}"
+# cost (per developers.openai.com/codex/speed). Default OFF (opt-in); set CODEX_GATE_FAST=1 to
+# spend the extra credits for speed. The gate inherits none of the app's config (--ignore-user-config),
+# so this is the only way fast mode reaches the gate's Codex calls. NOT a quality knob — reasoning effort is separate.
+CODEX_GATE_FAST="${CODEX_GATE_FAST:-0}"
 
 # Extra scratch excludes (space-separated globs), opt-in per repo.
 CODEX_GATE_EXCLUDES="${CODEX_GATE_EXCLUDES:-}"
