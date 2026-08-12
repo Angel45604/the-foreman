@@ -188,8 +188,9 @@ Per the-foreman §8 ("two failures at one tier = change something structural"), 
 quarantined** on `quarantine/gate-install-mutator` as its own initiative. Net effect on this branch:
 **-726 lines.**
 
-What survives is the part that was never defective: `config` detection, the 13-member inventory as a
-*parity* contract, and a documented manual sync command. ADR-6's insight — that the sync unit is the
+What survives is the part that converged: `config` detection, the 13-member inventory as a
+*parity* contract, and a documented manual sync command. It survives because its defects were
+closable — the three listed above were each found once and fixed once — not because it had none. ADR-6's insight — that the sync unit is the
 whole skill directory, not the script — is retained; only its *automation* is deferred.
 
 Two detector defects found in the same round were fixed rather than deferred, because the detector
@@ -211,8 +212,9 @@ runtime was verified to run `config` successfully with exit 0. `runtimeExecutabl
 removed**. Read the sections below as the rationale for the inventory contract, not for a tool.
 
 
-**Status:** **ACCEPTED** at a decision-fork gate after the Wave-1 audit. Phase 5's script-only
-mutator is superseded by Phase 6.
+**Status (historical, superseded — see the PARTLY SUPERSEDED note above):** accepted at a
+decision-fork gate after the Wave-1 audit; Phase 5's script-only mutator was superseded by Phase 6.
+Phase 6's mutator was in turn removed by ADR-7. Retained as the record of what was decided then.
 
 Three P1 defects were reproduced in the script-only design, and a fourth — installed `SKILL.md`
 still documenting terra/ultra after a "successful" sync — showed the deeper fault: **a script-only
