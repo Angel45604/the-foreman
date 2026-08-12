@@ -292,3 +292,59 @@ a parity state; an env override moving `effective` off `defaults` with `origin` 
 MISMATCH and naming both distinct digests plus each side's declared dials; an unlocatable source reporting
 UNAVAILABLE rather than MATCH; missing and symlinked endpoints reported honestly; and the read-only
 invariants — zero Codex calls, no run dir, an unchanged repo, exit 0, and exit 2 on a bogus argument).
+
+---
+
+## Install/sync — `install` (PINNED contract)
+
+The deliberate resolution to the drift `config` (above) makes observable. `codex-gate.sh install` copies
+the versioned **source** onto the installed **runtime** so a subsequent `config` reports `parity: MATCH`.
+
+- **The ONLY mode that writes the runtime file, and only when invoked by its own explicit name.** It is
+  never triggered as a side effect of `config`, a review, `investigate`, or anything else — the owner
+  decides when to sync, this script never decides for them. (Enforced structurally: the `mode_install`
+  function has exactly one caller in the whole file — its own dispatch arm.)
+- **Same endpoint resolution as `config`** — `CODEX_GATE_RUNTIME` (default
+  `$HOME/.claude/skills/codex-gate/codex-gate.sh`) and `CODEX_GATE_SOURCE` (default: auto-discovered,
+  same order as `config`). The two modes share one discovery function (`resolve_gate_source`) so they can
+  never disagree about which file counts as "the versioned source."
+- **Refuses rather than clobbers** (outcome `REFUSED`, **zero writes**, exit 0) whenever the runtime
+  endpoint's topology is not a plain, ownable file — ADR-5 accepted a real physical directory as today's
+  authoritative install, but `install` **detects** that rather than trusting it:
+
+  | topology | why it refuses |
+  | --- | --- |
+  | **symlink** | a `cp`/`mv` would silently turn a linked install into a copied one — a topology change nobody asked for. Repoint/replace it yourself, then re-run. |
+  | **missing** | a missing install is itself an anomaly worth a human look, not an auto-heal. `CODEX_GATE_INSTALL_ALLOW_CREATE=1` is a distinct, non-default opt-in for a genuine first-time install. |
+  | **other** (dir/device/fifo) | a plain file is expected there; refuses rather than guess what to do with it. |
+  | **plugin-managed** | the runtime path resolves **inside** the plugin scan root (`CODEX_GATE_PLUGIN_SCAN_ROOT`, default `$HOME/.claude/plugins/marketplaces`) — that copy is owned by the Claude Code plugin installer and gets overwritten on the next plugin update regardless. Edit the source and update/reinstall the plugin instead. |
+  | **duplicate** | the runtime is a personal-skill copy *outside* the plugin root, but a plugin-managed `codex-gate.sh` **also** exists somewhere under the scan root — exactly the topology the repo-root README's "pick one install mode" warns about. Installing only one of two active installs would leave the owner silently running the other; both paths are named so the owner can reconcile (uninstall one) before re-running. |
+
+- **A byte-identical pair is a no-op** — `changed:false`, zero writes, no mtime churn. Otherwise the copy
+  is **atomic**: source → a same-directory temp file → `chmod +x` → `mv` over the runtime path. `mv` within
+  one filesystem is an atomic rename, so anything reading the runtime concurrently (a gate mid-review)
+  always sees the complete OLD script or the complete NEW one, never a partial write — this is what makes
+  `install` safe to run at any time.
+
+**Status line** (`outcome ∈ INSTALLED | REFUSED | INFRA_ERROR`): `{outcome, runtimePath, runtimeKind,
+sourcePath, sourceDigest, runtimeDigestBefore, runtimeDigestAfter, changed, summary}`. `REFUSED` is a
+confident, deliberate safety refusal (distinct from `INFRA_ERROR`, which means "could not determine" — no
+readable source located, or the atomic replace itself failed despite passing every topology check).
+
+**Sync the real install, then verify:**
+```bash
+bash <skill-dir>/codex-gate.sh install
+bash <skill-dir>/codex-gate.sh config | jq '{parity, digestParity, effectiveParity}'
+```
+Run both **from the checkout carrying the fix** — `<skill-dir>` resolves `CODEX_GATE_SOURCE`
+auto-discovery to itself when it is checked out in a git work tree, so no env var is needed for the
+common case; `CODEX_GATE_RUNTIME` defaults to the real installed gate.
+
+Status: **Install contracts GREEN** — exercised by `codex-gate.test.sh` (a divergent fixture pair
+installs and `config` on the same pair afterwards confirms `parity: MATCH`; a second run on an
+already-matching pair is a verified no-op; symlinked/missing/directory-kind runtimes refuse with the
+target left byte-unmodified; `CODEX_GATE_INSTALL_ALLOW_CREATE=1` is the sole path to creating a missing
+install; a runtime inside the plugin scan root refuses as plugin-managed; a personal-skill runtime
+alongside a plugin-managed copy refuses as a duplicate and names both paths; an absent plugin scan root
+never blocks a normal install; a normal review run and `config` are both proven to never write to
+`CODEX_GATE_RUNTIME`'s path; and `install` fails closed on a bogus argument and an unlocatable source).

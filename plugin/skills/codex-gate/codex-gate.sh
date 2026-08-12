@@ -15,6 +15,7 @@
 #   codex-gate.sh prepr        [base]    [round] [threadId]
 #   codex-gate.sh prepr-delta  [base]    [round] [threadId]   # since-reviewed delta
 #   codex-gate.sh config                                      # read-only dials + parity report
+#   codex-gate.sh install                                     # sync SOURCE -> RUNTIME (writes; explicit only)
 #
 # Contract source of truth is README.md (sibling of this file), including Phase-0 pins.
 #
@@ -38,6 +39,14 @@
 #    digestParity, effectiveParity, parity, summary}
 #   outcome ∈ CONFIG | INFRA_ERROR.  Makes source↔runtime DRIFT observable; calls Codex zero
 #   times, creates no run dir, writes no ledger.  parity NEVER reports MATCH on a guess.
+#
+# Outcome (one JSON status line on stdout for the INSTALL sync mode):
+#   {outcome, runtimePath, runtimeKind, sourcePath, sourceDigest,
+#    runtimeDigestBefore, runtimeDigestAfter, changed, summary}
+#   outcome ∈ INSTALLED | REFUSED | INFRA_ERROR.  The ONLY mode that writes the runtime file,
+#   and only when explicitly invoked by name — never as a side effect of any other mode.
+#   REFUSED (zero writes) on a symlinked/missing/other/plugin-managed/duplicate runtime;
+#   see the MODE: install block below for the full detection contract. Calls Codex zero times.
 
 set -u
 
@@ -2276,6 +2285,45 @@ parse_dial() { # <file> <VAR> -> "<op>|<literal>", or EMPTY when absent/malforme
   printf '%s|%s' "$op" "$rest"
 }
 
+# ----------------------------------------------------------------------------
+# Resolve the versioned SOURCE copy — shared by `config` (read-only report) and
+# `install` (the mode that writes it onto the runtime), so the two modes can never
+# drift apart on WHICH file counts as "the versioned source" (that would defeat the
+# whole point: `config` reporting parity against one file while `install` copies
+# from another). Auto-discovery order (first match wins), unchanged from `config`'s
+# original inline logic:
+#   1. CODEX_GATE_SOURCE override
+#   2. the running script itself, when it is checked out in a git work tree
+#   3. <cwd git work tree top>/plugin/skills/codex-gate/codex-gate.sh
+#   4. none located -> RESOLVED_SOURCE_DISCOVERY states why, path/kind/digest stay empty/missing
+# Sets globals (caller reads them immediately; not meant to outlive the call):
+#   RESOLVED_SOURCE_PATH RESOLVED_SOURCE_KIND RESOLVED_SOURCE_DIGEST RESOLVED_SOURCE_DISCOVERY
+# Side-effect-free besides a read-only `git rev-parse` + file reads.
+# ----------------------------------------------------------------------------
+resolve_gate_source() { # <selfDir> <selfPath>
+  local selfDir="$1" selfPath="$2" top=""
+  RESOLVED_SOURCE_PATH="" RESOLVED_SOURCE_KIND="missing" RESOLVED_SOURCE_DIGEST="" RESOLVED_SOURCE_DISCOVERY=""
+  if [ -n "${CODEX_GATE_SOURCE:-}" ]; then
+    RESOLVED_SOURCE_PATH="$CODEX_GATE_SOURCE"
+    RESOLVED_SOURCE_DISCOVERY="CODEX_GATE_SOURCE"
+  elif top="$(git -C "$selfDir" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$top" ]; then
+    # the running script is checked out in a work tree => it IS the versioned copy
+    RESOLVED_SOURCE_PATH="$selfPath"
+    RESOLVED_SOURCE_DISCOVERY="running script (checked out in git work tree $top)"
+  elif top="$(git rev-parse --show-toplevel 2>/dev/null)" && [ -n "$top" ] \
+       && [ -f "$top/plugin/skills/codex-gate/codex-gate.sh" ]; then
+    RESOLVED_SOURCE_PATH="$top/plugin/skills/codex-gate/codex-gate.sh"
+    RESOLVED_SOURCE_DISCOVERY="cwd git work tree ($top)"
+  else
+    RESOLVED_SOURCE_DISCOVERY="none: no versioned copy located — set CODEX_GATE_SOURCE, or run from the repo that carries it"
+  fi
+  if [ -n "$RESOLVED_SOURCE_PATH" ]; then
+    RESOLVED_SOURCE_KIND="$(path_kind "$RESOLVED_SOURCE_PATH")"
+    RESOLVED_SOURCE_DIGEST="$(sha256_of "$RESOLVED_SOURCE_PATH")"
+    [ -n "$RESOLVED_SOURCE_DIGEST" ] || RESOLVED_SOURCE_DISCOVERY="$RESOLVED_SOURCE_DISCOVERY (unreadable: $RESOLVED_SOURCE_PATH)"
+  fi
+}
+
 mode_config() {
   [ $# -eq 0 ] || { echo "config takes no arguments" >&2; exit 2; }
 
@@ -2331,27 +2379,11 @@ mode_config() {
   runtimeKind="$(path_kind "$runtimePath")"
   runtimeDigest="$(sha256_of "$runtimePath")"
 
-  # ---- source endpoint: the versioned copy ----
-  local sourcePath="" sourceKind="missing" sourceDigest="" sourceDiscovery="" top=""
-  if [ -n "${CODEX_GATE_SOURCE:-}" ]; then
-    sourcePath="$CODEX_GATE_SOURCE"
-    sourceDiscovery="CODEX_GATE_SOURCE"
-  elif top="$(git -C "$selfDir" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$top" ]; then
-    # the running script is checked out in a work tree => it IS the versioned copy
-    sourcePath="$selfPath"
-    sourceDiscovery="running script (checked out in git work tree $top)"
-  elif top="$(git rev-parse --show-toplevel 2>/dev/null)" && [ -n "$top" ] \
-       && [ -f "$top/plugin/skills/codex-gate/codex-gate.sh" ]; then
-    sourcePath="$top/plugin/skills/codex-gate/codex-gate.sh"
-    sourceDiscovery="cwd git work tree ($top)"
-  else
-    sourceDiscovery="none: no versioned copy located — set CODEX_GATE_SOURCE, or run from the repo that carries it"
-  fi
-  if [ -n "$sourcePath" ]; then
-    sourceKind="$(path_kind "$sourcePath")"
-    sourceDigest="$(sha256_of "$sourcePath")"
-    [ -n "$sourceDigest" ] || sourceDiscovery="$sourceDiscovery (unreadable: $sourcePath)"
-  fi
+  # ---- source endpoint: the versioned copy (shared discovery — see resolve_gate_source) ----
+  local sourcePath sourceKind sourceDigest sourceDiscovery
+  resolve_gate_source "$selfDir" "$selfPath"
+  sourcePath="$RESOLVED_SOURCE_PATH"; sourceKind="$RESOLVED_SOURCE_KIND"
+  sourceDigest="$RESOLVED_SOURCE_DIGEST"; sourceDiscovery="$RESOLVED_SOURCE_DISCOVERY"
 
   # ---- each endpoint's DECLARED dials (so a mismatch is legible, not just flagged) ----
   local rtDefaults="null" srcDefaults="null" sdModel="" sdEffort="" sdFast="" sdParsed=0
@@ -2434,11 +2466,188 @@ mode_config() {
 }
 
 # ============================================================================
+# MODE: install  (the ONLY mode that writes the runtime file)
+# ----------------------------------------------------------------------------
+# Copies the versioned SOURCE onto the installed RUNTIME so a subsequent `config`
+# reports parity: MATCH. This is the deliberate resolution to the drift `config`
+# (above) makes observable — never a side effect of anything else. This function
+# has exactly one caller in the whole file: its own dispatch arm below. Nothing
+# else may invoke it. The owner decides when to run it.
+#
+# Refuses (outcome REFUSED, ZERO writes, exit 0) rather than clobbers whenever the
+# runtime endpoint is not a plain, ownable file (ADR-5: the owner's install is a
+# real physical directory today, but this mode DETECTS that rather than trusting
+# it — the decision fixed today's topology, it did not license blind writes):
+#   symlink        -> a `cp`/`mv` here would silently change what "the install" IS
+#                      (a link becomes a copy) without being asked to.
+#   missing        -> refuses by default (a missing install is itself an anomaly);
+#                      CODEX_GATE_INSTALL_ALLOW_CREATE=1 is a distinct, non-default
+#                      opt-in for a genuine first-time install.
+#   other          -> a directory/device/fifo sitting where a plain file belongs.
+#   plugin-managed -> the configured runtime resolves INSIDE the plugin scan root
+#                      (CODEX_GATE_PLUGIN_SCAN_ROOT, default
+#                      $HOME/.claude/plugins/marketplaces) — that copy is owned by
+#                      the Claude Code plugin installer and will be overwritten on
+#                      the next plugin update regardless; edit the versioned
+#                      source and update/reinstall the plugin instead.
+#   duplicate      -> the runtime is a personal-skill copy OUTSIDE the plugin root,
+#                      but a plugin-managed codex-gate.sh ALSO exists somewhere
+#                      under the scan root (exactly the topology the repo-root
+#                      README's "pick one install mode" warns about) — installing
+#                      only one of two active installs would leave the owner
+#                      silently running the other. Both paths are named; the
+#                      owner reconciles (uninstall one) before re-running.
+#
+# A byte-identical pair is a no-op (changed:false, zero writes, mtime untouched).
+# Otherwise: copy to a same-directory temp file, chmod +x, then `mv` it over the
+# runtime path. `mv` within one filesystem is an atomic rename, so anything
+# reading the runtime file concurrently (a gate mid-review) always sees either
+# the complete OLD script or the complete NEW one, never a partial write —
+# this is what makes `install` safe to run while a gate is mid-review.
+# ============================================================================
+
+# Scan for OTHER codex-gate.sh installs under the plugin root (bounded depth;
+# silently empty if the root doesn't exist — an absent plugins dir is not
+# evidence of a duplicate). Echoes zero or more absolute paths, one per line.
+find_plugin_managed_codexgate() { # <pluginRoot>
+  local root="$1"
+  [ -d "$root" ] || return 0
+  find "$root" -maxdepth 8 -type f -path '*/skills/codex-gate/codex-gate.sh' 2>/dev/null
+}
+
+# Emit a REFUSED status line (zero writes performed) and exit 0 — a deliberate,
+# confidently-detected safety refusal, distinct from an INFRA_ERROR guess.
+emit_install_refuse() { # <runtimePath> <runtimeKind> <sourcePath> <sourceDigest> <summary>
+  jq -nc \
+    --arg outcome "REFUSED" \
+    --arg runtimePath "$1" --arg runtimeKind "$2" \
+    --arg sourcePath "$3" --arg sourceDigest "$4" \
+    --arg summary "$5" \
+    '{outcome:$outcome, runtimePath:$runtimePath, runtimeKind:$runtimeKind,
+      sourcePath:$sourcePath, sourceDigest:$sourceDigest, changed:false, summary:$summary}'
+  exit 0
+}
+
+mode_install() {
+  [ $# -eq 0 ] || { echo "install takes no arguments" >&2; exit 2; }
+
+  local selfDir selfPath
+  selfDir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || selfDir=""
+  [ -n "$selfDir" ] || die_infra "install: cannot resolve the running script's directory"
+  selfPath="$selfDir/$(basename "${BASH_SOURCE[0]}")"
+  [ -f "$selfPath" ] || die_infra "install: the running script is not readable at $selfPath"
+
+  # ---- source endpoint (identical discovery to `config` — see resolve_gate_source) ----
+  local sourcePath sourceKind sourceDigest sourceDiscovery
+  resolve_gate_source "$selfDir" "$selfPath"
+  sourcePath="$RESOLVED_SOURCE_PATH"; sourceKind="$RESOLVED_SOURCE_KIND"
+  sourceDigest="$RESOLVED_SOURCE_DIGEST"; sourceDiscovery="$RESOLVED_SOURCE_DISCOVERY"
+  if [ -z "$sourcePath" ] || [ "$sourceKind" != "file" ] || [ -z "$sourceDigest" ]; then
+    die_infra "install: no readable versioned source located — $sourceDiscovery"
+  fi
+
+  # ---- runtime endpoint ----
+  local runtimePath runtimeKind
+  runtimePath="${CODEX_GATE_RUNTIME:-$HOME/.claude/skills/codex-gate/codex-gate.sh}"
+  runtimeKind="$(path_kind "$runtimePath")"
+
+  local pluginRoot="${CODEX_GATE_PLUGIN_SCAN_ROOT:-$HOME/.claude/plugins/marketplaces}"
+
+  case "$runtimeKind" in
+    symlink)
+      local tgt
+      tgt="$(readlink "$runtimePath" 2>/dev/null || :)"
+      emit_install_refuse "$runtimePath" "$runtimeKind" "$sourcePath" "$sourceDigest" \
+        "runtime path $runtimePath is a symlink (-> ${tgt:-unknown}); refusing to overwrite a symlink — repoint it or replace it with a plain file yourself, then re-run install"
+      ;;
+    other)
+      emit_install_refuse "$runtimePath" "$runtimeKind" "$sourcePath" "$sourceDigest" \
+        "runtime path $runtimePath exists but is not a plain file (kind=other); refusing to write over it"
+      ;;
+    missing)
+      if [ "${CODEX_GATE_INSTALL_ALLOW_CREATE:-0}" != "1" ]; then
+        emit_install_refuse "$runtimePath" "$runtimeKind" "$sourcePath" "$sourceDigest" \
+          "runtime path $runtimePath does not exist; refusing to create it (set CODEX_GATE_INSTALL_ALLOW_CREATE=1 to opt into a first-time install)"
+      fi
+      ;;
+    file) : ;;
+    *)
+      emit_install_refuse "$runtimePath" "$runtimeKind" "$sourcePath" "$sourceDigest" \
+        "runtime path $runtimePath has an unrecognized kind ($runtimeKind); refusing"
+      ;;
+  esac
+
+  # ---- plugin-managed / duplicate detection (skipped only when the runtime
+  #      directory does not exist yet — nothing to be "inside" the plugin root) ----
+  local runtimeDirCanon pluginRootCanon isPluginManaged=0
+  runtimeDirCanon="$(cd "$(dirname "$runtimePath")" 2>/dev/null && pwd -P)" || runtimeDirCanon=""
+  pluginRootCanon="$(cd "$pluginRoot" 2>/dev/null && pwd -P)" || pluginRootCanon=""
+  if [ -n "$runtimeDirCanon" ] && [ -n "$pluginRootCanon" ]; then
+    case "$runtimeDirCanon" in
+      "$pluginRootCanon"|"$pluginRootCanon"/*) isPluginManaged=1 ;;
+    esac
+  fi
+  if [ "$isPluginManaged" = "1" ]; then
+    emit_install_refuse "$runtimePath" "$runtimeKind" "$sourcePath" "$sourceDigest" \
+      "runtime path $runtimePath is inside the plugin scan root ($pluginRoot) — it is plugin-managed; the plugin installer owns it and will overwrite it on the next update. Edit the versioned source and update/reinstall the plugin instead of syncing here."
+  fi
+
+  local dupes dupeCount=0
+  dupes="$(find_plugin_managed_codexgate "$pluginRoot")"
+  [ -z "$dupes" ] || dupeCount="$(printf '%s\n' "$dupes" | grep -c .)"
+  if [ "$dupeCount" -gt 0 ]; then
+    local dupeList
+    dupeList="$(printf '%s' "$dupes" | tr '\n' ' ')"
+    emit_install_refuse "$runtimePath" "$runtimeKind" "$sourcePath" "$sourceDigest" \
+      "duplicate install detected: personal-skill runtime $runtimePath AND a plugin-managed copy at: $dupeList — reconcile (uninstall one) before syncing; installing only one would leave the OTHER one silently in force"
+  fi
+
+  # ---- perform the install (or a no-op when already byte-identical) ----
+  local runtimeDigestBefore runtimeDigestAfter changed="true"
+  runtimeDigestBefore="$(sha256_of "$runtimePath")"   # empty when creating fresh (missing+opt-in)
+
+  if [ -n "$runtimeDigestBefore" ] && [ "$runtimeDigestBefore" = "$sourceDigest" ]; then
+    changed="false"
+    runtimeDigestAfter="$runtimeDigestBefore"
+  else
+    mkdir -p "$(dirname "$runtimePath")" || die_infra "install: could not create the runtime directory for $runtimePath"
+    local tmp="$runtimePath.install.$$"
+    cp "$sourcePath" "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; die_infra "install: copy to a temp file failed"; }
+    chmod +x "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; die_infra "install: chmod +x failed on the temp file"; }
+    mv -f "$tmp" "$runtimePath" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; die_infra "install: atomic replace of $runtimePath failed"; }
+    runtimeDigestAfter="$(sha256_of "$runtimePath")"
+    [ -n "$runtimeDigestAfter" ] && [ "$runtimeDigestAfter" = "$sourceDigest" ] \
+      || die_infra "install: post-install digest of $runtimePath does not match the source — refusing to claim success"
+  fi
+
+  runtimeKind="$(path_kind "$runtimePath")"
+  local summary
+  if [ "$changed" = "true" ]; then
+    summary="installed: $runtimePath now matches $sourcePath (sha256 $runtimeDigestAfter). Re-run \`config\` to confirm parity: MATCH."
+  else
+    summary="no-op: $runtimePath already matched $sourcePath (sha256 $runtimeDigestAfter) — nothing written."
+  fi
+
+  jq -nc \
+    --arg outcome "INSTALLED" \
+    --arg runtimePath "$runtimePath" --arg runtimeKind "$runtimeKind" \
+    --arg sourcePath "$sourcePath" --arg sourceDigest "$sourceDigest" \
+    --arg runtimeDigestBefore "$runtimeDigestBefore" --arg runtimeDigestAfter "$runtimeDigestAfter" \
+    --argjson changed "$changed" \
+    --arg summary "$summary" \
+    '{outcome:$outcome, runtimePath:$runtimePath, runtimeKind:$runtimeKind,
+      sourcePath:$sourcePath, sourceDigest:$sourceDigest,
+      runtimeDigestBefore:$runtimeDigestBefore, runtimeDigestAfter:$runtimeDigestAfter,
+      changed:$changed, summary:$summary}' || die_infra "install: failed to render the status line"
+  exit 0
+}
+
+# ============================================================================
 # Dispatch
 # ============================================================================
 main() {
   local mode="${1:-}"
-  [ -n "$mode" ] || { echo "usage: codex-gate.sh <phase-start|phase-review|plan|bundle|question|investigate|prepr|prepr-delta|config> [args]" >&2; exit 2; }
+  [ -n "$mode" ] || { echo "usage: codex-gate.sh <phase-start|phase-review|plan|bundle|question|investigate|prepr|prepr-delta|config|install> [args]" >&2; exit 2; }
   shift
 
   # Sanity: required helper files exist.
@@ -2456,6 +2665,7 @@ main() {
     prepr)        mode_prepr        "$@" ;;
     prepr-delta)  mode_prepr_delta  "$@" ;;
     config)       mode_config       "$@" ;;
+    install)      mode_install      "$@" ;;
     *) echo "unknown mode: $mode" >&2; exit 2 ;;
   esac
 }

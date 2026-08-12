@@ -1,6 +1,6 @@
 ---
 name: codex-gate
-description: Automated, repo-agnostic Codex gate (the hands-free "third pair of eyes") for REVIEW and INVESTIGATION. Use to review a plan / PDR-ADR bundle / implementation phase / pre-PR branch and auto-loop fixes until it converges; to ground an architecture or feature decision before asking the user; OR to INVESTIGATE — root-cause a bug, narrow a flaky / orphaned / regression / "works-on-my-machine" symptom, or decide between competing hypotheses — under an explicit safety contract (read-only, fails closed on forbidden probes, proposes a fix but never applies one). Modes — plan <file> | bundle <dir> | phase-start <id> | phase-review <id> | question <file> | investigate <brief> | prepr [base] | prepr-delta [base] | config. Replaces manual copy-paste between Claude and the Codex app.
+description: Automated, repo-agnostic Codex gate (the hands-free "third pair of eyes") for REVIEW and INVESTIGATION. Use to review a plan / PDR-ADR bundle / implementation phase / pre-PR branch and auto-loop fixes until it converges; to ground an architecture or feature decision before asking the user; OR to INVESTIGATE — root-cause a bug, narrow a flaky / orphaned / regression / "works-on-my-machine" symptom, or decide between competing hypotheses — under an explicit safety contract (read-only, fails closed on forbidden probes, proposes a fix but never applies one). Modes — plan <file> | bundle <dir> | phase-start <id> | phase-review <id> | question <file> | investigate <brief> | prepr [base] | prepr-delta [base] | config | install. Replaces manual copy-paste between Claude and the Codex app.
 allowed-tools: Bash, Read, Edit, Write, Grep, Glob
 ---
 
@@ -49,6 +49,10 @@ Run the matching mode and drive the loop below. Modes:
   + OVERFLOW path with `prepr`; same `[base]` default (merge-base chain).
 - `config` — **report the gate's effective dials + source/runtime parity.** Not a gate and not a review:
   a read-only diagnostic that calls Codex zero times, creates no run dir, and exits 0. See below.
+- `install` — **sync the versioned source onto the installed runtime**, so a subsequent `config` reports
+  `parity: MATCH`. The ONLY mode that writes the runtime file, and only when invoked by this exact name —
+  never a side effect of anything else; the owner decides when to run it. Refuses (never clobbers) a
+  symlinked / missing / plugin-managed / duplicate runtime. See below.
 
 ## The loop (review modes: plan / bundle / phase-review / prepr / prepr-delta)
 1. **Round 1**: `bash <skill-dir>/codex-gate.sh <mode> <arg> 1` → capture the status JSON.
@@ -238,10 +242,33 @@ debugging any "but I fixed that" report about the gate itself.
   `<cwd repo top>/plugin/skills/codex-gate/codex-gate.sh`). Override either with `CODEX_GATE_RUNTIME` /
   `CODEX_GATE_SOURCE` to compare any two copies.
 - On `MISMATCH`, surface it: the installed gate is not the code in the repo, so a committed fix may not be
-  reaching the reviewer. Reinstall/sync the skill, then re-run `config` and expect `MATCH`.
+  reaching the reviewer. Run `install` (below) to sync it, then re-run `config` and expect `MATCH`.
 
 ```
 bash <skill-dir>/codex-gate.sh config | jq '{parity, digestParity, effectiveParity, effective, origin}'
+```
+
+## Syncing the drift away (`install`)
+
+`bash <skill-dir>/codex-gate.sh install` copies the versioned **source** onto the installed **runtime** —
+the deliberate fix for a `MISMATCH` that `config` reports. It is the ONLY mode that writes the runtime
+file, and only when invoked by this exact name: never triggered as a side effect of `config`, a review, or
+anything else. **The owner decides when to run it** — do not run it on the user's behalf without being
+asked to.
+
+- Same endpoint defaults/overrides as `config` (`CODEX_GATE_RUNTIME`, `CODEX_GATE_SOURCE`) — the two modes
+  share one source-discovery function so they can never disagree about which file is "the source."
+- **Refuses rather than clobbers** (`outcome: REFUSED`, zero writes, exit 0) on a symlinked, missing,
+  or non-file runtime, on a runtime that resolves inside the plugin scan root (plugin-managed — the
+  plugin installer owns it), or when a plugin-managed copy exists **in addition to** a personal-skill
+  runtime (a duplicate install — both paths are named). See the README's Install/sync section for the
+  full detection table.
+- A byte-identical pair is a no-op (`changed:false`); otherwise the copy is atomic (temp file + `mv`), so
+  it is safe to run even while a gate is mid-review elsewhere.
+
+```
+bash <skill-dir>/codex-gate.sh install
+bash <skill-dir>/codex-gate.sh config | jq '{parity, digestParity, effectiveParity}'   # expect MATCH
 ```
 
 ## Binding into a feature workflow (full auto-loop)
@@ -395,12 +422,18 @@ override meaning "omit `-m`, use Codex's own default"), `CODEX_GATE_FAST` (**def
 value, including `2`, leaves it OFF** — it does NOT change model/effort, fast≠dumb), `CODEX_GATE_MAX_ROUNDS`
 (default 8), `CODEX_GATE_EXCLUDES` (extra scratch globs; `.docker/` is NOT excluded by default),
 `CODEX_GATE_SESSION` (namespacing).
-**Config report (`config` only):** `CODEX_GATE_RUNTIME` (the gate that actually runs; default
+**Config + install report:** `CODEX_GATE_RUNTIME` (the gate that actually runs; default
 `$HOME/.claude/skills/codex-gate/codex-gate.sh`) and `CODEX_GATE_SOURCE` (the versioned copy; default
 auto-discovered — the running script when it is checked out in a git work tree, else
-`<cwd repo top>/plugin/skills/codex-gate/codex-gate.sh`, else `parity: UNAVAILABLE`). Both exist so the test
-suite can point at temp fixtures instead of a machine's real `~/.claude/skills` state, and so an operator can
-compare any two copies. They affect **nothing but the `config` report**.
+`<cwd repo top>/plugin/skills/codex-gate/codex-gate.sh`, else `parity: UNAVAILABLE` for `config` /
+`INFRA_ERROR` for `install`). Both exist so the test suite can point at temp fixtures instead of a machine's
+real `~/.claude/skills` state, and so an operator can compare (or sync) any two copies. They affect
+**nothing but `config`/`install`.**
+**`install`-only:** `CODEX_GATE_PLUGIN_SCAN_ROOT` (default `$HOME/.claude/plugins/marketplaces` — where
+`install` looks for an existing plugin-managed `codex-gate.sh` when deciding plugin-managed/duplicate
+refusals) and `CODEX_GATE_INSTALL_ALLOW_CREATE` (default unset/OFF — set exactly `1` to let `install`
+create a missing runtime file/directory instead of refusing; a distinct, non-default opt-in for a genuine
+first-time install).
 **Context-overflow (Tier 1):** `CODEX_GATE_PACKET_BUDGET` (default **300000** chars — the max assembled-packet
 size before Codex is invoked; over budget ⇒ `OVERFLOW` fail-closed, Codex is never run — UNLESS Tier-3 sharding
 kicks in for `prepr`/`prepr-delta`) and `CODEX_GATE_INLINE_MAX_LINES` (default **120** — at code tier, a touched
