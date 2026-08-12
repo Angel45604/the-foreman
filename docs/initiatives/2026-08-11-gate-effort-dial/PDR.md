@@ -1,7 +1,8 @@
 # PDR — Wave 1: bound reviewer topology and reduce gate latency
 
 Initiative: `2026-08-11-gate-effort-dial`
-Branch: `fix/gate-effort-dial` (worktree, off `origin/main` @ `ac0daf0`)
+Branch: `fix/gate-core` (worktree, off `origin/main` @ `ac0daf0`)
+Superseded branch: `fix/gate-effort-dial`; quarantined mutator: `quarantine/gate-install-mutator` @ `fcac17e`
 Relates to: [#30](https://github.com/Angel45604/the-foreman/issues/30), [#31](https://github.com/Angel45604/the-foreman/issues/31)
 Wave: **1 of 2** — fast relief.
 
@@ -41,7 +42,7 @@ Two independent investigations — this one (1,002 gate verdicts + 1,873 Codex s
 and a separate Codex investigation — agree. Cross-check: both independently found 102 pre-switch
 bundle verdicts with 28 APPROVE, and 47 post-switch bundle verdicts with 0 APPROVE.
 
-**Root cause — the `ultra` effort tier, not the model family:**
+**Root cause of the hidden delegation — the `ultra` effort tier, not the model family** (non-convergence is a separate, untested question):
 
 | reviewer pair | threads | `spawn_agent` calls | approve rate |
 |---|---:|---:|---:|
@@ -122,7 +123,9 @@ converge.
   and recorded in ADR-1. **(met as disclosure — two misses recorded; not met as preservation)**
 - **R3 — amended.** Repo/runtime agreement is delivered by *detection plus a documented manual
   sync*, not by an automated mutator (ADR-7). `config` proves it: `parity: MATCH` +
-  `completeness: COMPLETE` + `runtimeExecutable: true` after the owner runs the documented command.
+  `completeness: COMPLETE` after the owner runs the documented command. **`runtimeExecutable` is
+  reported for tidiness but is NOT part of acceptance** — the documented invocation is
+  `bash codex-gate.sh`, which does not require `+x` (round-4 retraction).
   R3 remains **unmet until the owner runs it** — the branch cannot satisfy it by itself.
 - Test suite pins the new defaults and fails on unreviewed change.
 

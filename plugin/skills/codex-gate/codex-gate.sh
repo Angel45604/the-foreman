@@ -36,7 +36,7 @@
 #   {outcome, defaults, effective, origin, running, runtimePath, runtimeDigest, runtimeKind,
 #    runtimeExecutable, runtimeDefaults, sourcePath, sourceDigest, sourceKind, sourceDiscovery,
 #    sourceDefaults, syncInventory, inventoryDrift, inventoryMissing, completeness,
-#    digestParity, effectiveParity, parity, summary}
+#    digestParity, effectiveParity, parity, summary, remediation}
 #   outcome ∈ CONFIG | INFRA_ERROR.  Makes source↔runtime DRIFT observable; calls Codex zero
 #   times, creates no run dir, writes no ledger.  parity NEVER reports MATCH on a guess.
 #   digestParity is a DIRECTORY-level claim over CODEX_GATE_SYNC_INVENTORY, so MATCH means
@@ -47,6 +47,10 @@
 #   (completeness + inventoryMissing say which member and from which endpoint).
 #   runtimeExecutable is a DIAGNOSTIC only: `bash codex-gate.sh` needs no +x, so the bit
 #   never moves parity.  The gate NEVER writes either endpoint — syncing is manual, see README.md.
+#   remediation is a machine-readable action list, a small closed set — sync-files |
+#   clear-env-override | rerun-from-source — built from the SAME conditions that grow
+#   `summary`, so the two cannot disagree; which variable(s) are implicated is already in
+#   `origin`. Empty exactly when parity is MATCH.
 
 set -u
 
@@ -2658,20 +2662,51 @@ PAIREOF
   elif [ -n "$driftDialsSelf" ]; then
     envRemedy="the dials in force ($driftDialsSelf) are not the ones the source declares, with NO environment override in play, so the script that produced this report is not running the source's code — re-run config from the source checkout"
   fi
+  # syncFileRemedy: the ONE canonical sentence for "copy the source over the runtime",
+  # single-sourced so the two call sites below (a digest MISMATCH, and the standalone
+  # INCOMPLETE parity case) can never say two different things for the same fix.
+  local syncFileRemedy='sync by hand (see README.md, "Manual sync") and re-run config'
+  # remediation: a machine-readable action list, built from the closed set {sync-files,
+  # clear-env-override, rerun-from-source}. Each action is appended at the exact spot
+  # where its matching prose clause is appended below, from the exact same condition —
+  # never re-derived from the finished `summary` string — so the two cannot drift apart
+  # the way a free-text phrase blocklist could be defeated by rewording alone. Which
+  # variable(s) are implicated is already unambiguous from `origin`; no need to repeat it.
+  #
+  # `remedy` starts EMPTY and stays that way unless a real cause below sets it — never
+  # give it a placeholder default, since a placeholder here is exactly the shape of bug
+  # this file exists to prevent: prose that fires regardless of the guard that is
+  # supposed to gate it. The ". ALSO: " join only happens when `remedy` is ALREADY
+  # non-empty when a second cause is found, i.e. only when two independent causes are
+  # both real — so its presence/absence in `summary` is itself a structural signal a
+  # test can check without guessing at wording (see TEST 58).
+  local remActionsRaw=""
   case "$parity" in
     MATCH)    summary="parity MATCH — the installed skill matches the versioned source across the whole sync inventory (script, schemas, reviewer instructions and docs), every member is present on both sides, and the dials in force are the ones it declares" ;;
     MISMATCH) summary="parity MISMATCH (digest $digestParity, effective $effectiveParity) — runtime $runtimePath vs source $sourcePath$driftNames"
               local remedy=""
-              [ "$digestParity" != "MISMATCH" ] || remedy="the two copies differ on disk, so a fix in the source is not reaching the running gate: sync by hand (see README.md, \"Manual sync\") and re-run config"
+              if [ "$digestParity" = "MISMATCH" ]; then
+                remedy="the two copies differ on disk, so a fix in the source is not reaching the running gate: $syncFileRemedy"
+                remActionsRaw="$remActionsRaw
+sync-files"
+              fi
               if [ -n "$envRemedy" ]; then
                 [ -z "$remedy" ] || remedy="$remedy. ALSO: "
                 remedy="$remedy$envRemedy"
               fi
+              [ -z "$driftDialsEnv" ]  || remActionsRaw="$remActionsRaw
+clear-env-override"
+              [ -z "$driftDialsSelf" ] || remActionsRaw="$remActionsRaw
+rerun-from-source"
               [ -z "$remedy" ] || summary="$summary; $remedy"
               [ "$completeness" != "INCOMPLETE" ] || summary="$summary. Also INCOMPLETE — $incompleteWhy" ;;
-    INCOMPLETE) summary="parity INCOMPLETE — runtime $runtimePath and source $sourcePath agree byte-for-byte on everything present and the dials in force are the ones the source declares, but this is NOT a complete install: $incompleteWhy. NOT a match. Sync by hand (see README.md, \"Manual sync\") and re-run config" ;;
+    INCOMPLETE) summary="parity INCOMPLETE — runtime $runtimePath and source $sourcePath agree byte-for-byte on everything present and the dials in force are the ones the source declares, but this is NOT a complete install: $incompleteWhy. NOT a match; $syncFileRemedy"
+                remActionsRaw="sync-files" ;;
     *)        summary="parity UNAVAILABLE (digest $digestParity, effective $effectiveParity) — $sourceDiscovery; NOT a match, just undetermined" ;;
   esac
+  local remediation
+  remediation="$(printf '%s' "$remActionsRaw" | jq -Rsc 'split("\n")|map(select(length>0))')" \
+    || die_infra "config: failed to render the remediation action list"
 
   jq -nc \
     --arg outcome "CONFIG" \
@@ -2688,7 +2723,7 @@ PAIREOF
     --arg completeness "$completeness" \
     --argjson syncInventory "$syncInventory" --argjson inventoryDrift "$inventoryDrift" \
     --argjson inventoryMissing "$inventoryMissing" \
-    --arg summary "$summary" \
+    --arg summary "$summary" --argjson remediation "$remediation" \
     '{outcome:$outcome,
       defaults:{model:$defModel, effort:$defEffort, fast:$defFast},
       effective:{model:$effModel, effort:$effEffort, fast:$effFast, fastRaw:$effFastRaw},
@@ -2701,7 +2736,7 @@ PAIREOF
       syncInventory:$syncInventory, inventoryDrift:$inventoryDrift,
       inventoryMissing:$inventoryMissing, completeness:$completeness,
       digestParity:$digestParity, effectiveParity:$effectiveParity, parity:$parity,
-      summary:$summary}' || die_infra "config: failed to render the status line"
+      summary:$summary, remediation:$remediation}' || die_infra "config: failed to render the status line"
   exit 0
 }
 

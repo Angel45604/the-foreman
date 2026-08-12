@@ -14,7 +14,8 @@
 
 Net change to the versioned copy: **effort `ultra` → `xhigh`** and **fast `1` → `0`**. The model
 literal is already `gpt-5.6-sol` in the repo copy and does not move. (The *runtime* copy additionally
-moves `gpt-5.6-terra` → `gpt-5.6-sol`, which is what Phase 5's sync delivers.)
+moves `gpt-5.6-terra` → `gpt-5.6-sol`. **That delivery is now the owner's post-approval manual sync**
+— Phase 5's automated sync no longer exists, see ADR-7.)
 
 Revised 2026-08-11 after an independent Codex audit of the sweep. Every correction below was
 re-verified against the raw traces before being accepted; three of them invalidate claims an
@@ -173,7 +174,14 @@ ADR-1; it converts "best provisional tradeoff" into a measured one.
 The `install` mutator accumulated **five P1 defects across two review rounds** — plugin-root bypass,
 directory-symlink overwrite, unusable partial install, a non-transactional update that left a partial
 install after a *reported failure*, and a `..` dot-segment containment bypass. Every one was in the
-mutating path; the detector and the dial/fan-out work cleared review both times with no findings.
+mutating path — at *those two rounds* the detector and the dial/fan-out work drew no findings.
+
+**That is not a claim the detector was defect-free, and an earlier wording of this ADR implied it
+was.** The detector has since had real defects of its own: it certified two incomplete skills as a
+full `MATCH`, it briefly treated a non-executable runtime as unrunnable (retracted below), and in
+round 4 it let an untracked copy self-certify as the versioned source — a P1. The accurate statement
+is narrower: the *mutator* accumulated defects faster than they could be closed, across two rewrites,
+while the rest of the surface converged.
 
 Per the-foreman §8 ("two failures at one tier = change something structural"), and dogfooding issue
 #30's own Finding 3 (the loop has no subtraction pressure), the mutator is **removed from Wave 1 and
@@ -213,16 +221,25 @@ only option considered where MATCH means what it says, and it is the only one th
 usable first-time install, since `main()` requires sibling `verdict.schema.json` and
 `reviewer-instructions.md` before dispatching any mode.
 
-Rejected: dropping the mutator entirely (pushes an error-prone `cp -R` back onto the owner and
-leaves R3 unmet), and hardening the script-only path (leaves the contract-drift P1 open).
+Rejected *at the time*: dropping the mutator entirely (judged to push an error-prone `cp -R` back
+onto the owner and leave R3 unmet), and hardening the script-only path (leaves the contract-drift P1
+open).
+
+> **Superseded by ADR-7.** Two further rounds of P1s made the rejected option the correct one, and
+> ADR-7 adopts exactly it. Read this rejection as the reasoning available *before* that evidence, not
+> as live canon — it is retained because the reversal is the substantive lesson, not an embarrassment
+> to hide.
 
 ## ADR-5 — Installation topology: physical copy is authoritative (owner-decided)
 
-**Status:** **ACCEPTED — `~/.claude/skills/codex-gate` (a real directory, not a symlink) is the
-authoritative runtime.** Phase 5 is unblocked. The sync copies repo → that path; Phase 3's parity
-report then confirms MATCH. Phase 5 must still *detect* and **refuse** rather than clobber if it ever
-finds a symlink, a plugin-managed install, or a duplicate — the decision fixes today's topology, it
-does not license blind writes.
+**Status:** **ACCEPTED, but its automated-mutator consequences are SUPERSEDED by ADR-7.**
+
+Still live: `~/.claude/skills/codex-gate` (a real directory, not a symlink) is the authoritative
+runtime, and is therefore the destination of the **documented manual sync**; `config` confirms the
+result. Superseded: everything this ADR originally said about a Phase-5 mutator being unblocked and
+having to detect/refuse symlinks, plugin-managed installs and duplicates — **the shipping tree
+contains no mutator**, so there is nothing to hold to that contract. Those requirements move with the
+mutator to `quarantine/gate-install-mutator` if it is ever revived.
 
 ### Original framing
 

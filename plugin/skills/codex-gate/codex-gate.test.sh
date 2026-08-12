@@ -4023,13 +4023,41 @@ run_test_57() {
 #   reaching the running gate", i.e. go copy files. Copying cannot clear an env override;
 #   the operator would copy, see the same MISMATCH, and copy again.
 #   Files differ => sync. Environment differs => name the variable. Both => say both.
+#   PROVEN FALSE GREEN (round 1): this test used to assert the env-only case only by the
+#   ABSENCE of phrases ("sync by hand|Manual sync|reaching the running gate") in `summary`.
+#   Seeding a file-sync remedy in the digestParity MATCH path with different wording (e.g.
+#   plain "sync the files") left the whole suite green, because an absence-of-phrase check
+#   cannot see a correct claim dressed in new words. Fix: `config` now emits a `remediation`
+#   action list — a small closed set (sync-files | clear-env-override | rerun-from-source)
+#   built from the exact same conditions that grow `summary`.
+#   PROVEN FALSE GREEN (round 2): the action list alone still missed a PROSE-only defect —
+#   poisoning `remedy`'s initial value (`local remedy=""` -> `local remedy="sync the
+#   files"`) leaves `remediation` correct (the guard around `remActionsRaw` is untouched)
+#   while `summary` wrongly tells the operator to sync files on an env-only mismatch, and
+#   no assertion looked at prose at all anymore. Fix: two more structural, non-guessable
+#   prose checks, both read the LIVE running script rather than hard-coding a guess —
+#   (1) `syncFileRemedy` is single-sourced in codex-gate.sh; the test extracts that exact
+#   sentence and checks its CONTAINMENT (present when sync-files fires, absent when it does
+#   not) — single-sourced so a legitimate reword updates both sides at once; (2) the ". ALSO:
+#   " join token only appears when `remedy` is non-empty BEFORE a second cause is appended,
+#   i.e. only when TWO real causes coincide — so its presence/absence is a structural tell
+#   for "a clause got prepended that should not have fired" regardless of that clause's
+#   actual wording, which is exactly what a poisoned default produces.
 #############################################################################
 run_test_58() {
-  local fx status
+  local fx status syncText
   fx="$SANDBOX/remfx58"
   make_skill_fixture "$fx/src"   gpt-5.6-sol   xhigh 0 same-docs
   make_skill_fixture "$fx/rt"    gpt-5.6-sol   xhigh 0 same-docs
   make_skill_fixture "$fx/drift" gpt-5.6-terra ultra 1 drifted-docs
+  # Single-sourced: read the CANONICAL sync-file sentence out of the running script under
+  # test rather than hard-coding a guess of it here — a legitimate reword in codex-gate.sh
+  # updates this extraction too, but a mutation that bypasses `syncFileRemedy` (uses
+  # different, ad hoc wording) leaves this variable holding the OLD/real sentence, which
+  # then correctly fails to appear where it should and correctly fails to be absent where
+  # it should not.
+  syncText="$(sed -n "s/^.*local syncFileRemedy='\\(.*\\)'\$/\\1/p" "$WRAPPER" | head -1)"
+  [ -n "$syncText" ] || fail "config-remedy: could not extract syncFileRemedy from $WRAPPER — is the single-source declaration still there?"
 
   # ---- (A) ENV-ONLY drift: nothing on disk is wrong ----
   ( CODEX_GATE_MODEL="" CODEX_GATE_RUNTIME="$fx/rt/codex-gate.sh" CODEX_GATE_SOURCE="$fx/src/codex-gate.sh" \
@@ -4050,13 +4078,23 @@ run_test_58() {
   else
     fail "config-remedy: env-only mismatch gives no env remedy :: $(printf '%s' "$status" | jq -r '.summary')"
   fi
-  # NOT a blanket ban on the word "copy" — the correct text says copying *cannot* clear an
-  # override. What must be absent is the PRESCRIPTION: the manual-sync pointer and the
-  # "the source is not reaching the runtime" diagnosis, neither of which is true here.
-  if printf '%s' "$status" | jq -e '.summary | test("sync by hand|Manual sync|reaching the running gate"; "i") | not' >/dev/null 2>&1; then
-    pass "config-remedy: an env-only mismatch does NOT prescribe a file sync (copying cannot clear an override)"
+  # Structural, not prose: the action list must be clear-env-override and ONLY that — no
+  # sync-files, under ANY wording the summary might use. A digestParity MATCH means
+  # copying files fixes nothing, so sync-files must never appear here.
+  if printf '%s' "$status" | jq -e '(.remediation | index("clear-env-override") != null) and (.remediation | index("sync-files") == null)' >/dev/null 2>&1; then
+    pass "config-remedy: an env-only mismatch's action list is clear-env-override ONLY, never sync-files"
   else
-    fail "config-remedy: env-only mismatch still sends the operator to copy files :: $(printf '%s' "$status" | jq -r '.summary')"
+    fail "config-remedy: env-only mismatch has the wrong action list :: $(printf '%s' "$status" | jq -c '.remediation')"
+  fi
+  # PROSE, not just structure — two checks, neither a guessed synonym:
+  # (1) the single-sourced canonical sync sentence must be ABSENT (copying fixes nothing
+  #     here); (2) the ". ALSO: " join token must be ABSENT — it can only appear when a
+  #     first clause already fired before the env clause was appended, so its presence
+  #     here means SOMETHING wrongly fired first, whatever words it used.
+  if printf '%s' "$status" | jq -e --arg t "$syncText" '(.summary | contains($t) | not) and (.summary | contains(". ALSO: ") | not)' >/dev/null 2>&1; then
+    pass "config-remedy: an env-only mismatch's PROSE carries no sync sentence and no ALSO-join (nothing fired ahead of the env clause)"
+  else
+    fail "config-remedy: env-only mismatch's prose leaks a sync instruction :: $(printf '%s' "$status" | jq -r '.summary')"
   fi
 
   # ---- (B) FILE-ONLY drift: no override in play ----
@@ -4068,8 +4106,8 @@ run_test_58() {
   else
     fail "config-remedy: the file-only fixture is not the state under test :: $(printf '%s' "$status" | jq -c '{digestParity,effectiveParity,origin}')"
   fi
-  if printf '%s' "$status" | jq -e '.summary | test("sync"; "i")' >/dev/null 2>&1; then
-    pass "config-remedy: a file-only mismatch still prescribes syncing the files"
+  if printf '%s' "$status" | jq -e --arg t "$syncText" '.summary | contains($t)' >/dev/null 2>&1; then
+    pass "config-remedy: a file-only mismatch's PROSE carries the exact single-sourced sync sentence"
   else
     fail "config-remedy: file drift lost its sync remedy :: $(printf '%s' "$status" | jq -r '.summary')"
   fi
@@ -4077,6 +4115,17 @@ run_test_58() {
     pass "config-remedy: a file-only mismatch blames no environment variable (there is none in play)"
   else
     fail "config-remedy: file-only mismatch invented an env cause :: $(printf '%s' "$status" | jq -r '.summary')"
+  fi
+  if printf '%s' "$status" | jq -e '(.remediation | index("sync-files") != null) and (.remediation | index("clear-env-override") == null)' >/dev/null 2>&1; then
+    pass "config-remedy: a file-only mismatch's action list is sync-files ONLY, never clear-env-override"
+  else
+    fail "config-remedy: file-only mismatch has the wrong action list :: $(printf '%s' "$status" | jq -c '.remediation')"
+  fi
+  # No second cause is in play, so no join should have happened either.
+  if printf '%s' "$status" | jq -e '.summary | contains(". ALSO: ") | not' >/dev/null 2>&1; then
+    pass "config-remedy: a file-only mismatch's PROSE has no ALSO-join (only one cause is real)"
+  else
+    fail "config-remedy: file-only mismatch's prose wrongly joins a second clause :: $(printf '%s' "$status" | jq -r '.summary')"
   fi
 
   # ---- (C) BOTH causes at once: say both ----
@@ -4093,6 +4142,18 @@ run_test_58() {
   else
     fail "config-remedy: both-causes summary is missing one of the two remedies :: $(printf '%s' "$status" | jq -r '.summary')"
   fi
+  if printf '%s' "$status" | jq -e '(.remediation | index("sync-files") != null) and (.remediation | index("clear-env-override") != null)' >/dev/null 2>&1; then
+    pass "config-remedy: with both causes the action list contains BOTH sync-files and clear-env-override"
+  else
+    fail "config-remedy: both-causes action list is missing one of the two actions :: $(printf '%s' "$status" | jq -c '.remediation')"
+  fi
+  # PROSE, not just structure — the sync sentence AND the join token must BOTH be
+  # present, because two independent causes are genuinely real here.
+  if printf '%s' "$status" | jq -e --arg t "$syncText" '(.summary | contains($t)) and (.summary | contains(". ALSO: "))' >/dev/null 2>&1; then
+    pass "config-remedy: with both causes the PROSE carries the sync sentence AND the ALSO-join"
+  else
+    fail "config-remedy: both-causes prose is missing the sync sentence or the join :: $(printf '%s' "$status" | jq -r '.summary')"
+  fi
 
   # ---- (D) effective drift with NO override: the running script itself is not the source ----
   ( CODEX_GATE_RUNTIME="$fx/drift/codex-gate.sh" CODEX_GATE_SOURCE="$fx/drift/codex-gate.sh" \
@@ -4107,6 +4168,33 @@ run_test_58() {
     pass "config-remedy: effective drift with no override says so, and still blames no variable"
   else
     fail "config-remedy: no-override effective drift mis-attributed :: $(printf '%s' "$status" | jq -r '.summary')"
+  fi
+  if printf '%s' "$status" | jq -e '(.remediation | index("rerun-from-source") != null) and (.remediation | index("clear-env-override") == null) and (.remediation | index("sync-files") == null)' >/dev/null 2>&1; then
+    pass "config-remedy: no-override effective drift's action list is rerun-from-source ONLY"
+  else
+    fail "config-remedy: no-override effective drift has the wrong action list :: $(printf '%s' "$status" | jq -c '.remediation')"
+  fi
+  # digestParity is MATCH here too — same PROSE invariant as case (A): no sync sentence,
+  # no ALSO-join (nothing else fired ahead of the self-drift clause).
+  if printf '%s' "$status" | jq -e --arg t "$syncText" '(.summary | contains($t) | not) and (.summary | contains(". ALSO: ") | not)' >/dev/null 2>&1; then
+    pass "config-remedy: no-override effective drift's PROSE carries no sync sentence and no ALSO-join"
+  else
+    fail "config-remedy: no-override effective drift's prose leaks a sync instruction :: $(printf '%s' "$status" | jq -r '.summary')"
+  fi
+
+  # ---- (E) NO drift at all: a clean MATCH must carry an EMPTY action list ----
+  ( CODEX_GATE_RUNTIME="$fx/rt/codex-gate.sh" CODEX_GATE_SOURCE="$fx/src/codex-gate.sh" \
+    bash "$WRAPPER" config ) > "$SANDBOX/rem58e.txt" 2>"$SANDBOX/rem58e.err"
+  status="$(last_json_line "$SANDBOX/rem58e.txt")"
+  if printf '%s' "$status" | jq -e '.parity=="MATCH"' >/dev/null 2>&1; then
+    pass "config-remedy (premise): identical complete copies with no override at all is a clean MATCH"
+  else
+    fail "config-remedy: the no-drift fixture is not the state under test :: $(printf '%s' "$status" | jq -c '{digestParity,effectiveParity,parity}') :: $(cat "$SANDBOX/rem58e.err")"
+  fi
+  if printf '%s' "$status" | jq -e '.remediation == []' >/dev/null 2>&1; then
+    pass "config-remedy: a clean MATCH carries an EMPTY action list"
+  else
+    fail "config-remedy: a clean MATCH still lists a remediation action :: $(printf '%s' "$status" | jq -c '.remediation')"
   fi
 }
 

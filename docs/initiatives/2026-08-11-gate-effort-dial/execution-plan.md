@@ -252,4 +252,6 @@ manual sync command documented. *(Narrowed in round 4: the "verified end-to-end 
 fixture" claim came from an implementer report and no durable artifact was retained, so it is not
 asserted here as evidence.)*
 
-**Result** · PASS=316 FAIL=0, net -726 lines.
+**Result** · PASS=316 FAIL=0 at the time of the phase, net -726 lines. *(Superseded by later rounds:
+round 4 raised the suite to 346, and the round-5 env-remedy work raises it again — see the commit log
+for the current figure rather than trusting this line.)*
