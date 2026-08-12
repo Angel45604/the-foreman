@@ -35,9 +35,9 @@ arm               total  shared>=2arms  UNIQUE unique CODE
 exp-sol-ultra        15             11       4           1
       UNIQUE-CODE P1 diff.mjs:201  UNVERIFIED is considered only when a doc claim exists. A node whose sole code-co
 exp-sol-max          15             13       2           1
-      UNIQUE-CODE P1 validate.mjs:719  A required overview svg-hero with empty nodes and edges validates successfully. 
+      UNIQUE-CODE P1 validate.mjs:719  A required overview svg-hero with empty nodes and edges validates successfully.
 exp-sol-xhigh        14             12       2           1
-      UNIQUE-CODE P1 validate.mjs:56  The edge ID includes kind but still cannot represent two edges of the same kind 
+      UNIQUE-CODE P1 validate.mjs:56  The edge ID includes kind but still cannot represent two edges of the same kind
 exp-terra-ultra      13              8       5           2
       UNIQUE-CODE P1 validate.mjs:391  isArrayIndex accepts 4294967295 and larger values as array indices even though J
       UNIQUE-CODE P1 docs-contract.test.mjs:23  The PDR-to-validator contract guard silently skips when initiative docs are abse
@@ -52,11 +52,11 @@ exp-terra-xhigh      11             11       0           0
   exp-sol-max       P2 serialize.mjs:74    Timestamp matching runs against JSON-escaped token bodies. A literal newline or tab i
   exp-sol-max       P1 serialize.mjs:159   normalizeValue sorts every array except views[].columns, including arrays inside free
   exp-sol-max       P1 validate.mjs:119   The loose object predicate accepts prototype-backed schema records. A top-level Objec
-  exp-sol-max       P1 validate.mjs:719   A required overview svg-hero with empty nodes and edges validates successfully. This 
+  exp-sol-max       P1 validate.mjs:719   A required overview svg-hero with empty nodes and edges validates successfully. This
   exp-sol-xhigh     P1 serialize.mjs:74    The timestamp guard scans escaped JSON token text. A date immediately following an es
   exp-sol-xhigh     P1 serialize.mjs:159   normalizeValue sorts every array except views[].columns, including arrays inside free
   exp-sol-xhigh     P1 validate.mjs:56    The edge ID includes kind but still cannot represent two edges of the same kind betwe
-  exp-sol-xhigh     P1 validate.mjs:119   validate accepts prototype-backed and non-enumerable records that diff and serialize 
+  exp-sol-xhigh     P1 validate.mjs:119   validate accepts prototype-backed and non-enumerable records that diff and serialize
   exp-terra-ultra   P1 docs-contract.test.mjs:23    The PDR-to-validator contract guard silently skips when initiative docs are absent. T
   exp-terra-ultra   P1 serialize.mjs:74    The timestamp guard scans escaped JSON-token text rather than decoded strings. A lite
   exp-terra-ultra   P1 validate.mjs:119   Validation, serialization, and drift computation disagree on structural object semant

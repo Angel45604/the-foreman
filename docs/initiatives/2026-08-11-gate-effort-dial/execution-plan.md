@@ -222,3 +222,30 @@ directory-level claim over that same inventory, so `MATCH` means the installed s
 
 **Done-condition** · Every RED above observed failing first, for the stated reason; then the whole
 suite green; then the three original reproductions re-run and shown to REFUSE.
+
+---
+
+## Phase 7 — Remove the mutator; harden the detector (SUPERSEDES Phases 5 and 6's `install`)
+
+Owner-approved re-slice at a decision-fork gate, after admission found a third round of P1s. Recorded,
+not silently adjusted. The mutator work is preserved on `quarantine/gate-install-mutator`.
+
+**Removed** · `mode_install`, `install_update_in_place`, `install_create_fresh`,
+`find_plugin_managed_codexgate`, `emit_install_refuse`, `discard_staged*`, the `install)` dispatch arm,
+`CODEX_GATE_INSTALL_ALLOW_CREATE`, `CODEX_GATE_PLUGIN_SCAN_ROOT`, and the orphans left behind
+(`canon_existing`, `dir_stamp`) — each verified unreferenced before deletion.
+
+**Kept** · `config`, `resolve_gate_source`, the 13-member inventory, directory-level parity,
+symlink-component detection as used by `config`, and the harness hermeticity scrub. Three assertions
+that lived inside install tests but tested *`config`* behaviour were migrated rather than deleted
+(zero-write mtime+inode, and `runtimeKind:symlink` for a directory-symlinked runtime).
+
+**Fixed, RED first** · `config` certified two incomplete skills as full `MATCH` (now `completeness`
++ `inventoryMissing`, and `parity: INCOMPLETE`); a byte-identical but non-executable runtime was a
+false success (now `runtimeExecutable`).
+
+**Done-condition** · Suite green; zero live references to the removed surface; `bash -n` clean; the
+manual sync command documented and verified end-to-end against a fixture seeded stale + incomplete +
+non-executable.
+
+**Result** · PASS=316 FAIL=0, net -726 lines.

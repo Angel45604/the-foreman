@@ -159,7 +159,33 @@ This would test whether `xhigh` gives up material recall relative to `max` under
 controlled conditions, which is the one open question ADR-1 rests on. It is not required to adopt
 ADR-1; it converts "best provisional tradeoff" into a measured one.
 
+## ADR-7 — The automated sync mutator is quarantined, not shipped (owner-decided)
+
+**Status:** **ACCEPTED** at a decision-fork gate after a third round of admission findings.
+
+The `install` mutator accumulated **five P1 defects across two review rounds** — plugin-root bypass,
+directory-symlink overwrite, unusable partial install, a non-transactional update that left a partial
+install after a *reported failure*, and a `..` dot-segment containment bypass. Every one was in the
+mutating path; the detector and the dial/fan-out work cleared review both times with no findings.
+
+Per the-foreman §8 ("two failures at one tier = change something structural"), and dogfooding issue
+#30's own Finding 3 (the loop has no subtraction pressure), the mutator is **removed from Wave 1 and
+quarantined** on `quarantine/gate-install-mutator` as its own initiative. Net effect on this branch:
+**-726 lines.**
+
+What survives is the part that was never defective: `config` detection, the 13-member inventory as a
+*parity* contract, and a documented manual sync command. ADR-6's insight — that the sync unit is the
+whole skill directory, not the script — is retained; only its *automation* is deferred.
+
+Two detector defects found in the same round were fixed rather than deferred, because the detector
+ships: `config` no longer certifies two incomplete skills as a full `MATCH` (new `completeness` state
+and `inventoryMissing`), and a byte-identical but non-executable runtime is no longer a false success
+(new `runtimeExecutable`). `parity` gains `INCOMPLETE` for "agreement over something that cannot run".
+
 ## ADR-6 — Sync unit is the whole skill directory, not the script (owner-decided)
+
+**Status:** SUPERSEDED for automation by ADR-7; its inventory/parity semantics are retained.
+
 
 **Status:** **ACCEPTED** at a decision-fork gate after the Wave-1 audit. Phase 5's script-only
 mutator is superseded by Phase 6.

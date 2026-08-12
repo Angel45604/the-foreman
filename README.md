@@ -79,11 +79,11 @@ done
 ```
 
 **Pick one install mode.** Both at once loads each skill twice. If you'd rather keep a **physical copy**
-at `~/.claude/skills/codex-gate` instead of a symlink (that's what `codex-gate.sh`'s own `install`
-subcommand assumes and refuses to clobber otherwise), `cp -r` the directory instead of `ln -s` — see
-`plugin/skills/codex-gate/README.md`'s "Install/sync" section for the sync + parity-check workflow, and
-run `codex-gate.sh config` any time to check whether the two install modes have quietly drifted apart or
-both ended up installed at once.
+at `~/.claude/skills/codex-gate` instead of a symlink, `cp -r` the directory instead of `ln -s` — then a
+copy can drift from the checkout, so see `plugin/skills/codex-gate/README.md`'s "Manual sync" section for
+the exact copy command and the parity check that confirms it landed. Run `codex-gate.sh config` any time
+to check whether the two copies have quietly drifted apart, whether the installed one is complete and
+runnable, or whether both install modes ended up active at once.
 
 ## Bundled skills
 

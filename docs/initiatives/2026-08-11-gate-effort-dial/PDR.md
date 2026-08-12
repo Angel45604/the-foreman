@@ -8,6 +8,12 @@ Wave: **1 of 2** — fast relief.
 > **Wave 1 is NOT a convergence fix and does not close #30 or #31.** It removes hidden reviewer
 > delegation and buys a **1.7x** latency win for the selected configuration.
 >
+> **Language discipline (audit correction):** `ultra` is the demonstrated cause of the *hidden
+> delegation*, and model x effort of the *per-round latency*. It is **not** established as the cause
+> of non-convergence — Wave 1 neither tested nor fixed convergence. The 1.71x is a **combined
+> model-and-effort** result (`sol@xhigh` vs incumbent `terra@ultra`), not an effort-only win, and
+> latency claims must not draw on Group A, which was declared invalid for that purpose.
+>
 > *(Correction: an earlier draft claimed "1.7–3.3x". The 3.3x endpoint is `terra` `ultra`→`xhigh`,
 > which is NOT the selected config. Selected `sol@xhigh` 555s vs incumbent `terra@ultra` 949s = 1.71x.
 > Caught by the Wave-1 implementation audit.)* Blocker volume was 11–15 in every arm of the sweep
@@ -74,8 +80,11 @@ the owner's gate at all.** The two test suites have drifted with them — the re
 - **R2 — Do not trade away material findings unknowingly.** Success is explicitly **not** "fewest
   findings". The selected pair's recall must be *measured and adjudicated against* the incumbent, and
   any material finding it misses must be recorded rather than discovered later.
-  **Status: the selected pair misses two still-valid defects** (`docs-contract.test.mjs:23`,
-  `diff.mjs:201`) — see ADR-1. R2 is satisfied as *disclosed*, not as *preserved*.
+  **Status: NOT satisfied as preservation.** The selected pair misses two still-valid defects
+  (`docs-contract.test.mjs:23`, `diff.mjs:201`) — see ADR-1. The owner accepted the loss knowingly at
+  the plan-approval gate, so the requirement is met only in its *disclosure* sense. ADR-1 states the
+  same thing; if the two ever read differently, this line and ADR-1's "Recall — R2 is NOT satisfied"
+  section are the canon.
 - **R3 — One source of truth for the dials.** Repo and installed runtime must not silently disagree
   on model / effort / fast.
 - **R4 — Drift must be observable.** An operator (or agent) must be able to ask what the *effective*
@@ -111,5 +120,8 @@ converge.
 - The selected pair produces **zero** `spawn_agent` calls on the sweep packet. **(met)**
 - Every material finding from the `ultra` arms that the selected arm misses is explicitly adjudicated
   and recorded in ADR-1. **(met as disclosure — two misses recorded; not met as preservation)**
-- Repo and runtime report the same effective dial values and the parity check proves it.
+- **R3 — amended.** Repo/runtime agreement is delivered by *detection plus a documented manual
+  sync*, not by an automated mutator (ADR-7). `config` proves it: `parity: MATCH` +
+  `completeness: COMPLETE` + `runtimeExecutable: true` after the owner runs the documented command.
+  R3 remains **unmet until the owner runs it** — the branch cannot satisfy it by itself.
 - Test suite pins the new defaults and fails on unreviewed change.

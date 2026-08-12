@@ -1,6 +1,6 @@
 ---
 name: codex-gate
-description: Automated, repo-agnostic Codex gate (the hands-free "third pair of eyes") for REVIEW and INVESTIGATION. Use to review a plan / PDR-ADR bundle / implementation phase / pre-PR branch and auto-loop fixes until it converges; to ground an architecture or feature decision before asking the user; OR to INVESTIGATE — root-cause a bug, narrow a flaky / orphaned / regression / "works-on-my-machine" symptom, or decide between competing hypotheses — under an explicit safety contract (read-only, fails closed on forbidden probes, proposes a fix but never applies one). Modes — plan <file> | bundle <dir> | phase-start <id> | phase-review <id> | question <file> | investigate <brief> | prepr [base] | prepr-delta [base] | config | install. Replaces manual copy-paste between Claude and the Codex app.
+description: Automated, repo-agnostic Codex gate (the hands-free "third pair of eyes") for REVIEW and INVESTIGATION. Use to review a plan / PDR-ADR bundle / implementation phase / pre-PR branch and auto-loop fixes until it converges; to ground an architecture or feature decision before asking the user; OR to INVESTIGATE — root-cause a bug, narrow a flaky / orphaned / regression / "works-on-my-machine" symptom, or decide between competing hypotheses — under an explicit safety contract (read-only, fails closed on forbidden probes, proposes a fix but never applies one). Modes — plan <file> | bundle <dir> | phase-start <id> | phase-review <id> | question <file> | investigate <brief> | prepr [base] | prepr-delta [base] | config. Replaces manual copy-paste between Claude and the Codex app.
 allowed-tools: Bash, Read, Edit, Write, Grep, Glob
 ---
 
@@ -49,12 +49,8 @@ Run the matching mode and drive the loop below. Modes:
   + OVERFLOW path with `prepr`; same `[base]` default (merge-base chain).
 - `config` — **report the gate's effective dials + source/runtime parity.** Not a gate and not a review:
   a read-only diagnostic that calls Codex zero times, creates no run dir, and exits 0. See below.
-- `install` — **sync the versioned source skill directory onto the installed runtime skill directory**
-  (an explicit documented inventory: script + schemas + reviewer instructions + docs), so a subsequent
-  `config` reports `parity: MATCH`. The ONLY mode that writes the runtime, and only when invoked by this
-  exact name — never a side effect of anything else; the owner decides when to run it. Refuses (never
-  clobbers) a missing / plugin-managed / duplicate runtime or one reached through a symlink at any path
-  component; never leaves a partial install. See below.
+  There is **no mode that writes anything outside `~/.claude/codex-gate/`** — resolving a reported drift is
+  a manual copy the owner runs, see "Syncing the drift away" below.
 
 ## The loop (review modes: plan / bundle / phase-review / prepr / prepr-delta)
 1. **Round 1**: `bash <skill-dir>/codex-gate.sh <mode> <arg> 1` → capture the status JSON.
@@ -233,59 +229,77 @@ debugging any "but I fixed that" report about the gate itself.
   overrides, with **`fast` normalized to its real trigger**: fast mode arms on an exact `1` and nothing else,
   so `CODEX_GATE_FAST=2` reports `fast:false` (`fastRaw` keeps the raw value visible). `origin` — per dial,
   `"default"` or the **name of the env var** that overrode it.
-- `parity` — `MATCH` / `MISMATCH` / `UNAVAILABLE`, rolled up from `digestParity` and `effectiveParity` (the
-  dials in force vs the dials the source **declares**), reported separately because two identical files still
-  behave differently under env overrides. `digestParity` is a **directory-level** claim over the documented
-  sync inventory (reported as `syncInventory`), so `MATCH` means the installed skill matches the source
-  *including its schemas, reviewer instructions and docs* — a script-only comparison used to report MATCH
-  while the installed `SKILL.md` still documented superseded dials. **A source copy that cannot be located
-  reports `UNAVAILABLE`, never a silent `MATCH`**; a `missing`/`symlink` endpoint is reported via
-  `runtimeKind`/`sourceKind` rather than assumed, and `symlink` covers **any component** of the path, not
-  just the leaf (the documented personal-skill setup symlinks the *directory*).
+- `parity` — `MATCH` / `MISMATCH` / `INCOMPLETE` / `UNAVAILABLE`, rolled up from `digestParity`,
+  `effectiveParity` (the dials in force vs the dials the source **declares**) and `completeness`, reported
+  separately because two identical files still behave differently under env overrides — and can still be
+  unrunnable. `digestParity` is a **directory-level** claim over the documented sync inventory (reported as
+  `syncInventory`), so `MATCH` means the installed skill matches the source *including its schemas, reviewer
+  instructions and docs* — a script-only comparison used to report MATCH while the installed `SKILL.md`
+  still documented superseded dials. **A source copy that cannot be located reports `UNAVAILABLE`, never a
+  silent `MATCH`**; a `missing`/`symlink` endpoint is reported via `runtimeKind`/`sourceKind` rather than
+  assumed, and `symlink` covers **any component** of the path, not just the leaf (the documented
+  personal-skill setup symlinks the *directory*).
   `runtimeDefaults`/`sourceDefaults` show each side's declared dials and `inventoryDrift` names the members
   that actually differ, so a MISMATCH tells you *how* they differ, not just *that* they do.
+- **`MATCH` means "the same, and runnable".** `parity: INCOMPLETE` is the state for a pair that agrees
+  byte-for-byte but is not a usable install — either an inventory member is **absent** (`completeness:
+  INCOMPLETE`; `inventoryMissing` names the member and whether it is missing from `source`, `runtime` or
+  `both`), or the runtime script is byte-identical yet **not executable** (`runtimeExecutable: false`), and
+  a skill is loaded by *executing* `codex-gate.sh`. Both used to report a clean green: two skill directories
+  that both lacked `question.schema.json` reported `MATCH` with an empty `inventoryDrift`, and a runtime
+  that had lost its `+x` reported `MATCH` while being unable to run. Treat `INCOMPLETE` like `MISMATCH`:
+  surface it, do not proceed on it.
 - **Endpoints** default to the installed gate (`~/.claude/skills/codex-gate/codex-gate.sh`) versus the
   versioned copy (the running script when it is checked out in a git work tree, else
   `<cwd repo top>/plugin/skills/codex-gate/codex-gate.sh`). Override either with `CODEX_GATE_RUNTIME` /
-  `CODEX_GATE_SOURCE` to compare any two copies.
-- On `MISMATCH`, surface it: the installed gate is not the code in the repo, so a committed fix may not be
-  reaching the reviewer. Run `install` (below) to sync it, then re-run `config` and expect `MATCH`.
+  `CODEX_GATE_SOURCE` to compare any two copies. Both are **read** — no mode writes either one.
+- On `MISMATCH` or `INCOMPLETE`, surface it: the installed gate is not the code in the repo (or cannot run),
+  so a committed fix may not be reaching the reviewer. Syncing is a manual copy — see below.
 
 ```
-bash <skill-dir>/codex-gate.sh config | jq '{parity, digestParity, effectiveParity, effective, origin}'
+bash <skill-dir>/codex-gate.sh config | jq '{parity, digestParity, effectiveParity, completeness, runtimeExecutable, effective, origin}'
 ```
 
-## Syncing the drift away (`install`)
+## Syncing the drift away (manual)
 
-`bash <skill-dir>/codex-gate.sh install` copies the versioned **source** skill onto the installed
-**runtime** skill — the deliberate fix for a `MISMATCH` that `config` reports. It is the ONLY mode that
-writes the runtime, and only when invoked by this exact name: never triggered as a side effect of `config`,
-a review, or anything else. **The owner decides when to run it** — do not run it on the user's behalf
-without being asked to.
+`config` makes drift observable; resolving it is a **manual copy the owner runs**. There is no `install`
+subcommand — an automated sync existed and was removed: it accumulated five P1 defects across two review
+rounds (a plugin-root containment bypass, a directory-symlink overwrite, an unusable partial install, a
+non-transactional update that left a partial install behind after a *reported* failure, and a `..`
+dot-segment containment bypass), all of them in the mutating path. The detector shipped; the mutator is
+quarantined pending a separate initiative. **Do not run this on the user's behalf without being asked to** —
+and never invent a substitute writer.
 
-- **The sync unit is the whole skill directory**, defined by an explicit documented inventory (the script,
-  the three `*.schema.json`, the five `reviewer-instructions*.md`, the two mode briefs, `SKILL.md` and
-  `README.md`). `config` reports it as `syncInventory`; the README's Install/sync section carries the table
-  and the reason each member is on it. **Anything outside the inventory is never written and never
-  removed** — `codex-gate.test.sh` is excluded, and your own notes in the installed directory survive.
-- Same endpoint defaults/overrides as `config` (`CODEX_GATE_RUNTIME`, `CODEX_GATE_SOURCE`) — the two modes
-  share one source-discovery function so they can never disagree about which file is "the source."
-- **Refuses rather than clobbers** (`outcome: REFUSED`, zero writes, exit 0) on a missing or non-file
-  runtime, on a destination **any component of whose path is a symlink** (a leaf-only check missed the
-  documented directory-symlink setup and wrote straight through the link), on a runtime that resolves
-  inside the plugin scan root (plugin-managed — the plugin installer owns it; containment is evaluated
-  against the deepest *existing* ancestor and before any `mkdir`, so a missing nested parent cannot skip
-  the check), or when a plugin-managed copy exists **in addition to** a personal-skill runtime (a duplicate
-  install — both paths are named). See the README's Install/sync section for the full detection table.
-- **Complete or nothing.** An incomplete source is an `INFRA_ERROR`, not a partial install: a first-time
-  create either produces a runnable skill or leaves nothing behind.
-- An already-matching install is a true no-op (`changed:false`, zero writes, mtimes and inodes untouched);
-  otherwise every member is staged and verified before the first rename and each rename is atomic, so it is
-  safe to run even while a gate is mid-review elsewhere. `filesWritten` lists exactly what changed.
+- **The sync unit is the whole skill directory**, defined by an explicit documented 13-member inventory (the
+  script, the three `*.schema.json`, the five `reviewer-instructions*.md`, the two mode briefs, `SKILL.md`
+  and `README.md`). `config` reports it as `syncInventory`; the README's "Manual sync" section carries the
+  table and the reason each member is on it.
+- **Copy the members by name, not `cp -r`** — the loop below leaves `codex-gate.test.sh` and the owner's own
+  notes in the installed directory alone.
+- **The `chmod +x` is load-bearing.** `cp` onto an existing file keeps the *destination's* mode, so a
+  runtime that already lost its executable bit stays unrunnable through any number of syncs while every
+  digest matches — the `runtimeExecutable: false` / `parity: INCOMPLETE` state.
+- **Nothing here is atomic** — don't sync while a gate is mid-review elsewhere. The `config` re-run is the
+  verification step, not a formality.
+- **Symlink install mode: there is nothing to sync.** The two "copies" are one file (`config` reports
+  `runtimeKind: symlink`); running the loop against a symlinked destination writes *through* the link into
+  the checkout and converts a linked install into a copied one.
 
-```
-bash <skill-dir>/codex-gate.sh install
-bash <skill-dir>/codex-gate.sh config | jq '{parity, digestParity, effectiveParity}'   # expect MATCH
+```bash
+GATE=/path/to/the-foreman/plugin/skills/codex-gate
+DEST=~/.claude/skills/codex-gate
+
+mkdir -p "$DEST"
+for f in codex-gate.sh verdict.schema.json question.schema.json investigate.schema.json \
+         reviewer-instructions.md reviewer-instructions.arch.md reviewer-instructions.frontend.md \
+         reviewer-instructions.security.md reviewer-instructions.tests.md \
+         question-instructions.md investigate-instructions.md SKILL.md README.md; do
+  cp "$GATE/$f" "$DEST/$f"
+done
+chmod +x "$DEST/codex-gate.sh"
+
+# verification step — expect parity: MATCH
+bash "$GATE/codex-gate.sh" config | jq '{parity, digestParity, effectiveParity, completeness, runtimeExecutable}'
 ```
 
 ## Binding into a feature workflow (full auto-loop)
@@ -439,20 +453,14 @@ override meaning "omit `-m`, use Codex's own default"), `CODEX_GATE_FAST` (**def
 value, including `2`, leaves it OFF** — it does NOT change model/effort, fast≠dumb), `CODEX_GATE_MAX_ROUNDS`
 (default 8), `CODEX_GATE_EXCLUDES` (extra scratch globs; `.docker/` is NOT excluded by default),
 `CODEX_GATE_SESSION` (namespacing).
-**Config + install report:** `CODEX_GATE_RUNTIME` (the gate that actually runs; default
+**Config report:** `CODEX_GATE_RUNTIME` (the gate that actually runs; default
 `$HOME/.claude/skills/codex-gate/codex-gate.sh`) and `CODEX_GATE_SOURCE` (the versioned copy; default
 auto-discovered — the running script when it is checked out in a git work tree, else
-`<cwd repo top>/plugin/skills/codex-gate/codex-gate.sh`, else `parity: UNAVAILABLE` for `config` /
-`INFRA_ERROR` for `install`). Each names the **script**; the rest of the sync inventory is resolved as its
-siblings, so both knobs also select the skill *directory* on their side. Both exist so the test suite can
-point at temp fixtures instead of a machine's real `~/.claude/skills` state, and so an operator can compare
-(or sync) any two copies. They affect **nothing but `config`/`install`.**
-**`install`-only:** `CODEX_GATE_PLUGIN_SCAN_ROOT` (default `$HOME/.claude/plugins/marketplaces` — where
-`install` looks for an existing plugin-managed `codex-gate.sh` when deciding plugin-managed/duplicate
-refusals) and `CODEX_GATE_INSTALL_ALLOW_CREATE` (default unset/OFF — set exactly `1` to let `install`
-create a missing runtime skill directory instead of refusing; a distinct, non-default opt-in for a genuine
-first-time install, and it does **not** relax any other refusal — a plugin-root destination still refuses
-even when its parent does not exist yet).
+`<cwd repo top>/plugin/skills/codex-gate/codex-gate.sh`, else `parity: UNAVAILABLE`). Each names the
+**script**; the rest of the sync inventory is resolved as its siblings, so both knobs also select the skill
+*directory* on their side. Both endpoints are **read only** — no mode writes either. They exist so the test
+suite can point at temp fixtures instead of a machine's real `~/.claude/skills` state, and so an operator
+can compare any two copies. They affect **nothing but `config`.**
 **Context-overflow (Tier 1):** `CODEX_GATE_PACKET_BUDGET` (default **300000** chars — the max assembled-packet
 size before Codex is invoked; over budget ⇒ `OVERFLOW` fail-closed, Codex is never run — UNLESS Tier-3 sharding
 kicks in for `prepr`/`prepr-delta`) and `CODEX_GATE_INLINE_MAX_LINES` (default **120** — at code tier, a touched
