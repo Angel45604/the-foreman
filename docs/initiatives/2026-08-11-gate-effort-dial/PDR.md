@@ -125,3 +125,11 @@ converge.
   `completeness: COMPLETE` + `runtimeExecutable: true` after the owner runs the documented command.
   R3 remains **unmet until the owner runs it** — the branch cannot satisfy it by itself.
 - Test suite pins the new defaults and fails on unreviewed change.
+
+## Branch ancestry (stated plainly)
+
+`fix/gate-core` **retains the rejected mutator commits in its ancestry** — the mutator was built in
+Phases 5–6 and removed in Phase 7, rather than never existing. The accurate description is:
+**removed from the shipping tree; recovery branch pinned at `quarantine/gate-install-mutator` @
+`fcac17e`.** The net diff against `origin/main` contains no mutator. No clean-history rebase or squash
+has been done; say so if one is wanted before merge.

@@ -43,10 +43,10 @@
 #   the installed skill matches the source INCLUDING its schemas and operational docs;
 #   inventoryDrift names each member that differs or is present on only one side.
 #   parity ∈ MATCH | MISMATCH | INCOMPLETE | UNAVAILABLE.  INCOMPLETE = the two copies agree
-#   as far as they go but this is not a complete, runnable install — an inventory member is
-#   absent (completeness + inventoryMissing say which member and from which endpoint), or the
-#   runtime script is byte-identical yet NOT executable (runtimeExecutable:false).
-#   The gate NEVER writes either endpoint — syncing is a manual step, see README.md.
+#   as far as they go but this is not a complete install — an inventory member is absent
+#   (completeness + inventoryMissing say which member and from which endpoint).
+#   runtimeExecutable is a DIAGNOSTIC only: `bash codex-gate.sh` needs no +x, so the bit
+#   never moves parity.  The gate NEVER writes either endpoint — syncing is manual, see README.md.
 
 set -u
 
@@ -2224,18 +2224,18 @@ parse_thread_id_noop() { THREAD_ID=""; }
 #   origin      per dial: "default", or the name of the env var that overrode it
 #   parity      MATCH / MISMATCH / INCOMPLETE / UNAVAILABLE, rolled up from three
 #               checks reported separately, because byte-identical files can still
-#               behave differently under env overrides — and can still be unrunnable:
+#               behave differently under env overrides — and can still be half a skill:
 #                 digestParity     — sha256 byte identity across the whole inventory
 #                 effectiveParity  — the dials actually in force vs the dials the
 #                                    versioned SOURCE declares
 #                 completeness     — every inventory member present on BOTH endpoints
 #                                    (inventoryMissing names any that are not, and
-#                                    which endpoint lacks each), AND the runtime
-#                                    script carrying the executable bit it needs to run
+#                                    which endpoint lacks each)
 #               MATCH requires all three; a known difference is MISMATCH; agreement
-#               over something that cannot run is INCOMPLETE; anything
-#               unlocatable/unparseable is UNAVAILABLE. Nothing undetermined and
-#               nothing unrunnable ever reports MATCH.
+#               over an incomplete pair is INCOMPLETE; anything unlocatable/unparseable
+#               is UNAVAILABLE. Nothing undetermined ever reports MATCH.
+#               `runtimeExecutable` is reported alongside but is NOT one of the checks —
+#               see the note at the field: `bash codex-gate.sh` does not need the bit.
 #
 # Endpoints (both overridable so tests can point at fixtures instead of a machine's
 # real ~/.claude/skills state):
@@ -2369,35 +2369,70 @@ parse_dial() { # <file> <VAR> -> "<op>|<literal>", or EMPTY when absent/malforme
   printf '%s|%s' "$op" "$rest"
 }
 
+# The repo-relative path a checkout of this project carries the gate at. Auto-discovery
+# claims a file is "the versioned copy" only when git tracks it AT THIS PATH.
+CODEX_GATE_CANONICAL_RELPATH='plugin/skills/codex-gate/codex-gate.sh'
+
+# ----------------------------------------------------------------------------
+# Is <path> the TRACKED CANONICAL copy — the file a checkout of this project is supposed
+# to carry, as git itself sees it?
+#
+# Sitting inside SOME git work tree proves nothing. An installed runtime dropped under a
+# dotfiles repo, an unrelated checkout, or a scratch repo answers `rev-parse` perfectly
+# well, and taking that as "this file IS the versioned copy" made `config` compare a copy
+# with ITSELF and certify digestParity MATCH / completeness COMPLETE / parity MATCH — the
+# exact drift the subcommand exists to expose, masked by the check meant to expose it.
+#
+# Two facts are required, and both come from git rather than from the filesystem:
+#   * TRACKED — `git ls-files --error-unmatch` fails (nonzero) for anything git does not
+#     have in its index, which is precisely the untracked-copy case.
+#   * CANONICAL PATH — `--full-name` prints the path relative to the work-tree root, so a
+#     tracked-but-relocated copy (vendored under tools/, say) is rejected too.
+# Read-only: one `git ls-files`, no writes. Returns 0 only when both hold.
+# ----------------------------------------------------------------------------
+gate_is_tracked_canonical() { # <path>
+  local p="$1" dir base rel
+  [ -f "$p" ] || return 1
+  dir="$(cd "$(dirname "$p")" 2>/dev/null && pwd)" || return 1
+  base="$(basename "$p")"
+  rel="$(git -C "$dir" ls-files --full-name --error-unmatch -- "$base" 2>/dev/null)" || return 1
+  [ "$rel" = "$CODEX_GATE_CANONICAL_RELPATH" ] || return 1
+  return 0
+}
+
 # ----------------------------------------------------------------------------
 # Resolve the versioned SOURCE copy for `config`. Kept as its own function so the
 # discovery rule is stated once and can be quoted verbatim in the docs an operator
 # follows when syncing by hand — `config` must claim parity against exactly the copy
 # the operator would copy FROM. Auto-discovery order (first match wins):
-#   1. CODEX_GATE_SOURCE override
-#   2. the running script itself, when it is checked out in a git work tree
-#   3. <cwd git work tree top>/plugin/skills/codex-gate/codex-gate.sh
-#   4. none located -> RESOLVED_SOURCE_DISCOVERY states why, path/kind/digest stay empty/missing
+#   1. CODEX_GATE_SOURCE override (an explicit instruction; honoured as given)
+#   2. the running script itself, ONLY when git tracks it at $CODEX_GATE_CANONICAL_RELPATH
+#   3. <cwd git work tree top>/$CODEX_GATE_CANONICAL_RELPATH, same proof required
+#   4. none PROVEN -> RESOLVED_SOURCE_DISCOVERY states why, path/kind/digest stay empty/missing
+# There is deliberately NO fall-back to self: an unprovable source reports UNAVAILABLE,
+# because "I could not find the versioned copy" and "the versioned copy is whatever I am"
+# are opposite answers and only one of them is honest.
 # Sets globals (caller reads them immediately; not meant to outlive the call):
 #   RESOLVED_SOURCE_PATH RESOLVED_SOURCE_KIND RESOLVED_SOURCE_DIGEST RESOLVED_SOURCE_DISCOVERY
-# Side-effect-free besides a read-only `git rev-parse` + file reads.
+# Side-effect-free besides read-only `git` queries + file reads.
 # ----------------------------------------------------------------------------
 resolve_gate_source() { # <selfDir> <selfPath>
-  local selfDir="$1" selfPath="$2" top=""
+  local selfDir="$1" selfPath="$2" top="" cand=""
   RESOLVED_SOURCE_PATH="" RESOLVED_SOURCE_KIND="missing" RESOLVED_SOURCE_DIGEST="" RESOLVED_SOURCE_DISCOVERY=""
   if [ -n "${CODEX_GATE_SOURCE:-}" ]; then
     RESOLVED_SOURCE_PATH="$CODEX_GATE_SOURCE"
     RESOLVED_SOURCE_DISCOVERY="CODEX_GATE_SOURCE"
-  elif top="$(git -C "$selfDir" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$top" ]; then
-    # the running script is checked out in a work tree => it IS the versioned copy
+  elif gate_is_tracked_canonical "$selfPath"; then
+    # the running script is the checkout's OWN tracked canonical copy => it IS the source
+    top="$(git -C "$selfDir" rev-parse --show-toplevel 2>/dev/null)"
     RESOLVED_SOURCE_PATH="$selfPath"
-    RESOLVED_SOURCE_DISCOVERY="running script (checked out in git work tree $top)"
+    RESOLVED_SOURCE_DISCOVERY="running script (git-tracked at $CODEX_GATE_CANONICAL_RELPATH in work tree $top)"
   elif top="$(git rev-parse --show-toplevel 2>/dev/null)" && [ -n "$top" ] \
-       && [ -f "$top/plugin/skills/codex-gate/codex-gate.sh" ]; then
-    RESOLVED_SOURCE_PATH="$top/plugin/skills/codex-gate/codex-gate.sh"
-    RESOLVED_SOURCE_DISCOVERY="cwd git work tree ($top)"
+       && cand="$top/$CODEX_GATE_CANONICAL_RELPATH" && gate_is_tracked_canonical "$cand"; then
+    RESOLVED_SOURCE_PATH="$cand"
+    RESOLVED_SOURCE_DISCOVERY="cwd git work tree ($top), git-tracked at $CODEX_GATE_CANONICAL_RELPATH"
   else
-    RESOLVED_SOURCE_DISCOVERY="none: no versioned copy located — set CODEX_GATE_SOURCE, or run from the repo that carries it"
+    RESOLVED_SOURCE_DISCOVERY="none: the running script is not git-tracked at $CODEX_GATE_CANONICAL_RELPATH, and the cwd is not a checkout that tracks it there — set CODEX_GATE_SOURCE, or run from the repo that carries it. (Being inside SOME git work tree is not proof: an untracked runtime would otherwise certify itself as its own source.)"
   fi
   if [ -n "$RESOLVED_SOURCE_PATH" ]; then
     RESOLVED_SOURCE_KIND="$(path_kind "$RESOLVED_SOURCE_PATH")"
@@ -2460,11 +2495,17 @@ mode_config() {
   runtimePath="${CODEX_GATE_RUNTIME:-$HOME/.claude/skills/codex-gate/codex-gate.sh}"
   runtimeKind="$(runtime_path_kind "$runtimePath")"
   runtimeDigest="$(sha256_of "$runtimePath")"
-  # The MODE matters as much as the bytes. A skill is loaded by EXECUTING codex-gate.sh, so a
-  # runtime that lost its +x bit (a stray chmod, a copy through a tool that drops the mode, an
-  # archive round-trip) is a gate that cannot run — and byte-comparison alone certified exactly
-  # that as a full MATCH. `null` when there is no runtime file to test: absent is reported by
-  # runtimeKind, and guessing a boolean there would be inventing an answer.
+  # The runtime's MODE, reported as a DIAGNOSTIC and nothing more. A copy tool that drops the
+  # mode, a stray chmod or an archive round-trip is worth noticing, so the bit is reported —
+  # but it MUST NOT move parity or completeness.
+  # RETRACTION: an earlier revision made a missing +x force parity INCOMPLETE, on the theory
+  # that "a skill is loaded by EXECUTING codex-gate.sh". That is false for every documented
+  # command here: they all invoke the wrapper as `bash codex-gate.sh …`, and `bash <file>`
+  # needs READ permission only. A mode-0644 runtime runs fine — codex-gate.test.sh proves it
+  # by running `config` FROM one and getting exit 0. So no summary may claim a non-executable
+  # runtime cannot run, and no roll-up may score it.
+  # `null` when there is no runtime file to test: absent is reported by runtimeKind, and
+  # guessing a boolean there would be inventing an answer.
   runtimeExecutable="null"
   if [ -n "$runtimeDigest" ]; then
     if [ -x "$runtimePath" ]; then runtimeExecutable="true"; else runtimeExecutable="false"; fi
@@ -2552,25 +2593,41 @@ PAIREOF
   local syncInventory
   syncInventory="$(printf '%s' "$CODEX_GATE_SYNC_INVENTORY" | jq -Rsc 'split("\n")|map(select(length>0))')" \
     || die_infra "config: failed to render the sync inventory"
+  # effectiveParity, computed DIAL BY DIAL rather than as one boolean, because the remedy
+  # below has to name what actually moved and who moved it. For each dial that differs
+  # from the source's declared value: if the environment set that dial, the env var is the
+  # thing to clear (driftDialsEnv); if not, the running script's own default differs from
+  # the source's (driftDialsSelf). Both lists can be non-empty at once.
+  local driftDialsEnv="" driftDialsSelf=""
   if [ "$sdParsed" = "1" ]; then
     local sdFastBool="false"
     [ "$sdFast" != "1" ] || sdFastBool="true"
-    if [ "$CODEX_GATE_MODEL" = "$sdModel" ] && [ "$CODEX_GATE_EFFORT" = "$sdEffort" ] \
-       && [ "$effFast" = "$sdFastBool" ]; then
+    if [ "$CODEX_GATE_MODEL" != "$sdModel" ]; then
+      if [ "$oModel" = "default" ]; then driftDialsSelf="$driftDialsSelf, model"; else driftDialsEnv="$driftDialsEnv, CODEX_GATE_MODEL"; fi
+    fi
+    if [ "$CODEX_GATE_EFFORT" != "$sdEffort" ]; then
+      if [ "$oEffort" = "default" ]; then driftDialsSelf="$driftDialsSelf, effort"; else driftDialsEnv="$driftDialsEnv, CODEX_GATE_EFFORT"; fi
+    fi
+    if [ "$effFast" != "$sdFastBool" ]; then
+      if [ "$oFast" = "default" ]; then driftDialsSelf="$driftDialsSelf, fast"; else driftDialsEnv="$driftDialsEnv, CODEX_GATE_FAST"; fi
+    fi
+    driftDialsEnv="${driftDialsEnv#, }"; driftDialsSelf="${driftDialsSelf#, }"
+    if [ -z "$driftDialsEnv" ] && [ -z "$driftDialsSelf" ]; then
       effectiveParity="MATCH"
     else
       effectiveParity="MISMATCH"
     fi
   fi
   # Fail closed: MATCH only when BOTH checks affirmatively matched AND the thing they
-  # matched on is a complete, runnable install. A known difference is MISMATCH (it wins:
-  # a real divergence is the more actionable answer); agreement over something that
-  # cannot run is INCOMPLETE, which is NOT a match; anything undetermined stays
-  # UNAVAILABLE. There is no path from "we could not tell" to MATCH.
+  # matched on is a COMPLETE skill. A known difference is MISMATCH (it wins: a real
+  # divergence is the more actionable answer); agreement over a pair that is missing
+  # inventory members is INCOMPLETE, which is NOT a match; anything undetermined stays
+  # UNAVAILABLE. There is no path from "we could not tell" to MATCH. The runtime's
+  # executable bit is deliberately NOT a term here — see the runtimeExecutable note.
   if [ "$digestParity" = "MISMATCH" ] || [ "$effectiveParity" = "MISMATCH" ]; then
     parity="MISMATCH"
   elif [ "$digestParity" = "MATCH" ] && [ "$effectiveParity" = "MATCH" ]; then
-    if [ "$completeness" = "COMPLETE" ] && [ "$runtimeExecutable" = "true" ]; then
+    if [ "$completeness" = "COMPLETE" ]; then
       parity="MATCH"
     else
       parity="INCOMPLETE"
@@ -2585,15 +2642,34 @@ PAIREOF
     missingNames="$(printf '%s' "$inventoryMissing" | jq -r 'map(.file+" (absent from "+.endpoint+")")|join(", ")')"
     incompleteWhy="missing inventory member(s): $missingNames"
   fi
-  if [ "$runtimeExecutable" = "false" ]; then
-    [ -z "$incompleteWhy" ] || incompleteWhy="$incompleteWhy; "
-    incompleteWhy="${incompleteWhy}the runtime script $runtimePath is not executable, so the gate at that path cannot run"
+  # The REMEDY has to match the CAUSE, and the two causes want opposite actions. Files
+  # differing on disk is fixed by copying the source over the runtime. The dials in force
+  # differing from the ones the source declares is NOT: when an env var moved them, no
+  # amount of copying clears it, and the previous one-size sentence ("a fix in the source
+  # may not be reaching the running gate") sent an operator whose only "drift" was a
+  # supported CODEX_GATE_MODEL='' override to copy files that were already identical, see
+  # the same MISMATCH, and copy again. driftDialsEnv / driftDialsSelf (computed with
+  # effectiveParity above) say which dials moved and whether the environment did it.
+  local envRemedy=""
+  if [ -n "$driftDialsEnv" ] && [ -n "$driftDialsSelf" ]; then
+    envRemedy="the dials in force are not the ones the source declares: $driftDialsEnv override(s) it from the environment — copying files cannot clear that, clear or change $driftDialsEnv — and $driftDialsSelf also differ(s) with no override in play, so the script that produced this report is not running the source's code"
+  elif [ -n "$driftDialsEnv" ]; then
+    envRemedy="the dials in force are not the ones the source declares because the environment overrides them ($driftDialsEnv) — copying files cannot clear that; clear or change $driftDialsEnv"
+  elif [ -n "$driftDialsSelf" ]; then
+    envRemedy="the dials in force ($driftDialsSelf) are not the ones the source declares, with NO environment override in play, so the script that produced this report is not running the source's code — re-run config from the source checkout"
   fi
   case "$parity" in
-    MATCH)    summary="parity MATCH — the installed skill matches the versioned source across the whole sync inventory (script, schemas, reviewer instructions and docs), every member is present on both sides, the runtime script is executable, and the dials in force are the ones it declares" ;;
-    MISMATCH) summary="parity MISMATCH (digest $digestParity, effective $effectiveParity) — runtime $runtimePath vs source $sourcePath$driftNames; a fix in the source may not be reaching the running gate"
+    MATCH)    summary="parity MATCH — the installed skill matches the versioned source across the whole sync inventory (script, schemas, reviewer instructions and docs), every member is present on both sides, and the dials in force are the ones it declares" ;;
+    MISMATCH) summary="parity MISMATCH (digest $digestParity, effective $effectiveParity) — runtime $runtimePath vs source $sourcePath$driftNames"
+              local remedy=""
+              [ "$digestParity" != "MISMATCH" ] || remedy="the two copies differ on disk, so a fix in the source is not reaching the running gate: sync by hand (see README.md, \"Manual sync\") and re-run config"
+              if [ -n "$envRemedy" ]; then
+                [ -z "$remedy" ] || remedy="$remedy. ALSO: "
+                remedy="$remedy$envRemedy"
+              fi
+              [ -z "$remedy" ] || summary="$summary; $remedy"
               [ "$completeness" != "INCOMPLETE" ] || summary="$summary. Also INCOMPLETE — $incompleteWhy" ;;
-    INCOMPLETE) summary="parity INCOMPLETE — runtime $runtimePath and source $sourcePath agree byte-for-byte on everything present and the dials in force are the ones the source declares, but this is NOT a complete, runnable install: $incompleteWhy. NOT a match. Sync by hand (see README.md, \"Manual sync\") and re-run config" ;;
+    INCOMPLETE) summary="parity INCOMPLETE — runtime $runtimePath and source $sourcePath agree byte-for-byte on everything present and the dials in force are the ones the source declares, but this is NOT a complete install: $incompleteWhy. NOT a match. Sync by hand (see README.md, \"Manual sync\") and re-run config" ;;
     *)        summary="parity UNAVAILABLE (digest $digestParity, effective $effectiveParity) — $sourceDiscovery; NOT a match, just undetermined" ;;
   esac
 

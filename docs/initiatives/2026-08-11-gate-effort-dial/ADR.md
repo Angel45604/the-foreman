@@ -8,7 +8,9 @@
 | ADR-1 | reviewer pair | **`gpt-5.6-sol` @ `xhigh`** |
 | ADR-3 | fast mode | **OFF (`0`)** in both copies |
 | ADR-1 | recall loss | **Accepted and recorded** — `docs-contract.test.mjs:23` and `diff.mjs:201` stand as known residuals; the ADR-4 confirmatory rerun is declined |
-| ADR-5 | install topology | **Physical copy at `~/.claude/skills/codex-gate`** is authoritative |
+| ADR-5 | install topology | **Physical copy at `~/.claude/skills/codex-gate`** is authoritative *(informs the manual sync target; the automated mutator it was written for no longer exists — see ADR-7)* |
+| ADR-6 | sync unit | **Whole skill directory**, not the script. Retained as the *inventory/parity* contract; its automation is superseded by ADR-7 |
+| ADR-7 | the mutator | **Quarantined, not shipped** — five P1s across two rounds, all in the mutating path. Branch `quarantine/gate-install-mutator` @ `fcac17e` |
 
 Net change to the versioned copy: **effort `ultra` → `xhigh`** and **fast `1` → `0`**. The model
 literal is already `gpt-5.6-sol` in the repo copy and does not move. (The *runtime* copy additionally
@@ -58,8 +60,10 @@ Frozen-packet sweep, 2026-08-11 20:30–21:44. Six arms, `sol` × `terra` crosse
    (`thread limit` ×9, `max_concurrent_thread` ×2, `spawn fail` ×9). Unbounded demand, bounded only
    by an external cap.
 2. **Effort drives per-round latency.** Same model, same packet: `ultra` 949s → `max` 543s →
-   `xhigh` 288s, a 3.3× spread. Removing delegation alone (Group A `ultra`→`max`) moved wall-clock
-   −5%, so the ensemble is roughly time-neutral and the latency is the effort tier itself.
+   `xhigh` 288s, a 3.3× spread — all within Group B, same model, same packet.
+   *(Correction, admission round 4: an earlier draft also cited Group A's `ultra`→`max` −5% to argue
+   the ensemble is time-neutral. Group A was declared invalid — its source code changed mid-run — so
+   that inference is **withdrawn**. Whether delegation is time-neutral is untested.)*
 3. **Lower-effort `terra` surfaces far fewer code findings — but not because it skips the code.**
    `terra@max` and `terra@xhigh` each opened 9–10 `.mjs` files (`diff`, `serialize`, `validate`,
    `render`, `svg`, …). They inspected the same surface and reported 0 and 1 code findings against
@@ -135,7 +139,10 @@ Revised causal picture:
 
 **Status:** **ACCEPTED — `CODEX_GATE_FAST=0` in both copies.** The repo copy moves `1` → `0`; the
 runtime copy is already `0`. Rationale below stands; the owner chose to keep this wave to one
-behavioural variable and take the ~1.7x effort win without the ~2.5x credit multiplier.
+behavioural variable and take the ~1.7x win without the ~2.5x credit multiplier.
+**Correction (admission round 4):** that 1.71x is a **combined model-and-effort** result
+(`sol@xhigh` 555s vs incumbent `terra@ultra` 949s, Group B, same packet) — both dials differ, so it
+must not be described as an effort-only win.
 
 ### Original framing
 
@@ -179,12 +186,21 @@ whole skill directory, not the script — is retained; only its *automation* is 
 
 Two detector defects found in the same round were fixed rather than deferred, because the detector
 ships: `config` no longer certifies two incomplete skills as a full `MATCH` (new `completeness` state
-and `inventoryMissing`), and a byte-identical but non-executable runtime is no longer a false success
-(new `runtimeExecutable`). `parity` gains `INCOMPLETE` for "agreement over something that cannot run".
+and `inventoryMissing`), and `runtimeExecutable` is reported. `parity` gains `INCOMPLETE` for
+"agreement over something that is not whole".
+
+**RETRACTED (admission round 4):** an earlier version of this ADR also made a non-executable runtime
+force `parity: INCOMPLETE`, on the reasoning that it "cannot run". That was wrong — every documented
+command invokes the wrapper as `bash codex-gate.sh`, which does not require `+x`, and a mode-0644
+runtime was verified to run `config` successfully with exit 0. `runtimeExecutable` is now a
+**diagnostic field only** and does not affect `parity` or `completeness`.
 
 ## ADR-6 — Sync unit is the whole skill directory, not the script (owner-decided)
 
-**Status:** SUPERSEDED for automation by ADR-7; its inventory/parity semantics are retained.
+**Status:** **PARTLY SUPERSEDED by ADR-7.** The *semantic* claim — the sync unit is the whole
+13-member skill directory, so parity must be a directory-level assertion — is **accepted and live**;
+`config` implements it. The *automation* it authorised (an `install` mutator) is **superseded and
+removed**. Read the sections below as the rationale for the inventory contract, not for a tool.
 
 
 **Status:** **ACCEPTED** at a decision-fork gate after the Wave-1 audit. Phase 5's script-only

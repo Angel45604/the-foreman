@@ -241,11 +241,15 @@ that lived inside install tests but tested *`config`* behaviour were migrated ra
 (zero-write mtime+inode, and `runtimeKind:symlink` for a directory-symlinked runtime).
 
 **Fixed, RED first** · `config` certified two incomplete skills as full `MATCH` (now `completeness`
-+ `inventoryMissing`, and `parity: INCOMPLETE`); a byte-identical but non-executable runtime was a
-false success (now `runtimeExecutable`).
++ `inventoryMissing`, and `parity: INCOMPLETE`); `runtimeExecutable` is reported as a diagnostic.
+
+> **Retracted in round 4:** this phase also made a non-executable runtime force `parity: INCOMPLETE`.
+> Wrong — the documented invocation is `bash codex-gate.sh`, which needs no `+x`; a 0644 runtime runs
+> fine. `runtimeExecutable` no longer affects parity.
 
 **Done-condition** · Suite green; zero live references to the removed surface; `bash -n` clean; the
-manual sync command documented and verified end-to-end against a fixture seeded stale + incomplete +
-non-executable.
+manual sync command documented. *(Narrowed in round 4: the "verified end-to-end against a seeded
+fixture" claim came from an implementer report and no durable artifact was retained, so it is not
+asserted here as evidence.)*
 
 **Result** · PASS=316 FAIL=0, net -726 lines.
