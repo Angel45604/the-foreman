@@ -159,6 +159,21 @@ This would test whether `xhigh` gives up material recall relative to `max` under
 controlled conditions, which is the one open question ADR-1 rests on. It is not required to adopt
 ADR-1; it converts "best provisional tradeoff" into a measured one.
 
+## ADR-6 — Sync unit is the whole skill directory, not the script (owner-decided)
+
+**Status:** **ACCEPTED** at a decision-fork gate after the Wave-1 audit. Phase 5's script-only
+mutator is superseded by Phase 6.
+
+Three P1 defects were reproduced in the script-only design, and a fourth — installed `SKILL.md`
+still documenting terra/ultra after a "successful" sync — showed the deeper fault: **a script-only
+parity MATCH overstates what was actually synchronized.** Syncing the whole skill directory is the
+only option considered where MATCH means what it says, and it is the only one that can produce a
+usable first-time install, since `main()` requires sibling `verdict.schema.json` and
+`reviewer-instructions.md` before dispatching any mode.
+
+Rejected: dropping the mutator entirely (pushes an error-prone `cp -R` back onto the owner and
+leaves R3 unmet), and hardening the script-only path (leaves the contract-drift P1 open).
+
 ## ADR-5 — Installation topology: physical copy is authoritative (owner-decided)
 
 **Status:** **ACCEPTED — `~/.claude/skills/codex-gate` (a real directory, not a symlink) is the

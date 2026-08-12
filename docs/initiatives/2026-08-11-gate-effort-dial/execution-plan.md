@@ -164,3 +164,61 @@ and the PDR is amended to say so; it is not quietly carried as a caveat.
 Every phase is a small, self-contained edit on a worktree branch off `origin/main`. Rollback is
 `git restore` of the touched paths, or discarding the branch; the installed runtime is untouched
 until Phase 5 is run deliberately by the owner.
+
+---
+
+## Phase 6 — Redesign the sync: whole-skill directory (SUPERSEDES Phase 5's mutator)
+
+Added after the Wave-1 implementation audit reproduced three P1 defects in Phase 5's `install`
+path plus a P1 contract drift. This is a **recorded re-slice of a frozen phase set**, approved by
+the owner at a decision-fork gate — not a silent adjustment. Phase 5's `config`/detection work and
+the Phase 2/4 dial and fan-out work are unaffected and stay.
+
+**Files** · `plugin/skills/codex-gate/codex-gate.sh`, `codex-gate.test.sh`, `README.md`, `SKILL.md`.
+
+### The defects being fixed (all reproduced on disposable fixtures before any change)
+
+| id | defect | observed |
+|---|---|---|
+| P1-a | plugin-root containment bypassed when the destination parent does not exist | `INSTALLED`, real file created under the plugin root |
+| P1-b | directory-symlink topology misclassified — `path_kind` tests only the leaf with `-L` | `runtimeKind:file`, wrote **through** the link, target sha changed |
+| P1-c | allow-create copies only the script | `INSTALLED`, then the created runtime exits 2 `missing schema` |
+| P1-d | script-only sync leaves installed `SKILL.md`/`README.md` documenting terra/ultra | script-only MATCH overstates what was synced |
+
+### Interface
+
+Sync operates on the **whole skill directory**, not a single script. An explicit, documented file
+inventory defines what the sync owns; anything outside it is never written. Parity becomes a
+directory-level claim over that same inventory, so `MATCH` means the installed skill matches source
+— including its operational docs.
+
+### Invariants
+
+- **Refuse if ANY component of the destination path is a symlink**, not just the leaf. The root
+  README's documented personal-skill setup symlinks the *directory*, so a leaf-only `-L` check
+  misses the one topology that actually ships.
+- **Containment is evaluated against the deepest EXISTING ancestor, before any `mkdir`.** A
+  non-existent nested parent must never canonicalize to empty and thereby skip the plugin-root check.
+- A first-time create either produces a **complete, runnable** skill or refuses. No partial installs.
+- Atomic: no window in which the destination is half-written. Temp files are created safely in the
+  destination directory (no predictable `$$` name that a pre-existing symlink could hijack).
+- Still never triggered as a side effect of any review path.
+
+### Test intent — RED first, all three P1s reproduced as tests
+
+- plugin-root destination + allow-create + **missing parent** → `REFUSED`, no parent and no file created
+- destination reached via a **directory symlink** → `REFUSED`, target byte-identical afterwards
+- allow-create → the created runtime is **invoked** and works (not merely byte-compared)
+- after a sync, installed docs match source docs (closes P1-d)
+
+### Test-quality fixes (two false-greens proven by mutation in the audit)
+
+- Test 49 must assert the **exact** effective default model — mutating it to `bogus-model` currently
+  leaves the suite at 322/0.
+- Tests 54/58 must prove the documented **zero-write / no-mtime** property, not just digests — an
+  injected `touch` currently leaves the suite at 322/0.
+- Default-dial tests must explicitly unset `CODEX_GATE_*` so they cannot inherit exported caller
+  values (same root cause: the suite is not hermetic).
+
+**Done-condition** · Every RED above observed failing first, for the stated reason; then the whole
+suite green; then the three original reproductions re-run and shown to REFUSE.

@@ -24,8 +24,38 @@ set -u
 TEST_DIR="$(cd "$(dirname "$0")" && pwd)"
 WRAPPER="$TEST_DIR/codex-gate.sh"
 
+# --- hermetic environment ---------------------------------------------------
+# Scrub EVERY CODEX_GATE_* the caller exported. Without this the suite silently
+# inherits the developer's shell: a `defaults`/dial assertion can be satisfied by an
+# exported value instead of by the script's own literal, an exported
+# CODEX_GATE_PLUGIN_SCAN_ROOT can turn an install fixture into a bogus duplicate
+# refusal, and an exported CODEX_GATE_SHARD can bypass the Tier-3 tests entirely.
+# (Closes the "the suite is not hermetic" root cause behind the audited false-greens.)
+for __cgv in $(env | sed -n 's/^\(CODEX_GATE_[A-Za-z0-9_]*\)=.*/\1/p'); do
+  unset "$__cgv"
+done
+unset __cgv
+# Re-scrub at CALL time for the default-dial tests, so the property is asserted locally
+# and survives anything the suite itself might export later. The two vars the HARNESS
+# itself owns are kept — dropping them would point the wrapper at the developer's real
+# ~/.claude/codex-gate/runs instead of the sandbox.
+HERMETIC_KEEP=" CODEX_GATE_RUNS CODEX_GATE_SESSION "
+hermetic() { # hermetic [VAR=value ...] <cmd> [args...] — runs with every non-harness CODEX_GATE_* unset
+  local unsets="" v
+  for v in $(env | sed -n 's/^\(CODEX_GATE_[A-Za-z0-9_]*\)=.*/\1/p'); do
+    case "$HERMETIC_KEEP" in *" $v "*) continue ;; esac
+    unsets="$unsets -u $v"
+  done
+  # shellcheck disable=SC2086
+  env $unsets "$@"
+}
+
 # --- scratch root; everything we create lives here and is removed on exit ----
-SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/cgx-test.XXXXXX")"
+# CANONICAL (`pwd -P`): on macOS $TMPDIR lives under /var, which is itself a symlink to
+# /private/var. `install` refuses a destination ANY of whose path components is a symlink
+# (the P1-b invariant), so a non-canonical sandbox would make every install fixture refuse
+# for a reason that has nothing to do with what the test is asserting.
+SANDBOX="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/cgx-test.XXXXXX")" && pwd -P)"
 STUB_DIR="$SANDBOX/stub"
 mkdir -p "$STUB_DIR"
 STUB_ARGV_LOG="$SANDBOX/stub-argv.log"
@@ -255,6 +285,64 @@ last_json_line() { # <file>
     if printf '%s' "$line" | jq -e . >/dev/null 2>&1; then out="$line"; fi
   done < "$1"
   printf '%s' "$out"
+}
+
+# --- the documented SYNC INVENTORY -------------------------------------------
+# The whole-skill-directory sync unit (README.md "Install/sync"). Pinned HERE on
+# purpose rather than read back out of the script: the suite must FAIL if the
+# script's inventory ever drifts from the documented one, in either direction.
+# The script (`codex-gate.sh`) is first — it is the entry whose destination name is
+# taken from CODEX_GATE_RUNTIME; every other entry is a sibling of it.
+GATE_INVENTORY="codex-gate.sh
+verdict.schema.json
+question.schema.json
+investigate.schema.json
+reviewer-instructions.md
+reviewer-instructions.arch.md
+reviewer-instructions.frontend.md
+reviewer-instructions.security.md
+reviewer-instructions.tests.md
+question-instructions.md
+investigate-instructions.md
+SKILL.md
+README.md"
+
+# Helper: build a COMPLETE synthetic skill directory fixture (every inventory member
+# present). <docTag> is stamped into the non-script members so two fixtures can carry
+# an identical script but DIFFERENT docs — the exact shape of the P1-d defect.
+make_skill_fixture() { # <dir> <model> <effort> <fast> <docTag>
+  local d="$1" n
+  mkdir -p "$d"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'CODEX_GATE_MODEL="${CODEX_GATE_MODEL-%s}"\n' "$2"
+    printf 'CODEX_GATE_EFFORT="${CODEX_GATE_EFFORT:-%s}"\n' "$3"
+    printf 'CODEX_GATE_FAST="${CODEX_GATE_FAST:-%s}"\n' "$4"
+  } > "$d/codex-gate.sh"
+  chmod +x "$d/codex-gate.sh"
+  printf '%s\n' "$GATE_INVENTORY" | while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    [ "$n" = "codex-gate.sh" ] && continue
+    printf 'fixture %s (%s)\n' "$n" "$5" > "$d/$n"
+  done
+}
+
+# Helper: an identity fingerprint that changes on ANY write — mtime with sub-second
+# precision AND the inode. A rewrite-with-identical-bytes moves the mtime; a
+# temp-file+rename moves the inode. Digest comparison alone sees neither, which is
+# exactly the false-green the audit proved by injecting a `touch`.
+file_stamp() { # <path> -> "<mtime>|<inode>", or "ABSENT"
+  [ -e "$1" ] || { printf 'ABSENT'; return 0; }
+  stat -f '%Fm|%i' "$1" 2>/dev/null || stat -c '%.9Y|%i' "$1" 2>/dev/null
+}
+
+# Helper: fingerprint every inventory member of a skill directory, one per line.
+dir_stamp() { # <dir>
+  local n
+  printf '%s\n' "$GATE_INVENTORY" | while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    printf '%s %s\n' "$n" "$(file_stamp "$1/$n")"
+  done
 }
 
 # Helper: reset the argv log between assertions
@@ -1050,7 +1138,7 @@ run_test_20() {
 
   # default (no env set): -m gpt-5.6-sol + model_reasoning_effort="xhigh"
   reset_argv_log
-  ( cd "$repo" && STUB_MODE=grounded bash "$WRAPPER" question "$qfile" ) > "$SANDBOX/f_def.txt" 2>"$SANDBOX/f_def.err"
+  ( cd "$repo" && hermetic STUB_MODE=grounded bash "$WRAPPER" question "$qfile" ) > "$SANDBOX/f_def.txt" 2>"$SANDBOX/f_def.err"
   argv_default="$(cat "$STUB_ARGV_LOG")"
   model_val="$(awk 'prev=="-m"{print; exit} {prev=$0}' "$STUB_ARGV_LOG")"
   if [ "$model_val" = "gpt-5.6-sol" ] && printf '%s' "$argv_default" | grep -q 'model_reasoning_effort="xhigh"'; then
@@ -1076,7 +1164,7 @@ run_test_20() {
 
   # CODEX_GATE_FAST=1: fast flags present AND fast is not a quality knob
   reset_argv_log
-  ( cd "$repo" && CODEX_GATE_FAST=1 STUB_MODE=grounded bash "$WRAPPER" question "$qfile" ) > "$SANDBOX/f1.txt" 2>"$SANDBOX/f1.err"
+  ( cd "$repo" && hermetic CODEX_GATE_FAST=1 STUB_MODE=grounded bash "$WRAPPER" question "$qfile" ) > "$SANDBOX/f1.txt" 2>"$SANDBOX/f1.err"
   argv_fast1="$(cat "$STUB_ARGV_LOG")"
   if printf '%s' "$argv_fast1" | grep -q 'fast_mode' && printf '%s' "$argv_fast1" | grep -q 'service_tier="fast"'; then
     pass 'fast-mode: CODEX_GATE_FAST=1 passes --enable fast_mode + service_tier="fast"'
@@ -1108,7 +1196,7 @@ run_test_20b() {
 
   # unset -> -m gpt-5.6-sol
   reset_argv_log
-  ( cd "$repo" && STUB_MODE=grounded bash "$WRAPPER" question "$qfile" ) > "$SANDBOX/m_unset.txt" 2>"$SANDBOX/m_unset.err"
+  ( cd "$repo" && hermetic STUB_MODE=grounded bash "$WRAPPER" question "$qfile" ) > "$SANDBOX/m_unset.txt" 2>"$SANDBOX/m_unset.err"
   model_val="$(awk 'prev=="-m"{print; exit} {prev=$0}' "$STUB_ARGV_LOG")"
   if [ "$model_val" = "gpt-5.6-sol" ]; then
     pass "model-contract: CODEX_GATE_MODEL unset -> -m gpt-5.6-sol"
@@ -1118,7 +1206,7 @@ run_test_20b() {
 
   # explicitly empty -> NO -m flag at all (distinct from unset)
   reset_argv_log
-  ( cd "$repo" && CODEX_GATE_MODEL="" STUB_MODE=grounded bash "$WRAPPER" question "$qfile" ) > "$SANDBOX/m_empty.txt" 2>"$SANDBOX/m_empty.err"
+  ( cd "$repo" && hermetic CODEX_GATE_MODEL="" STUB_MODE=grounded bash "$WRAPPER" question "$qfile" ) > "$SANDBOX/m_empty.txt" 2>"$SANDBOX/m_empty.err"
   argv_empty="$(cat "$STUB_ARGV_LOG")"
   if printf '%s\n' "$argv_empty" | grep -qx -- '-m'; then
     fail "model-contract: CODEX_GATE_MODEL=\"\" still emitted -m (empty treated as unset) :: $argv_empty"
@@ -3074,7 +3162,7 @@ run_test_48() {
 #############################################################################
 run_test_49() {
   local status rc
-  ( CODEX_GATE_RUNTIME="$WRAPPER" CODEX_GATE_SOURCE="$WRAPPER" bash "$WRAPPER" config ) \
+  ( hermetic CODEX_GATE_RUNTIME="$WRAPPER" CODEX_GATE_SOURCE="$WRAPPER" bash "$WRAPPER" config ) \
     > "$SANDBOX/cfg49.txt" 2>"$SANDBOX/cfg49.err"
   rc=$?
   status="$(last_json_line "$SANDBOX/cfg49.txt")"
@@ -3102,6 +3190,32 @@ run_test_49() {
     pass "config: effective + origin carry all three dials"
   else
     fail "config: effective/origin missing a dial :: $status"
+  fi
+  # …and each one carries the EXACT value in force, not merely a present key. Asserting
+  # only `has("model")` was a proven false-green: reporting effective.model as
+  # "bogus-model" left the whole suite at PASS=322 FAIL=0. `effective` is the field an
+  # operator actually reads to answer "what is this gate running?", so it is pinned exactly.
+  if printf '%s' "$status" | jq -e '.effective.model=="gpt-5.6-sol"' >/dev/null 2>&1; then
+    pass "config: effective.model is EXACTLY gpt-5.6-sol with no override in play"
+  else
+    fail "config: effective.model is not exactly gpt-5.6-sol :: $status"
+  fi
+  if printf '%s' "$status" | jq -e '.effective.effort=="xhigh"' >/dev/null 2>&1; then
+    pass "config: effective.effort is EXACTLY xhigh with no override in play"
+  else
+    fail "config: effective.effort is not exactly xhigh :: $status"
+  fi
+  if printf '%s' "$status" | jq -e '.effective.fast==false and .effective.fastRaw=="0"' >/dev/null 2>&1; then
+    pass "config: effective.fast is EXACTLY false (raw \"0\") with no override in play"
+  else
+    fail "config: effective.fast/fastRaw not exactly false/\"0\" :: $status"
+  fi
+  # with no override, `effective` must equal `defaults` dial-for-dial — the two blocks
+  # are computed by different code paths (live vars vs parse_dial), so this is a real check
+  if printf '%s' "$status" | jq -e '.effective.model==.defaults.model and .effective.effort==.defaults.effort and (.effective.fastRaw==.defaults.fast)' >/dev/null 2>&1; then
+    pass "config: with no override, effective equals defaults dial-for-dial"
+  else
+    fail "config: effective diverges from defaults with no override in play :: $status"
   fi
   # with NO env override in play, every dial's origin is the file default and effective==defaults
   if printf '%s' "$status" | jq -e '.origin.model=="default" and .origin.effort=="default" and .origin.fast=="default"' >/dev/null 2>&1; then
@@ -3485,30 +3599,22 @@ run_test_53() {
 #############################################################################
 # TEST 54 — `install` syncs source -> runtime; verified via `config`; idempotent [INSTALL]
 #   The deliberate resolution to the drift `config` (Phase 3) detects. Sync a divergent
-#   fixture pair (same shape as test 51's), confirm the runtime becomes byte-identical +
+#   fixture pair — now two whole SKILL DIRECTORIES, because the sync unit is the whole
+#   documented inventory, not one script — confirm the runtime becomes byte-identical +
 #   still executable, confirm `config` on the SAME pinned pair now reports parity MATCH,
-#   and confirm a second run on an already-matching pair is a documented no-op (changed:false,
-#   bytes untouched) rather than a needless rewrite.
+#   and confirm a second run on an already-matching pair is a documented no-op.
+#   ZERO-WRITE: the no-op re-run is asserted by mtime AND inode, not by digest. Digests
+#   cannot see a rewrite-with-identical-bytes — an injected `touch` in the no-op branch
+#   left the whole suite at PASS=322 FAIL=0, which is the false-green closed here.
 #############################################################################
 run_test_54() {
-  local fx status rc beforeDigest afterDigest
+  local fx status rc beforeDigest afterDigest beforeStamps afterStamps n
   fx="$SANDBOX/instfx54"
-  mkdir -p "$fx"
-  {
-    printf '#!/usr/bin/env bash\n'
-    printf 'CODEX_GATE_MODEL="${CODEX_GATE_MODEL-gpt-5.6-sol}"\n'
-    printf 'CODEX_GATE_EFFORT="${CODEX_GATE_EFFORT:-xhigh}"\n'
-    printf 'CODEX_GATE_FAST="${CODEX_GATE_FAST:-0}"\n'
-  } > "$fx/source.sh"
-  {
-    printf '#!/usr/bin/env bash\n'
-    printf 'CODEX_GATE_MODEL="${CODEX_GATE_MODEL:-gpt-5.6-terra}"\n'
-    printf 'CODEX_GATE_EFFORT="${CODEX_GATE_EFFORT:-ultra}"\n'
-    printf 'CODEX_GATE_FAST="${CODEX_GATE_FAST:-1}"\n'
-  } > "$fx/runtime.sh"
-  chmod +x "$fx/source.sh" "$fx/runtime.sh"
+  make_skill_fixture "$fx/src" gpt-5.6-sol   xhigh 0 source-docs
+  make_skill_fixture "$fx/rt"  gpt-5.6-terra ultra 1 stale-runtime-docs
 
-  ( CODEX_GATE_RUNTIME="$fx/runtime.sh" CODEX_GATE_SOURCE="$fx/source.sh" \
+  ( CODEX_GATE_RUNTIME="$fx/rt/codex-gate.sh" CODEX_GATE_SOURCE="$fx/src/codex-gate.sh" \
+      CODEX_GATE_PLUGIN_SCAN_ROOT="$fx/no-plugin-root" \
       bash "$WRAPPER" install ) > "$SANDBOX/inst54a.txt" 2>"$SANDBOX/inst54a.err"
   rc=$?
   status="$(last_json_line "$SANDBOX/inst54a.txt")"
@@ -3523,19 +3629,30 @@ run_test_54() {
   else
     fail "install: unexpected status :: $status :: $(cat "$SANDBOX/inst54a.err")"
   fi
-  if diff -q "$fx/source.sh" "$fx/runtime.sh" >/dev/null 2>&1; then
+  if diff -q "$fx/src/codex-gate.sh" "$fx/rt/codex-gate.sh" >/dev/null 2>&1; then
     pass "install: runtime is now byte-identical to source"
   else
     fail "install: runtime content did not become byte-identical to source"
   fi
-  if [ -x "$fx/runtime.sh" ]; then
+  if [ -x "$fx/rt/codex-gate.sh" ]; then
     pass "install: installed runtime is executable"
   else
     fail "install: installed runtime lost its executable bit"
   fi
+  # the WHOLE inventory came across, not just the script (P1-d)
+  : > "$SANDBOX/inst54.drift"
+  printf '%s\n' "$GATE_INVENTORY" | while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    diff -q "$fx/src/$n" "$fx/rt/$n" >/dev/null 2>&1 || { printf '%s\n' "$n" >> "$SANDBOX/inst54.drift"; }
+  done
+  if [ ! -s "$SANDBOX/inst54.drift" ]; then
+    pass "install: EVERY documented inventory member is byte-identical after the sync (not just the script)"
+  else
+    fail "install: inventory members still divergent after sync :: $(tr '\n' ' ' < "$SANDBOX/inst54.drift")"
+  fi
 
   # afterwards, config (pinned at the same pair) reports MATCH
-  ( CODEX_GATE_RUNTIME="$fx/runtime.sh" CODEX_GATE_SOURCE="$fx/source.sh" \
+  ( CODEX_GATE_RUNTIME="$fx/rt/codex-gate.sh" CODEX_GATE_SOURCE="$fx/src/codex-gate.sh" \
       bash "$WRAPPER" config ) > "$SANDBOX/inst54b.txt" 2>"$SANDBOX/inst54b.err"
   status="$(last_json_line "$SANDBOX/inst54b.txt")"
   if printf '%s' "$status" | jq -e '.parity=="MATCH"' >/dev/null 2>&1; then
@@ -3544,12 +3661,16 @@ run_test_54() {
     fail "install-verify: config did not report MATCH after install :: $status"
   fi
 
-  # idempotent: a second install on an already-matching pair is a documented no-op
-  beforeDigest="$(shasum -a 256 "$fx/runtime.sh" | awk '{print $1}')"
-  ( CODEX_GATE_RUNTIME="$fx/runtime.sh" CODEX_GATE_SOURCE="$fx/source.sh" \
+  # idempotent: a second install on an already-matching pair is a documented no-op.
+  # Proven by mtime+inode over the WHOLE inventory, not by digest (see the header).
+  beforeDigest="$(shasum -a 256 "$fx/rt/codex-gate.sh" | awk '{print $1}')"
+  beforeStamps="$(dir_stamp "$fx/rt")"
+  ( CODEX_GATE_RUNTIME="$fx/rt/codex-gate.sh" CODEX_GATE_SOURCE="$fx/src/codex-gate.sh" \
+      CODEX_GATE_PLUGIN_SCAN_ROOT="$fx/no-plugin-root" \
       bash "$WRAPPER" install ) > "$SANDBOX/inst54c.txt" 2>"$SANDBOX/inst54c.err"
   status="$(last_json_line "$SANDBOX/inst54c.txt")"
-  afterDigest="$(shasum -a 256 "$fx/runtime.sh" | awk '{print $1}')"
+  afterDigest="$(shasum -a 256 "$fx/rt/codex-gate.sh" | awk '{print $1}')"
+  afterStamps="$(dir_stamp "$fx/rt")"
   if printf '%s' "$status" | jq -e '.outcome=="INSTALLED" and .changed==false' >/dev/null 2>&1; then
     pass "install: re-running on an already-matching pair reports changed=false (no-op)"
   else
@@ -3559,6 +3680,11 @@ run_test_54() {
     pass "install: no-op re-run left the runtime bytes untouched"
   else
     fail "install: no-op re-run rewrote the runtime bytes"
+  fi
+  if [ "$beforeStamps" = "$afterStamps" ]; then
+    pass "install: no-op re-run performed ZERO writes — every inventory member's mtime AND inode unchanged"
+  else
+    fail "install: no-op re-run touched the destination :: before='$beforeStamps' after='$afterStamps'"
   fi
 }
 
@@ -3580,6 +3706,7 @@ run_test_55() {
   targetDigestBefore="$(shasum -a 256 "$fx/real-target.sh" | awk '{print $1}')"
 
   ( CODEX_GATE_RUNTIME="$fx/runtime-link.sh" CODEX_GATE_SOURCE="$fx/source.sh" \
+      CODEX_GATE_PLUGIN_SCAN_ROOT="$fx/no-plugin-root" \
       bash "$WRAPPER" install ) > "$SANDBOX/inst55.txt" 2>"$SANDBOX/inst55.err"
   rc=$?
   status="$(last_json_line "$SANDBOX/inst55.txt")"
@@ -3626,6 +3753,7 @@ run_test_56() {
 
   # (A) default: refuse, nothing created
   ( CODEX_GATE_RUNTIME="$fx/does-not-exist/codex-gate.sh" CODEX_GATE_SOURCE="$fx/source.sh" \
+      CODEX_GATE_PLUGIN_SCAN_ROOT="$fx/no-plugin-root" \
       bash "$WRAPPER" install ) > "$SANDBOX/inst56a.txt" 2>"$SANDBOX/inst56a.err"
   rc=$?
   status="$(last_json_line "$SANDBOX/inst56a.txt")"
@@ -3645,8 +3773,11 @@ run_test_56() {
     fail "install-missing: something was created despite the refusal :: $(find "$fx/does-not-exist")"
   fi
 
-  # (B) explicit opt-in: creates the file
-  ( CODEX_GATE_RUNTIME="$fx/fresh-install/codex-gate.sh" CODEX_GATE_SOURCE="$fx/source.sh" \
+  # (B) explicit opt-in: creates the install. The source must be a COMPLETE skill
+  #     directory — a first-time create either produces a runnable skill or refuses.
+  make_skill_fixture "$fx/src" gpt-5.6-sol xhigh 0 create-src
+  ( CODEX_GATE_RUNTIME="$fx/fresh-install/codex-gate.sh" CODEX_GATE_SOURCE="$fx/src/codex-gate.sh" \
+      CODEX_GATE_PLUGIN_SCAN_ROOT="$fx/no-plugin-root" \
       CODEX_GATE_INSTALL_ALLOW_CREATE=1 bash "$WRAPPER" install ) \
       > "$SANDBOX/inst56b.txt" 2>"$SANDBOX/inst56b.err"
   status="$(last_json_line "$SANDBOX/inst56b.txt")"
@@ -3655,7 +3786,7 @@ run_test_56() {
   else
     fail "install-missing: opt-in create did not report INSTALLED :: $status :: $(cat "$SANDBOX/inst56b.err")"
   fi
-  if diff -q "$fx/source.sh" "$fx/fresh-install/codex-gate.sh" >/dev/null 2>&1; then
+  if diff -q "$fx/src/codex-gate.sh" "$fx/fresh-install/codex-gate.sh" >/dev/null 2>&1; then
     pass "install-missing: the newly-created runtime is byte-identical to source"
   else
     fail "install-missing: the newly-created runtime does not match source"
@@ -3755,12 +3886,11 @@ run_test_57() {
   # ---- (C) control: no plugin copy anywhere under the scan root => proceeds normally ----
   fx="$SANDBOX/instfx57c"
   pluginRoot="$fx/plugins/marketplaces"      # deliberately never created
-  mkdir -p "$fx/personal-skills/codex-gate"
-  printf '#!/usr/bin/env bash\necho personal-old\n' > "$fx/personal-skills/codex-gate/codex-gate.sh"
-  printf '#!/usr/bin/env bash\necho source\n' > "$fx/source.sh"
+  make_skill_fixture "$fx/personal-skills/codex-gate" gpt-5.6-terra ultra 1 stale
+  make_skill_fixture "$fx/src" gpt-5.6-sol xhigh 0 fresh
 
   ( CODEX_GATE_RUNTIME="$fx/personal-skills/codex-gate/codex-gate.sh" \
-    CODEX_GATE_SOURCE="$fx/source.sh" CODEX_GATE_PLUGIN_SCAN_ROOT="$pluginRoot" \
+    CODEX_GATE_SOURCE="$fx/src/codex-gate.sh" CODEX_GATE_PLUGIN_SCAN_ROOT="$pluginRoot" \
     bash "$WRAPPER" install ) > "$SANDBOX/inst57c.txt" 2>"$SANDBOX/inst57c.err"
   status="$(last_json_line "$SANDBOX/inst57c.txt")"
   if printf '%s' "$status" | jq -e '.outcome=="INSTALLED"' >/dev/null 2>&1; then
@@ -3775,12 +3905,15 @@ run_test_57() {
 #   (A) static: mode_install is referenced exactly twice in the script (its own definition
 #       + its own dispatch arm) — no other code path can reach it.
 #   (B) behavioral: a normal `prepr` review, and `config`, never write to CODEX_GATE_RUNTIME.
+#       Asserted by mtime AND inode, not by digest: a rewrite-with-identical-bytes (or a
+#       bare `touch`) is invisible to a digest, and that hole was proven by mutation — an
+#       injected `touch` left the whole suite at PASS=322 FAIL=0.
 #   (C) a bogus extra argument fails closed (exit 2), matching config's convention.
 #   (D) a DIRECTORY sitting at the runtime path (kind=other) refuses rather than clobbers.
 #   (E) an unlocatable source reports INFRA_ERROR (nothing to copy from).
 #############################################################################
 run_test_58() {
-  local repo fx marker before after rc status callsites
+  local repo fx marker before after rc status callsites beforeStamp afterStamp
 
   # ---- (A) mode_install has exactly one call site: its own dispatch arm ----
   callsites="$(grep -c 'mode_install' "$WRAPPER")"
@@ -3796,6 +3929,7 @@ run_test_58() {
   marker="untouched-marker-$$"
   printf '%s\n' "$marker" > "$fx/runtime.sh"
   before="$(shasum -a 256 "$fx/runtime.sh" | awk '{print $1}')"
+  beforeStamp="$(file_stamp "$fx/runtime.sh")"
 
   repo="$(make_repo)"
   printf 'seed\n' > "$repo/seed.txt"
@@ -3804,19 +3938,31 @@ run_test_58() {
   ( cd "$repo" && STUB_MODE=approve CODEX_GATE_RUNTIME="$fx/runtime.sh" bash "$WRAPPER" prepr ) \
     > "$SANDBOX/inst58b.txt" 2>"$SANDBOX/inst58b.err"
   after="$(shasum -a 256 "$fx/runtime.sh" | awk '{print $1}')"
+  afterStamp="$(file_stamp "$fx/runtime.sh")"
   if [ "$before" = "$after" ]; then
     pass "install-isolation: a normal \`prepr\` review never writes to the CODEX_GATE_RUNTIME path"
   else
     fail "install-isolation: the runtime fixture was modified by a plain review run"
   fi
+  if [ "$beforeStamp" = "$afterStamp" ]; then
+    pass "install-isolation: a normal \`prepr\` review performs ZERO writes there (mtime AND inode unchanged)"
+  else
+    fail "install-isolation: prepr touched the runtime path :: before='$beforeStamp' after='$afterStamp'"
+  fi
 
   ( CODEX_GATE_RUNTIME="$fx/runtime.sh" bash "$WRAPPER" config ) \
     > "$SANDBOX/inst58c.txt" 2>"$SANDBOX/inst58c.err"
   after="$(shasum -a 256 "$fx/runtime.sh" | awk '{print $1}')"
+  afterStamp="$(file_stamp "$fx/runtime.sh")"
   if [ "$before" = "$after" ]; then
     pass "install-isolation: \`config\` never writes to the runtime path either"
   else
     fail "install-isolation: config modified the runtime fixture"
+  fi
+  if [ "$beforeStamp" = "$afterStamp" ]; then
+    pass "install-isolation: \`config\` performs ZERO writes there either (mtime AND inode unchanged)"
+  else
+    fail "install-isolation: config touched the runtime path :: before='$beforeStamp' after='$afterStamp'"
   fi
 
   # ---- (C) an unexpected argument fails closed (exit 2), matching config's convention ----
@@ -3833,6 +3979,7 @@ run_test_58() {
   mkdir -p "$fx/a-directory-not-a-file"
   printf '#!/usr/bin/env bash\necho source\n' > "$fx/source.sh"
   ( CODEX_GATE_RUNTIME="$fx/a-directory-not-a-file" CODEX_GATE_SOURCE="$fx/source.sh" \
+      CODEX_GATE_PLUGIN_SCAN_ROOT="$fx/no-plugin-root" \
       bash "$WRAPPER" install ) > "$SANDBOX/inst58e.txt" 2>"$SANDBOX/inst58e.err"
   status="$(last_json_line "$SANDBOX/inst58e.txt")"
   if printf '%s' "$status" | jq -e '.outcome=="REFUSED" and .runtimeKind=="other"' >/dev/null 2>&1; then
@@ -3857,6 +4004,259 @@ run_test_58() {
     pass "install: an unlocatable source reports INFRA_ERROR rather than guessing"
   else
     fail "install: unexpected status for an unlocatable source :: $status :: $(cat "$SANDBOX/inst58g.err")"
+  fi
+}
+
+#############################################################################
+# TEST 59 — [P1-a] plugin-root containment holds when the destination's parent
+#           directory does not exist yet
+#   Containment used to be computed by `cd`-ing into dirname(runtimePath). For a
+#   not-yet-existing nested parent that `cd` fails, canonicalization returns EMPTY,
+#   and an empty canonical path made the whole plugin-root check no-op — so
+#   allow-create happily `mkdir -p`'d a brand new marketplace tree INSIDE the plugin
+#   root and reported INSTALLED. Containment must be evaluated against the deepest
+#   EXISTING ancestor, and it must be evaluated BEFORE any mkdir.
+#############################################################################
+run_test_59() {
+  local fx status pluginRoot dest
+  fx="$SANDBOX/instfx59"
+  pluginRoot="$fx/pluginRoot"
+  mkdir -p "$pluginRoot"
+  make_skill_fixture "$fx/src" gpt-5.6-sol xhigh 0 src
+  dest="$pluginRoot/new-market/new-plugin/skills/codex-gate/codex-gate.sh"
+
+  ( CODEX_GATE_RUNTIME="$dest" CODEX_GATE_SOURCE="$fx/src/codex-gate.sh" \
+    CODEX_GATE_PLUGIN_SCAN_ROOT="$pluginRoot" CODEX_GATE_INSTALL_ALLOW_CREATE=1 \
+    bash "$WRAPPER" install ) > "$SANDBOX/inst59.txt" 2>"$SANDBOX/inst59.err"
+  status="$(last_json_line "$SANDBOX/inst59.txt")"
+
+  if printf '%s' "$status" | jq -e '.outcome=="REFUSED" and .changed==false' >/dev/null 2>&1; then
+    pass "install-containment: a destination inside the plugin root REFUSES even when its parent does not exist yet"
+  else
+    fail "install-containment: expected REFUSED for a plugin-root destination with a missing parent :: $status :: $(cat "$SANDBOX/inst59.err")"
+  fi
+  if printf '%s' "$status" | jq -e '.summary | test("plugin"; "i")' >/dev/null 2>&1; then
+    pass "install-containment: the refusal names it as plugin-managed"
+  else
+    fail "install-containment: refusal does not mention plugin-managed :: $status"
+  fi
+  if [ ! -e "$pluginRoot/new-market" ]; then
+    pass "install-containment: NOTHING was created under the plugin root (containment is checked BEFORE any mkdir)"
+  else
+    fail "install-containment: the refusal still created paths under the plugin root :: $(find "$pluginRoot" | head -10 | tr '\n' ' ')"
+  fi
+
+  # control: the SAME missing-parent shape OUTSIDE the plugin root still installs
+  ( CODEX_GATE_RUNTIME="$fx/outside/deeply/nested/codex-gate.sh" CODEX_GATE_SOURCE="$fx/src/codex-gate.sh" \
+    CODEX_GATE_PLUGIN_SCAN_ROOT="$pluginRoot" CODEX_GATE_INSTALL_ALLOW_CREATE=1 \
+    bash "$WRAPPER" install ) > "$SANDBOX/inst59b.txt" 2>"$SANDBOX/inst59b.err"
+  status="$(last_json_line "$SANDBOX/inst59b.txt")"
+  if printf '%s' "$status" | jq -e '.outcome=="INSTALLED"' >/dev/null 2>&1; then
+    pass "install-containment (control): the same missing-parent shape OUTSIDE the plugin root still installs"
+  else
+    fail "install-containment (control): a legitimate nested create was refused :: $status :: $(cat "$SANDBOX/inst59b.err")"
+  fi
+}
+
+#############################################################################
+# TEST 60 — [P1-b] a destination reached through a DIRECTORY symlink is refused
+#   `path_kind` tested only the final pathname with `-L`. The repo-root README's
+#   documented personal-skill setup symlinks the skill DIRECTORY, so
+#   `link-parent/codex-gate.sh` reported runtimeKind:file and `install` wrote
+#   straight THROUGH the link, silently replacing the real target's bytes.
+#   The refusal must cover ANY component of the destination path, and `config`
+#   must classify the same topology the same way.
+#############################################################################
+run_test_60() {
+  local fx status before after
+  fx="$SANDBOX/instfx60"
+  mkdir -p "$fx/real-parent"
+  printf '#!/usr/bin/env bash\necho REAL-TARGET\n' > "$fx/real-parent/codex-gate.sh"
+  chmod +x "$fx/real-parent/codex-gate.sh"
+  make_skill_fixture "$fx/src" gpt-5.6-sol xhigh 0 src
+  ln -s "$fx/real-parent" "$fx/link-parent"
+  before="$(shasum -a 256 "$fx/real-parent/codex-gate.sh" | awk '{print $1}')"
+
+  ( CODEX_GATE_RUNTIME="$fx/link-parent/codex-gate.sh" CODEX_GATE_SOURCE="$fx/src/codex-gate.sh" \
+    CODEX_GATE_PLUGIN_SCAN_ROOT="$fx/no-plugin-root" \
+    bash "$WRAPPER" install ) > "$SANDBOX/inst60.txt" 2>"$SANDBOX/inst60.err"
+  status="$(last_json_line "$SANDBOX/inst60.txt")"
+  after="$(shasum -a 256 "$fx/real-parent/codex-gate.sh" | awk '{print $1}')"
+
+  if printf '%s' "$status" | jq -e '.outcome=="REFUSED" and .runtimeKind=="symlink"' >/dev/null 2>&1; then
+    pass "install-dirlink: a destination whose PARENT is a symlink refuses (runtimeKind=symlink)"
+  else
+    fail "install-dirlink: expected REFUSED/symlink for a directory-symlink destination :: $status :: $(cat "$SANDBOX/inst60.err")"
+  fi
+  if printf '%s' "$status" | jq -e --arg p "$fx/link-parent" '.summary | contains($p)' >/dev/null 2>&1; then
+    pass "install-dirlink: the refusal names the SYMLINKED COMPONENT, not just the leaf"
+  else
+    fail "install-dirlink: refusal does not name the symlinked component :: $status"
+  fi
+  if [ "$before" = "$after" ]; then
+    pass "install-dirlink: the real target behind the link is byte-unmodified"
+  else
+    fail "install-dirlink: install wrote THROUGH the directory symlink and changed the real target"
+  fi
+
+  # config must classify the same topology identically
+  ( CODEX_GATE_RUNTIME="$fx/link-parent/codex-gate.sh" CODEX_GATE_SOURCE="$fx/src/codex-gate.sh" \
+    bash "$WRAPPER" config ) > "$SANDBOX/inst60c.txt" 2>"$SANDBOX/inst60c.err"
+  status="$(last_json_line "$SANDBOX/inst60c.txt")"
+  if printf '%s' "$status" | jq -e '.runtimeKind=="symlink"' >/dev/null 2>&1; then
+    pass "config-dirlink: config reports runtimeKind=symlink for a directory-symlinked runtime too"
+  else
+    fail "config-dirlink: config still reports a directory-symlinked runtime as a plain file :: $status"
+  fi
+
+  # control: an ordinary real directory alongside it is unaffected
+  ( CODEX_GATE_RUNTIME="$fx/real-parent/codex-gate.sh" CODEX_GATE_SOURCE="$fx/src/codex-gate.sh" \
+    CODEX_GATE_PLUGIN_SCAN_ROOT="$fx/no-plugin-root" \
+    bash "$WRAPPER" install ) > "$SANDBOX/inst60d.txt" 2>"$SANDBOX/inst60d.err"
+  status="$(last_json_line "$SANDBOX/inst60d.txt")"
+  if printf '%s' "$status" | jq -e '.outcome=="INSTALLED"' >/dev/null 2>&1; then
+    pass "install-dirlink (control): the same destination reached by its REAL path installs normally"
+  else
+    fail "install-dirlink (control): a real-path destination was refused :: $status :: $(cat "$SANDBOX/inst60d.err")"
+  fi
+}
+
+#############################################################################
+# TEST 61 — [P1-c] a first-time create produces a COMPLETE, RUNNABLE skill or refuses
+#   The mutator copied only codex-gate.sh, but `main` requires the sibling
+#   verdict.schema.json + reviewer-instructions.md before dispatching ANY mode — so
+#   allow-create reported INSTALLED and the thing it created exited 2 (`missing
+#   schema`) on its very first invocation. The created skill is therefore INVOKED
+#   here, not merely byte-compared. And an incomplete SOURCE must refuse outright
+#   rather than leave a partial install behind.
+#############################################################################
+run_test_61() {
+  local fx status rc n
+  fx="$SANDBOX/instfx61"
+  mkdir -p "$fx"
+
+  # ---- (A) create from the REAL skill directory under test ----
+  ( CODEX_GATE_RUNTIME="$fx/fresh/codex-gate.sh" CODEX_GATE_SOURCE="$WRAPPER" \
+    CODEX_GATE_PLUGIN_SCAN_ROOT="$fx/no-plugin-root" CODEX_GATE_INSTALL_ALLOW_CREATE=1 \
+    bash "$WRAPPER" install ) > "$SANDBOX/inst61a.txt" 2>"$SANDBOX/inst61a.err"
+  status="$(last_json_line "$SANDBOX/inst61a.txt")"
+  if printf '%s' "$status" | jq -e '.outcome=="INSTALLED" and .changed==true' >/dev/null 2>&1; then
+    pass "install-create: a first-time create from the real skill dir reports INSTALLED"
+  else
+    fail "install-create: unexpected status :: $status :: $(cat "$SANDBOX/inst61a.err")"
+  fi
+  : > "$SANDBOX/inst61.missing"
+  printf '%s\n' "$GATE_INVENTORY" | while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    diff -q "$TEST_DIR/$n" "$fx/fresh/$n" >/dev/null 2>&1 || printf '%s\n' "$n" >> "$SANDBOX/inst61.missing"
+  done
+  if [ ! -s "$SANDBOX/inst61.missing" ]; then
+    pass "install-create: every documented inventory member landed, byte-identical to source"
+  else
+    fail "install-create: inventory members missing/divergent in the created skill :: $(tr '\n' ' ' < "$SANDBOX/inst61.missing")"
+  fi
+  # the real proof: the created skill RUNS
+  ( CODEX_GATE_RUNTIME="$fx/fresh/codex-gate.sh" CODEX_GATE_SOURCE="$fx/fresh/codex-gate.sh" \
+    bash "$fx/fresh/codex-gate.sh" config ) > "$SANDBOX/inst61b.txt" 2>"$SANDBOX/inst61b.err"
+  rc=$?
+  status="$(last_json_line "$SANDBOX/inst61b.txt")"
+  if [ "$rc" -eq 0 ] && printf '%s' "$status" | jq -e '.outcome=="CONFIG"' >/dev/null 2>&1; then
+    pass "install-create: the CREATED skill is runnable — its own \`config\` exits 0 with outcome=CONFIG"
+  else
+    fail "install-create: the created skill is not runnable (rc=$rc) :: $(cat "$SANDBOX/inst61b.txt") :: $(cat "$SANDBOX/inst61b.err")"
+  fi
+
+  # ---- (B) an INCOMPLETE source refuses; no partial install is left behind ----
+  mkdir -p "$fx/partial-src"
+  printf '#!/usr/bin/env bash\nCODEX_GATE_MODEL="${CODEX_GATE_MODEL-gpt-5.6-sol}"\n' > "$fx/partial-src/codex-gate.sh"
+  ( CODEX_GATE_RUNTIME="$fx/half/codex-gate.sh" CODEX_GATE_SOURCE="$fx/partial-src/codex-gate.sh" \
+    CODEX_GATE_PLUGIN_SCAN_ROOT="$fx/no-plugin-root" CODEX_GATE_INSTALL_ALLOW_CREATE=1 \
+    bash "$WRAPPER" install ) > "$SANDBOX/inst61c.txt" 2>"$SANDBOX/inst61c.err"
+  status="$(last_json_line "$SANDBOX/inst61c.txt")"
+  if printf '%s' "$status" | jq -e '.outcome=="INFRA_ERROR"' >/dev/null 2>&1; then
+    pass "install-create: an INCOMPLETE source refuses rather than creating a half-usable skill"
+  else
+    fail "install-create: an incomplete source did not fail closed :: $status :: $(cat "$SANDBOX/inst61c.err")"
+  fi
+  if [ ! -e "$fx/half" ]; then
+    pass "install-create: no partial install was left behind by the refusal"
+  else
+    fail "install-create: a partial install was created :: $(find "$fx/half" | tr '\n' ' ')"
+  fi
+}
+
+#############################################################################
+# TEST 62 — [P1-d] the sync unit is the whole documented INVENTORY, docs included
+#   A script-only sync left the installed SKILL.md / README.md documenting the old
+#   terra/ultra dials while `install` reported success and `config` reported MATCH —
+#   the parity claim overstated what had actually been synced. Parity is now a
+#   DIRECTORY-level claim over the documented inventory: two skill dirs whose
+#   scripts are byte-identical but whose docs differ must report MISMATCH.
+#   Also pinned: the inventory itself is reported by `config`, and anything OUTSIDE
+#   it is never written and never removed.
+#############################################################################
+run_test_62() {
+  local fx status extraBefore extraAfter n
+  fx="$SANDBOX/instfx62"
+  # identical SCRIPTS, divergent DOCS — the exact shape script-only sync could not see
+  make_skill_fixture "$fx/src" gpt-5.6-sol xhigh 0 current-docs
+  make_skill_fixture "$fx/rt"  gpt-5.6-sol xhigh 0 stale-terra-ultra-docs
+  printf 'owner-only note, not part of the skill\n' > "$fx/rt/coverage-overflow-plan.md"
+  extraBefore="$(file_stamp "$fx/rt/coverage-overflow-plan.md")"
+
+  # the inventory is observable, and it is exactly the documented list
+  ( CODEX_GATE_RUNTIME="$fx/rt/codex-gate.sh" CODEX_GATE_SOURCE="$fx/src/codex-gate.sh" \
+    bash "$WRAPPER" config ) > "$SANDBOX/inst62a.txt" 2>"$SANDBOX/inst62a.err"
+  status="$(last_json_line "$SANDBOX/inst62a.txt")"
+  if printf '%s' "$status" | jq -e --arg inv "$GATE_INVENTORY" '(.syncInventory | join("\n")) == $inv' >/dev/null 2>&1; then
+    pass "sync-inventory: config reports the sync inventory and it matches the documented list exactly"
+  else
+    fail "sync-inventory: reported inventory differs from the documented list :: $(printf '%s' "$status" | jq -c '.syncInventory')"
+  fi
+
+  # identical scripts + divergent docs => MISMATCH (this was a false MATCH before)
+  if printf '%s' "$status" | jq -e '.digestParity=="MISMATCH" and .parity=="MISMATCH"' >/dev/null 2>&1; then
+    pass "sync-inventory: identical scripts with DIVERGENT DOCS report MISMATCH (parity is a directory-level claim)"
+  else
+    fail "sync-inventory: divergent docs did not produce MISMATCH :: $status"
+  fi
+  if printf '%s' "$status" | jq -e '(.inventoryDrift | type=="array") and ((.inventoryDrift | map(.file) | index("SKILL.md")) != null) and ((.inventoryDrift | map(.file) | index("README.md")) != null)' >/dev/null 2>&1; then
+    pass "sync-inventory: the MISMATCH NAMES the drifted members (SKILL.md, README.md), so it is legible"
+  else
+    fail "sync-inventory: drifted members not named :: $(printf '%s' "$status" | jq -c '.inventoryDrift')"
+  fi
+
+  # sync, then the docs match and parity is MATCH
+  ( CODEX_GATE_RUNTIME="$fx/rt/codex-gate.sh" CODEX_GATE_SOURCE="$fx/src/codex-gate.sh" \
+    CODEX_GATE_PLUGIN_SCAN_ROOT="$fx/no-plugin-root" \
+    bash "$WRAPPER" install ) > "$SANDBOX/inst62b.txt" 2>"$SANDBOX/inst62b.err"
+  status="$(last_json_line "$SANDBOX/inst62b.txt")"
+  if printf '%s' "$status" | jq -e '.outcome=="INSTALLED" and .changed==true' >/dev/null 2>&1; then
+    pass "sync-inventory: install syncs a docs-only divergence (changed=true even though the script matched)"
+  else
+    fail "sync-inventory: a docs-only divergence was reported as nothing to do :: $status :: $(cat "$SANDBOX/inst62b.err")"
+  fi
+  if diff -q "$fx/src/SKILL.md" "$fx/rt/SKILL.md" >/dev/null 2>&1 && diff -q "$fx/src/README.md" "$fx/rt/README.md" >/dev/null 2>&1; then
+    pass "sync-inventory: the installed SKILL.md and README.md now match source (P1-d closed)"
+  else
+    fail "sync-inventory: installed docs are STILL stale after a successful sync"
+  fi
+
+  ( CODEX_GATE_RUNTIME="$fx/rt/codex-gate.sh" CODEX_GATE_SOURCE="$fx/src/codex-gate.sh" \
+    bash "$WRAPPER" config ) > "$SANDBOX/inst62c.txt" 2>"$SANDBOX/inst62c.err"
+  status="$(last_json_line "$SANDBOX/inst62c.txt")"
+  if printf '%s' "$status" | jq -e '.parity=="MATCH"' >/dev/null 2>&1; then
+    pass "sync-inventory: after the whole-directory sync, parity MATCH means the DOCS match too"
+  else
+    fail "sync-inventory: parity is not MATCH after a whole-directory sync :: $status"
+  fi
+
+  # anything outside the inventory is never written and never removed
+  extraAfter="$(file_stamp "$fx/rt/coverage-overflow-plan.md")"
+  if [ -f "$fx/rt/coverage-overflow-plan.md" ] && [ "$extraBefore" = "$extraAfter" ]; then
+    pass "sync-inventory: a NON-inventory file in the destination is neither written nor removed"
+  else
+    fail "sync-inventory: a non-inventory destination file was touched :: before='$extraBefore' after='$extraAfter'"
   fi
 }
 
@@ -3928,6 +4328,10 @@ run_test_55
 run_test_56
 run_test_57
 run_test_58
+run_test_59
+run_test_60
+run_test_61
+run_test_62
 
 printf '====================================\n'
 printf 'PASS=%d FAIL=%d\n' "$PASS_COUNT" "$FAIL_COUNT"

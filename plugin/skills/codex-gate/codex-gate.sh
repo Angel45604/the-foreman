@@ -36,16 +36,21 @@
 # Outcome (one JSON status line on stdout for the CONFIG read-only report):
 #   {outcome, defaults, effective, origin, running, runtimePath, runtimeDigest, runtimeKind,
 #    runtimeDefaults, sourcePath, sourceDigest, sourceKind, sourceDiscovery, sourceDefaults,
-#    digestParity, effectiveParity, parity, summary}
+#    syncInventory, inventoryDrift, digestParity, effectiveParity, parity, summary}
 #   outcome ∈ CONFIG | INFRA_ERROR.  Makes source↔runtime DRIFT observable; calls Codex zero
 #   times, creates no run dir, writes no ledger.  parity NEVER reports MATCH on a guess.
+#   digestParity is a DIRECTORY-level claim over CODEX_GATE_SYNC_INVENTORY, so MATCH means
+#   the installed skill matches the source INCLUDING its schemas and operational docs;
+#   inventoryDrift names each member that differs or is present on only one side.
 #
 # Outcome (one JSON status line on stdout for the INSTALL sync mode):
-#   {outcome, runtimePath, runtimeKind, sourcePath, sourceDigest,
-#    runtimeDigestBefore, runtimeDigestAfter, changed, summary}
-#   outcome ∈ INSTALLED | REFUSED | INFRA_ERROR.  The ONLY mode that writes the runtime file,
-#   and only when explicitly invoked by name — never as a side effect of any other mode.
-#   REFUSED (zero writes) on a symlinked/missing/other/plugin-managed/duplicate runtime;
+#   {outcome, runtimePath, runtimeKind, runtimeDir, sourceDir, sourcePath, sourceDigest,
+#    runtimeDigestBefore, runtimeDigestAfter, changed, syncInventory, filesWritten, summary}
+#   outcome ∈ INSTALLED | REFUSED | INFRA_ERROR.  The ONLY mode that writes the runtime, and
+#   only when explicitly invoked by name — never as a side effect of any other mode. The sync
+#   unit is the WHOLE skill directory as enumerated by CODEX_GATE_SYNC_INVENTORY; nothing
+#   outside that list is ever written or removed.  REFUSED (zero writes) on a runtime that is
+#   missing/other/plugin-managed/duplicate, or ANY of whose path components is a symlink;
 #   see the MODE: install block below for the full detection contract. Calls Codex zero times.
 
 set -u
@@ -2261,6 +2266,103 @@ path_kind() { # <path> -> symlink | file | other | missing  (-L FIRST: -f follow
   fi
 }
 
+path_has_symlink_component() { # <path> -> echoes the FIRST symlinked component, returns 0; else 1
+  # Leaf-only `-L` is not enough. The repo-root README's documented personal-skill setup
+  # symlinks the skill DIRECTORY (`ln -s .../plugin/skills/codex-gate ~/.claude/skills/codex-gate`),
+  # so `<link>/codex-gate.sh` is a perfectly ordinary file by `-L` while every write to it
+  # goes THROUGH the link into somewhere the caller never named. Walk the components
+  # textually — deliberately NOT resolving as we go, since resolving is what hides the link.
+  local p="$1" acc="" comp rest
+  case "$p" in /*) ;; *) p="$PWD/$p" ;; esac
+  rest="${p#/}"
+  while [ -n "$rest" ]; do
+    case "$rest" in
+      */*) comp="${rest%%/*}"; rest="${rest#*/}" ;;
+      *)   comp="$rest";       rest="" ;;
+    esac
+    [ -n "$comp" ] || continue
+    acc="$acc/$comp"
+    if [ -L "$acc" ]; then printf '%s' "$acc"; return 0; fi
+  done
+  return 1
+}
+
+canon_existing() { # <path> -> canonical EXISTING prefix + the not-yet-existing tail, verbatim
+  # `cd "$(dirname "$p")" && pwd -P` returns EMPTY whenever that parent does not exist yet,
+  # and an empty canonical path silently disables every containment test built on it — which
+  # is precisely how a destination with a missing nested parent slipped past the plugin-root
+  # check and got created inside the plugin root. Canonicalizing only as far as the
+  # filesystem actually goes keeps the answer usable BEFORE any mkdir.
+  local p="$1" tail="" d
+  case "$p" in /*) ;; *) p="$PWD/$p" ;; esac
+  d="$p"
+  while [ ! -d "$d" ]; do
+    case "$d" in /|"") break ;; esac
+    tail="/$(basename "$d")$tail"
+    d="$(dirname "$d")"
+  done
+  [ -d "$d" ] || return 0
+  d="$(cd "$d" 2>/dev/null && pwd -P)" || return 0
+  [ "$d" != "/" ] || d=""
+  printf '%s%s' "$d" "$tail"
+}
+
+runtime_path_kind() { # <path> -> symlink | file | other | missing (symlink wins on ANY component)
+  if path_has_symlink_component "$1" >/dev/null 2>&1; then printf 'symlink'; return 0; fi
+  path_kind "$1"
+}
+
+# ============================================================================
+# The SYNC INVENTORY — the unit the sync writes and `config` claims parity over.
+# ----------------------------------------------------------------------------
+# Everything the skill needs to RUN, plus the two operational docs that describe how
+# it behaves. Syncing the script alone produced two distinct failures: a first-time
+# create landed a script whose very first invocation exited 2 (`main` requires the
+# sibling verdict.schema.json + reviewer-instructions.md before dispatching any mode),
+# and an update left the installed SKILL.md / README.md documenting dials the source
+# had already changed — while the parity report happily said MATCH.
+#
+# This list is the CONTRACT (documented in README.md's "Install/sync" section and
+# reported by `config` as `syncInventory`). Anything NOT on it is never written and
+# never removed — an owner's own notes sitting in the installed skill directory
+# survive a sync untouched. `codex-gate.test.sh` is deliberately absent: the suite is
+# developed against the checkout, not shipped into the runtime.
+#
+# The FIRST entry is "the script": its two endpoints are the explicitly-named
+# CODEX_GATE_SOURCE / CODEX_GATE_RUNTIME paths whatever they happen to be called, so
+# both knobs keep pointing at a script. Every other entry is resolved as a sibling of
+# the corresponding endpoint.
+# ============================================================================
+CODEX_GATE_SYNC_INVENTORY='codex-gate.sh
+verdict.schema.json
+question.schema.json
+investigate.schema.json
+reviewer-instructions.md
+reviewer-instructions.arch.md
+reviewer-instructions.frontend.md
+reviewer-instructions.security.md
+reviewer-instructions.tests.md
+question-instructions.md
+investigate-instructions.md
+SKILL.md
+README.md'
+
+inventory_pairs() { # <sourceScript> <destScript> -> "<src>\t<dest>\t<name>" per member
+  local srcDir destDir name first=1
+  srcDir="$(dirname "$1")"; destDir="$(dirname "$2")"
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    if [ "$first" = "1" ]; then
+      first=0
+      printf '%s\t%s\t%s\n' "$1" "$2" "$name"
+    else
+      printf '%s\t%s\t%s\n' "$srcDir/$name" "$destDir/$name" "$name"
+    fi
+  done <<INVEOF
+$CODEX_GATE_SYNC_INVENTORY
+INVEOF
+}
+
 parse_dial() { # <file> <VAR> -> "<op>|<literal>", or EMPTY when absent/malformed
   # Reads a dial's declared fallback out of ANY codex-gate.sh: the assignment line
   # `VAR="${VAR<op>literal}"` where <op> is `-` (unset only) or `:-` (unset or empty).
@@ -2376,7 +2478,7 @@ mode_config() {
   # ---- runtime endpoint: the authoritative installed gate ----
   local runtimePath runtimeKind runtimeDigest
   runtimePath="${CODEX_GATE_RUNTIME:-$HOME/.claude/skills/codex-gate/codex-gate.sh}"
-  runtimeKind="$(path_kind "$runtimePath")"
+  runtimeKind="$(runtime_path_kind "$runtimePath")"
   runtimeDigest="$(sha256_of "$runtimePath")"
 
   # ---- source endpoint: the versioned copy (shared discovery — see resolve_gate_source) ----
@@ -2407,10 +2509,42 @@ mode_config() {
   fi
 
   # ---- the two parity checks, then the roll-up ----
+  # digestParity is a DIRECTORY-level claim over the documented sync inventory, not a
+  # single-file one: a script-only comparison reported MATCH while the installed
+  # SKILL.md/README.md still documented dials the source had already changed, so MATCH
+  # was overstating what had actually been synced. A member absent from BOTH sides is
+  # skipped — two copies that both lack a file have no drift BETWEEN them (completeness
+  # of an install is `install`'s job to guarantee, not something `config` can invent).
+  # Either endpoint being unlocatable stays UNAVAILABLE, never MATCH and never MISMATCH.
   local digestParity="UNAVAILABLE" effectiveParity="UNAVAILABLE" parity
+  local inventoryDrift="[]"
   if [ -n "$runtimeDigest" ] && [ -n "$sourceDigest" ]; then
-    if [ "$runtimeDigest" = "$sourceDigest" ]; then digestParity="MATCH"; else digestParity="MISMATCH"; fi
+    local isp idp inm isd idd drift=""
+    while IFS="$(printf '\t')" read -r isp idp inm; do
+      [ -n "$inm" ] || continue
+      isd="$(sha256_of "$isp")"; idd="$(sha256_of "$idp")"
+      if   [ -z "$isd" ] && [ -z "$idd" ]; then continue
+      elif [ -z "$isd" ]; then drift="$drift$inm|absent-from-source
+"
+      elif [ -z "$idd" ]; then drift="$drift$inm|absent-from-runtime
+"
+      elif [ "$isd" != "$idd" ]; then drift="$drift$inm|differs
+"
+      fi
+    done <<PAIREOF
+$(inventory_pairs "$sourcePath" "$runtimePath")
+PAIREOF
+    if [ -z "$drift" ]; then
+      digestParity="MATCH"
+    else
+      digestParity="MISMATCH"
+      inventoryDrift="$(printf '%s' "$drift" | jq -Rsc 'split("\n")|map(select(length>0))|map(split("|"))|map({file:.[0], state:.[1]})')" \
+        || inventoryDrift="[]"
+    fi
   fi
+  local syncInventory
+  syncInventory="$(printf '%s' "$CODEX_GATE_SYNC_INVENTORY" | jq -Rsc 'split("\n")|map(select(length>0))')" \
+    || die_infra "config: failed to render the sync inventory"
   if [ "$sdParsed" = "1" ]; then
     local sdFastBool="false"
     [ "$sdFast" != "1" ] || sdFastBool="true"
@@ -2431,10 +2565,11 @@ mode_config() {
     parity="UNAVAILABLE"
   fi
 
-  local summary
+  local summary driftNames=""
+  [ "$inventoryDrift" = "[]" ] || driftNames=" (inventory drift: $(printf '%s' "$inventoryDrift" | jq -r 'map(.file+"="+.state)|join(", ")'))"
   case "$parity" in
-    MATCH)    summary="parity MATCH — the runtime is byte-identical to the versioned source and the dials in force are the ones it declares" ;;
-    MISMATCH) summary="parity MISMATCH (digest $digestParity, effective $effectiveParity) — runtime $runtimePath vs source $sourcePath; a fix in the source may not be reaching the running gate" ;;
+    MATCH)    summary="parity MATCH — the installed skill matches the versioned source across the whole sync inventory (script, schemas, reviewer instructions and docs) and the dials in force are the ones it declares" ;;
+    MISMATCH) summary="parity MISMATCH (digest $digestParity, effective $effectiveParity) — runtime $runtimePath vs source $sourcePath$driftNames; a fix in the source may not be reaching the running gate" ;;
     *)        summary="parity UNAVAILABLE (digest $digestParity, effective $effectiveParity) — $sourceDiscovery; NOT a match, just undetermined" ;;
   esac
 
@@ -2450,6 +2585,7 @@ mode_config() {
     --arg sourcePath "$sourcePath" --arg sourceDigest "$sourceDigest" --arg sourceKind "$sourceKind" \
     --arg sourceDiscovery "$sourceDiscovery" --argjson sourceDefaults "$srcDefaults" \
     --arg digestParity "$digestParity" --arg effectiveParity "$effectiveParity" --arg parity "$parity" \
+    --argjson syncInventory "$syncInventory" --argjson inventoryDrift "$inventoryDrift" \
     --arg summary "$summary" \
     '{outcome:$outcome,
       defaults:{model:$defModel, effort:$defEffort, fast:$defFast},
@@ -2460,36 +2596,52 @@ mode_config() {
       runtimeDefaults:$runtimeDefaults,
       sourcePath:$sourcePath, sourceDigest:$sourceDigest, sourceKind:$sourceKind,
       sourceDiscovery:$sourceDiscovery, sourceDefaults:$sourceDefaults,
+      syncInventory:$syncInventory, inventoryDrift:$inventoryDrift,
       digestParity:$digestParity, effectiveParity:$effectiveParity, parity:$parity,
       summary:$summary}' || die_infra "config: failed to render the status line"
   exit 0
 }
 
 # ============================================================================
-# MODE: install  (the ONLY mode that writes the runtime file)
+# MODE: install  (the ONLY mode that writes the runtime)
 # ----------------------------------------------------------------------------
-# Copies the versioned SOURCE onto the installed RUNTIME so a subsequent `config`
-# reports parity: MATCH. This is the deliberate resolution to the drift `config`
-# (above) makes observable — never a side effect of anything else. This function
-# has exactly one caller in the whole file: its own dispatch arm below. Nothing
-# else may invoke it. The owner decides when to run it.
+# Copies the versioned SOURCE skill onto the installed RUNTIME skill so a subsequent
+# `config` reports parity: MATCH. This is the deliberate resolution to the drift
+# `config` (above) makes observable — never a side effect of anything else. This
+# function has exactly one caller in the whole file: its own dispatch arm below.
+# Nothing else may invoke it. The owner decides when to run it.
+#
+# The sync unit is the WHOLE SKILL DIRECTORY, enumerated by CODEX_GATE_SYNC_INVENTORY
+# above and reported by `config` as `syncInventory`. Syncing the script alone was not
+# a smaller version of this — it was broken twice over: a first-time create produced a
+# runtime that exited 2 (`missing schema`) on its very first invocation, and an update
+# left the installed SKILL.md/README.md documenting superseded dials while the parity
+# report said MATCH. Files OUTSIDE the inventory are never written and never removed.
 #
 # Refuses (outcome REFUSED, ZERO writes, exit 0) rather than clobbers whenever the
-# runtime endpoint is not a plain, ownable file (ADR-5: the owner's install is a
-# real physical directory today, but this mode DETECTS that rather than trusting
-# it — the decision fixed today's topology, it did not license blind writes):
-#   symlink        -> a `cp`/`mv` here would silently change what "the install" IS
-#                      (a link becomes a copy) without being asked to.
+# destination is not a plain, ownable file in a plain, ownable directory (ADR-5: the
+# owner's install is a real physical directory today, but this mode DETECTS that
+# rather than trusting it — the decision fixed today's topology, it did not license
+# blind writes):
+#   symlink        -> ANY component of the destination path is a symlink, not merely
+#                      the leaf. The repo-root README's documented personal-skill
+#                      setup symlinks the skill DIRECTORY, so a leaf-only test misses
+#                      the one topology that actually ships and writes THROUGH the
+#                      link into a location the caller never named.
 #   missing        -> refuses by default (a missing install is itself an anomaly);
 #                      CODEX_GATE_INSTALL_ALLOW_CREATE=1 is a distinct, non-default
 #                      opt-in for a genuine first-time install.
-#   other          -> a directory/device/fifo sitting where a plain file belongs.
+#   other          -> a directory/device/fifo sitting where a plain file belongs, or
+#                      a non-directory sitting where the skill directory belongs.
 #   plugin-managed -> the configured runtime resolves INSIDE the plugin scan root
 #                      (CODEX_GATE_PLUGIN_SCAN_ROOT, default
 #                      $HOME/.claude/plugins/marketplaces) — that copy is owned by
 #                      the Claude Code plugin installer and will be overwritten on
 #                      the next plugin update regardless; edit the versioned
-#                      source and update/reinstall the plugin instead.
+#                      source and update/reinstall the plugin instead. Containment is
+#                      evaluated against the deepest EXISTING ancestor and BEFORE any
+#                      mkdir, so a not-yet-existing nested parent cannot canonicalize
+#                      to empty and thereby skip the check entirely.
 #   duplicate      -> the runtime is a personal-skill copy OUTSIDE the plugin root,
 #                      but a plugin-managed codex-gate.sh ALSO exists somewhere
 #                      under the scan root (exactly the topology the repo-root
@@ -2497,13 +2649,22 @@ mode_config() {
 #                      only one of two active installs would leave the owner
 #                      silently running the other. Both paths are named; the
 #                      owner reconciles (uninstall one) before re-running.
+# An incomplete SOURCE is an INFRA_ERROR, not a partial install: there is nothing
+# safe to write if the copy we would produce could not run.
 #
-# A byte-identical pair is a no-op (changed:false, zero writes, mtime untouched).
-# Otherwise: copy to a same-directory temp file, chmod +x, then `mv` it over the
-# runtime path. `mv` within one filesystem is an atomic rename, so anything
-# reading the runtime file concurrently (a gate mid-review) always sees either
-# the complete OLD script or the complete NEW one, never a partial write —
-# this is what makes `install` safe to run while a gate is mid-review.
+# WRITE DISCIPLINE
+#   - Members already byte-identical are skipped, so an up-to-date install is a true
+#     no-op: changed:false, zero writes, every mtime and inode untouched.
+#   - Temp files are created with `mktemp` INSIDE the destination directory (O_EXCL,
+#     unpredictable name — a `$$`-derived name is guessable and a pre-existing symlink
+#     sitting on it would redirect the write).
+#   - Every member is STAGED and digest-verified before ANY of them is renamed into
+#     place, so a failure part-way through leaves the destination completely untouched
+#     rather than half-updated. Each rename is then an atomic same-filesystem `mv`, so
+#     a gate reading a member concurrently sees the complete OLD or complete NEW file.
+#   - A first-time create is built in full in a staging directory and moved into place
+#     with ONE rename: the destination either does not exist or is a complete,
+#     runnable skill. There is no partial-install state to observe.
 # ============================================================================
 
 # Scan for OTHER codex-gate.sh installs under the plugin root (bounded depth;
@@ -2528,6 +2689,91 @@ emit_install_refuse() { # <runtimePath> <runtimeKind> <sourcePath> <sourceDigest
   exit 0
 }
 
+# Remove staged temp files. Takes the accumulated "<tmp>[TAB<dest>]" lines; `rm -f` so a
+# temp already renamed into place (a later failure in the same batch) is a silent no-op.
+discard_staged() { # <lines>
+  local t
+  while IFS="$(printf '\t')" read -r t _; do
+    [ -n "$t" ] || continue
+    rm -f "$t" 2>/dev/null || :
+  done <<DISCEOF
+$1
+DISCEOF
+}
+
+# Remove a whole staging DIRECTORY. Only the files this function staged are removed, by
+# name, and then the (now empty) directory — never a recursive delete of a path we did
+# not build ourselves.
+discard_staged_dir() { # <stageDir> <lines>
+  discard_staged "$2"
+  rmdir "$1" 2>/dev/null || :
+}
+
+# Update an EXISTING skill directory. Everything is staged and digest-verified before
+# the first rename, so a failure part-way through leaves the destination untouched
+# rather than half-updated; each rename is then an atomic same-filesystem `mv`.
+install_update_in_place() { # <destDir> <scriptBase> <toWrite lines: src TAB dest TAB name>
+  local destDir="$1" scriptBase="$2" work="$3"
+  local sp dp nm tmp mode staged="" t d
+  while IFS="$(printf '\t')" read -r sp dp nm; do
+    [ -n "$nm" ] || continue
+    tmp="$(mktemp "$destDir/.codex-gate-install.XXXXXXXX" 2>/dev/null)" \
+      || { discard_staged "$staged"; die_infra "install: could not create a temp file in $destDir"; }
+    staged="$staged$tmp	$dp
+"
+    cp "$sp" "$tmp" 2>/dev/null \
+      || { discard_staged "$staged"; die_infra "install: copying inventory member $nm into $destDir failed"; }
+    if [ "$(basename "$dp")" = "$scriptBase" ]; then mode=755; else mode=644; fi
+    chmod "$mode" "$tmp" 2>/dev/null \
+      || { discard_staged "$staged"; die_infra "install: chmod $mode failed on the staged $nm"; }
+    [ "$(sha256_of "$tmp")" = "$(sha256_of "$sp")" ] \
+      || { discard_staged "$staged"; die_infra "install: the staged copy of $nm does not match its source"; }
+  done <<STAGEEOF
+$work
+STAGEEOF
+  while IFS="$(printf '\t')" read -r t d; do
+    [ -n "$t" ] || continue
+    mv -f "$t" "$d" 2>/dev/null \
+      || { discard_staged "$staged"; die_infra "install: atomic replace of $d failed"; }
+  done <<MVEOF
+$staged
+MVEOF
+}
+
+# Create a skill directory that does not exist yet. The COMPLETE skill is built in a
+# staging directory and moved into place with ONE rename, so the destination is either
+# absent or a complete, runnable skill — there is no partial-install state to observe.
+install_create_fresh() { # <destDir> <scriptBase> <toWrite lines: src TAB dest TAB name>
+  local destDir="$1" scriptBase="$2" work="$3"
+  local parent stage sp dp nm base target mode staged=""
+  parent="$(dirname "$destDir")"
+  mkdir -p "$parent" 2>/dev/null || die_infra "install: could not create the parent directory $parent"
+  stage="$(mktemp -d "$parent/.codex-gate-install.XXXXXXXX" 2>/dev/null)" \
+    || die_infra "install: could not create a staging directory in $parent"
+  while IFS="$(printf '\t')" read -r sp dp nm; do
+    [ -n "$nm" ] || continue
+    base="$(basename "$dp")"
+    target="$stage/$base"
+    staged="$staged$target
+"
+    cp "$sp" "$target" 2>/dev/null \
+      || { discard_staged_dir "$stage" "$staged"; die_infra "install: copying inventory member $nm into the staging directory failed"; }
+    if [ "$base" = "$scriptBase" ]; then mode=755; else mode=644; fi
+    chmod "$mode" "$target" 2>/dev/null \
+      || { discard_staged_dir "$stage" "$staged"; die_infra "install: chmod $mode failed on the staged $nm"; }
+    [ "$(sha256_of "$target")" = "$(sha256_of "$sp")" ] \
+      || { discard_staged_dir "$stage" "$staged"; die_infra "install: the staged copy of $nm does not match its source"; }
+  done <<STAGEEOF
+$work
+STAGEEOF
+  chmod 755 "$stage" 2>/dev/null \
+    || { discard_staged_dir "$stage" "$staged"; die_infra "install: could not set permissions on the staged skill directory"; }
+  [ ! -e "$destDir" ] \
+    || { discard_staged_dir "$stage" "$staged"; die_infra "install: $destDir appeared while the install was staging; refusing to write into it"; }
+  mv "$stage" "$destDir" 2>/dev/null \
+    || { discard_staged_dir "$stage" "$staged"; die_infra "install: could not move the completed skill into place at $destDir"; }
+}
+
 mode_install() {
   [ $# -eq 0 ] || { echo "install takes no arguments" >&2; exit 2; }
 
@@ -2538,28 +2784,49 @@ mode_install() {
   [ -f "$selfPath" ] || die_infra "install: the running script is not readable at $selfPath"
 
   # ---- source endpoint (identical discovery to `config` — see resolve_gate_source) ----
-  local sourcePath sourceKind sourceDigest sourceDiscovery
+  local sourcePath sourceKind sourceDigest sourceDiscovery sourceDir
   resolve_gate_source "$selfDir" "$selfPath"
   sourcePath="$RESOLVED_SOURCE_PATH"; sourceKind="$RESOLVED_SOURCE_KIND"
   sourceDigest="$RESOLVED_SOURCE_DIGEST"; sourceDiscovery="$RESOLVED_SOURCE_DISCOVERY"
   if [ -z "$sourcePath" ] || [ "$sourceKind" != "file" ] || [ -z "$sourceDigest" ]; then
     die_infra "install: no readable versioned source located — $sourceDiscovery"
   fi
+  sourceDir="$(dirname "$sourcePath")"
 
   # ---- runtime endpoint ----
-  local runtimePath runtimeKind
+  local runtimePath runtimeDir runtimeKind
   runtimePath="${CODEX_GATE_RUNTIME:-$HOME/.claude/skills/codex-gate/codex-gate.sh}"
-  runtimeKind="$(path_kind "$runtimePath")"
+  runtimeDir="$(dirname "$runtimePath")"
+  runtimeKind="$(runtime_path_kind "$runtimePath")"
 
   local pluginRoot="${CODEX_GATE_PLUGIN_SCAN_ROOT:-$HOME/.claude/plugins/marketplaces}"
 
+  # ---- (1) destination topology. Refusals come FIRST and are about the DESTINATION:
+  #      a safety refusal is the useful answer even when the source turns out to be
+  #      unusable too, and none of these paths write anything. ----
+  local linkComp=""
+  if linkComp="$(path_has_symlink_component "$runtimePath")"; then
+    emit_install_refuse "$runtimePath" "symlink" "$sourcePath" "$sourceDigest" \
+      "runtime path $runtimePath is reached through a symlink at $linkComp (-> $(readlink "$linkComp" 2>/dev/null || printf 'unknown')); refusing — writing here would go THROUGH the link into a location you did not name, and would silently turn a linked install into a copied one. Repoint or replace it yourself, then re-run install."
+  fi
+  # every inventory member's destination is a destination too
+  local isp idp inm
+  while IFS="$(printf '\t')" read -r isp idp inm; do
+    [ -n "$idp" ] || continue
+    if [ -L "$idp" ]; then
+      emit_install_refuse "$runtimePath" "symlink" "$sourcePath" "$sourceDigest" \
+        "inventory member $inm in the destination skill directory is a symlink ($idp); refusing to write through it"
+    fi
+  done <<PAIREOF
+$(inventory_pairs "$sourcePath" "$runtimePath")
+PAIREOF
+
+  if [ -e "$runtimeDir" ] && [ ! -d "$runtimeDir" ]; then
+    emit_install_refuse "$runtimePath" "other" "$sourcePath" "$sourceDigest" \
+      "the runtime skill directory $runtimeDir exists but is not a directory; refusing"
+  fi
+
   case "$runtimeKind" in
-    symlink)
-      local tgt
-      tgt="$(readlink "$runtimePath" 2>/dev/null || :)"
-      emit_install_refuse "$runtimePath" "$runtimeKind" "$sourcePath" "$sourceDigest" \
-        "runtime path $runtimePath is a symlink (-> ${tgt:-unknown}); refusing to overwrite a symlink — repoint it or replace it with a plain file yourself, then re-run install"
-      ;;
     other)
       emit_install_refuse "$runtimePath" "$runtimeKind" "$sourcePath" "$sourceDigest" \
         "runtime path $runtimePath exists but is not a plain file (kind=other); refusing to write over it"
@@ -2577,11 +2844,11 @@ mode_install() {
       ;;
   esac
 
-  # ---- plugin-managed / duplicate detection (skipped only when the runtime
-  #      directory does not exist yet — nothing to be "inside" the plugin root) ----
+  # ---- (2) plugin-managed containment, evaluated against the deepest EXISTING
+  #      ancestor and BEFORE any mkdir (see canon_existing) ----
   local runtimeDirCanon pluginRootCanon isPluginManaged=0
-  runtimeDirCanon="$(cd "$(dirname "$runtimePath")" 2>/dev/null && pwd -P)" || runtimeDirCanon=""
-  pluginRootCanon="$(cd "$pluginRoot" 2>/dev/null && pwd -P)" || pluginRootCanon=""
+  runtimeDirCanon="$(canon_existing "$runtimeDir")"
+  pluginRootCanon="$(canon_existing "$pluginRoot")"
   if [ -n "$runtimeDirCanon" ] && [ -n "$pluginRootCanon" ]; then
     case "$runtimeDirCanon" in
       "$pluginRootCanon"|"$pluginRootCanon"/*) isPluginManaged=1 ;;
@@ -2602,43 +2869,94 @@ mode_install() {
       "duplicate install detected: personal-skill runtime $runtimePath AND a plugin-managed copy at: $dupeList — reconcile (uninstall one) before syncing; installing only one would leave the OTHER one silently in force"
   fi
 
-  # ---- perform the install (or a no-op when already byte-identical) ----
-  local runtimeDigestBefore runtimeDigestAfter changed="true"
-  runtimeDigestBefore="$(sha256_of "$runtimePath")"   # empty when creating fresh (missing+opt-in)
+  # ---- (3) the endpoints must not collide with a sibling inventory name ----
+  local rtBase srcBase iname
+  rtBase="$(basename "$runtimePath")"; srcBase="$(basename "$sourcePath")"
+  while IFS= read -r iname; do
+    [ -n "$iname" ] || continue
+    [ "$iname" != "codex-gate.sh" ] || continue
+    [ "$iname" != "$rtBase" ]  || die_infra "install: CODEX_GATE_RUNTIME names '$rtBase', which collides with inventory member '$iname' — the sync would write two different files to one path"
+    [ "$iname" != "$srcBase" ] || die_infra "install: CODEX_GATE_SOURCE names '$srcBase', which collides with inventory member '$iname' — the sync would read two different files from one path"
+  done <<INVEOF
+$CODEX_GATE_SYNC_INVENTORY
+INVEOF
 
-  if [ -n "$runtimeDigestBefore" ] && [ "$runtimeDigestBefore" = "$sourceDigest" ]; then
-    changed="false"
+  # ---- (4) the SOURCE must be a complete skill, or there is nothing safe to install ----
+  local missingSrc=""
+  while IFS="$(printf '\t')" read -r isp idp inm; do
+    [ -n "$inm" ] || continue
+    [ -f "$isp" ] && [ -r "$isp" ] || missingSrc="$missingSrc $inm"
+  done <<PAIREOF
+$(inventory_pairs "$sourcePath" "$runtimePath")
+PAIREOF
+  [ -z "$missingSrc" ] || die_infra "install: the versioned source at $sourceDir is not a complete skill directory — missing or unreadable inventory member(s):$missingSrc. Refusing rather than producing a partial install that cannot run."
+
+  # ---- (5) decide what actually needs writing (identical members are skipped, so an
+  #      up-to-date install is a true zero-write no-op) ----
+  local toWrite="" writeCount=0 runtimeDigestBefore runtimeDigestAfter changed="false"
+  local isd idd
+  runtimeDigestBefore="$(sha256_of "$runtimePath")"   # empty when creating fresh (missing+opt-in)
+  while IFS="$(printf '\t')" read -r isp idp inm; do
+    [ -n "$inm" ] || continue
+    isd="$(sha256_of "$isp")"; idd="$(sha256_of "$idp")"
+    if [ -z "$idd" ] || [ "$isd" != "$idd" ]; then
+      toWrite="$toWrite$isp	$idp	$inm
+"
+      writeCount=$((writeCount + 1))
+    fi
+  done <<PAIREOF
+$(inventory_pairs "$sourcePath" "$runtimePath")
+PAIREOF
+
+  if [ "$writeCount" -eq 0 ]; then
     runtimeDigestAfter="$runtimeDigestBefore"
   else
-    mkdir -p "$(dirname "$runtimePath")" || die_infra "install: could not create the runtime directory for $runtimePath"
-    local tmp="$runtimePath.install.$$"
-    cp "$sourcePath" "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; die_infra "install: copy to a temp file failed"; }
-    chmod +x "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; die_infra "install: chmod +x failed on the temp file"; }
-    mv -f "$tmp" "$runtimePath" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; die_infra "install: atomic replace of $runtimePath failed"; }
+    changed="true"
+    if [ -d "$runtimeDir" ]; then
+      install_update_in_place "$runtimeDir" "$rtBase" "$toWrite"
+    else
+      install_create_fresh "$runtimeDir" "$rtBase" "$toWrite"
+    fi
+    # post-verify the WHOLE inventory, not just what we wrote
+    while IFS="$(printf '\t')" read -r isp idp inm; do
+      [ -n "$inm" ] || continue
+      isd="$(sha256_of "$isp")"; idd="$(sha256_of "$idp")"
+      [ -n "$idd" ] && [ "$isd" = "$idd" ] \
+        || die_infra "install: post-install digest of inventory member $inm at $idp does not match the source — refusing to claim success"
+    done <<PAIREOF
+$(inventory_pairs "$sourcePath" "$runtimePath")
+PAIREOF
+    [ -x "$runtimePath" ] || die_infra "install: $runtimePath is not executable after the sync — refusing to claim success"
     runtimeDigestAfter="$(sha256_of "$runtimePath")"
-    [ -n "$runtimeDigestAfter" ] && [ "$runtimeDigestAfter" = "$sourceDigest" ] \
-      || die_infra "install: post-install digest of $runtimePath does not match the source — refusing to claim success"
   fi
 
-  runtimeKind="$(path_kind "$runtimePath")"
-  local summary
+  runtimeKind="$(runtime_path_kind "$runtimePath")"
+  local writtenJson inventoryJson summary
+  writtenJson="$(printf '%s' "$toWrite" | awk -F'\t' 'NF>=3{print $3}' | jq -Rsc 'split("\n")|map(select(length>0))')" \
+    || die_infra "install: failed to render the written-file list"
+  inventoryJson="$(printf '%s' "$CODEX_GATE_SYNC_INVENTORY" | jq -Rsc 'split("\n")|map(select(length>0))')" \
+    || die_infra "install: failed to render the sync inventory"
   if [ "$changed" = "true" ]; then
-    summary="installed: $runtimePath now matches $sourcePath (sha256 $runtimeDigestAfter). Re-run \`config\` to confirm parity: MATCH."
+    summary="installed: the skill at $runtimeDir now matches $sourceDir across all $(printf '%s' "$inventoryJson" | jq 'length') inventory members ($writeCount written; script sha256 $runtimeDigestAfter). Re-run \`config\` to confirm parity: MATCH."
   else
-    summary="no-op: $runtimePath already matched $sourcePath (sha256 $runtimeDigestAfter) — nothing written."
+    summary="no-op: the skill at $runtimeDir already matched $sourceDir across every inventory member (script sha256 $runtimeDigestAfter) — nothing written, no mtime touched."
   fi
 
   jq -nc \
     --arg outcome "INSTALLED" \
     --arg runtimePath "$runtimePath" --arg runtimeKind "$runtimeKind" \
+    --arg runtimeDir "$runtimeDir" --arg sourceDir "$sourceDir" \
     --arg sourcePath "$sourcePath" --arg sourceDigest "$sourceDigest" \
     --arg runtimeDigestBefore "$runtimeDigestBefore" --arg runtimeDigestAfter "$runtimeDigestAfter" \
     --argjson changed "$changed" \
+    --argjson syncInventory "$inventoryJson" --argjson filesWritten "$writtenJson" \
     --arg summary "$summary" \
     '{outcome:$outcome, runtimePath:$runtimePath, runtimeKind:$runtimeKind,
+      runtimeDir:$runtimeDir, sourceDir:$sourceDir,
       sourcePath:$sourcePath, sourceDigest:$sourceDigest,
       runtimeDigestBefore:$runtimeDigestBefore, runtimeDigestAfter:$runtimeDigestAfter,
-      changed:$changed, summary:$summary}' || die_infra "install: failed to render the status line"
+      changed:$changed, syncInventory:$syncInventory, filesWritten:$filesWritten,
+      summary:$summary}' || die_infra "install: failed to render the status line"
   exit 0
 }
 

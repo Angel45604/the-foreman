@@ -6,7 +6,11 @@ Relates to: [#30](https://github.com/Angel45604/the-foreman/issues/30), [#31](ht
 Wave: **1 of 2** — fast relief.
 
 > **Wave 1 is NOT a convergence fix and does not close #30 or #31.** It removes hidden reviewer
-> delegation and buys a 1.7–3.3x latency win. Blocker volume was 11–15 in every arm of the sweep
+> delegation and buys a **1.7x** latency win for the selected configuration.
+>
+> *(Correction: an earlier draft claimed "1.7–3.3x". The 3.3x endpoint is `terra` `ultra`→`xhigh`,
+> which is NOT the selected config. Selected `sol@xhigh` 555s vs incumbent `terra@ultra` 949s = 1.71x.
+> Caught by the Wave-1 implementation audit.)* Blocker volume was 11–15 in every arm of the sweep
 > regardless of model or effort, so the loop's non-termination is untouched by this wave. The
 > convergence work — packet manifests, plan/code separation, materiality rules, enforced round caps,
 > blocker reconciliation — is Wave 2.

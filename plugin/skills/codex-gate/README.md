@@ -7,7 +7,7 @@ Local-only: nothing is committed to any repo; all state lives under `~/.claude/c
 The contract source of truth is this README.
 
 **Tests:** run `bash codex-gate.test.sh` and expect `FAIL=0`. The printed `PASS=` count is the
-authoritative assert total (276 as of 2026-08-11); the per-tier Status lines below list what each
+authoritative assert total (351 as of 2026-08-12); the per-tier Status lines below list what each
 tier added, not running totals. No npm packages — the suite is bash + Node stdlib only.
 
 ---
@@ -263,10 +263,12 @@ the running gate. This subcommand makes that condition observable.
 | `effective` | the values actually in force after env overrides. `fast` is normalized to its **real trigger** — `run_codex` arms fast mode on an exact `"1"` and nothing else, so `CODEX_GATE_FAST=2` reports `fast:false`; `fastRaw` keeps the raw value visible |
 | `origin` | per dial: `"default"`, or the **name of the env var** that overrode it |
 | `running` | `{path, digest}` of the script that produced the report — so "the digest of the running script" is unambiguous even when it is neither endpoint |
-| `runtimePath` / `runtimeDigest` / `runtimeKind` / `runtimeDefaults` | the gate that actually runs: path, sha256, `file`\|`symlink`\|`other`\|`missing`, and the dials that copy **declares** |
-| `sourcePath` / `sourceDigest` / `sourceKind` / `sourceDefaults` | the same four for the versioned copy |
+| `runtimePath` / `runtimeDigest` / `runtimeKind` / `runtimeDefaults` | the gate that actually runs: path, sha256, `file`\|`symlink`\|`other`\|`missing`, and the dials that copy **declares**. `symlink` is reported when **any component** of the path is a symlink, not merely the leaf — the documented personal-skill setup symlinks the *directory* |
+| `sourcePath` / `sourceDigest` / `sourceKind` / `sourceDefaults` | the same four for the versioned copy. `sourceKind` is a **leaf** classification: the source is only ever read, and a checkout legitimately living behind a symlinked parent is not a hazard — the any-component rule exists because writing through a link is |
 | `sourceDiscovery` | how the source was resolved — or, when it wasn't, why not |
-| `digestParity` | sha256 **byte identity** of the two endpoints |
+| `syncInventory` | the documented file inventory the sync owns (see Install/sync below) — the exact set parity is claimed over |
+| `inventoryDrift` | on a `MISMATCH`, the members that actually drifted: `{file, state}` where state is `differs` \| `absent-from-source` \| `absent-from-runtime` |
+| `digestParity` | sha256 byte identity across the **whole inventory**, not just the script. A member absent from *both* sides is skipped — two copies that both lack a file have no drift between them |
 | `effectiveParity` | the dials **in force** vs the dials the versioned source **declares** — reported separately because byte-identical files still behave differently under env overrides |
 | `parity` | the roll-up: `MATCH` only when **both** checks affirmatively matched; a known difference ⇒ `MISMATCH`; anything undetermined ⇒ `UNAVAILABLE` |
 
@@ -286,21 +288,50 @@ the running gate. This subcommand makes that condition observable.
   directly above the dial block, and — where no override is in play — the parsed literal must equal the live
   value. Either disagreement ⇒ `INFRA_ERROR`, because every parity claim would inherit the parser's error.
 
-Status: **Config contracts GREEN** — exercised by `codex-gate.test.sh` (all three dials + both digests +
-a parity state; an env override moving `effective` off `defaults` with `origin` naming the variable;
-`CODEX_GATE_FAST=2` reporting DISABLED with `=1` as the contrast control; a divergent fixture pair reporting
-MISMATCH and naming both distinct digests plus each side's declared dials; an unlocatable source reporting
-UNAVAILABLE rather than MATCH; missing and symlinked endpoints reported honestly; and the read-only
-invariants — zero Codex calls, no run dir, an unchanged repo, exit 0, and exit 2 on a bogus argument).
+Status: **Config contracts GREEN** — exercised by `codex-gate.test.sh` (all three dials by their EXACT
+effective values plus both digests and a parity state; an env override moving `effective` off `defaults`
+with `origin` naming the variable; `CODEX_GATE_FAST=2` reporting DISABLED with `=1` as the contrast control;
+a divergent fixture pair reporting MISMATCH and naming both distinct digests plus each side's declared dials;
+an unlocatable source reporting UNAVAILABLE rather than MATCH; missing, leaf-symlinked and
+directory-symlinked endpoints all reported honestly; a docs-only divergence reporting MISMATCH and naming the
+drifted inventory members; and the read-only invariants — zero Codex calls, no run dir, an unchanged repo,
+the runtime path's own mtime and inode untouched, exit 0, and exit 2 on a bogus argument).
 
 ---
 
 ## Install/sync — `install` (PINNED contract)
 
 The deliberate resolution to the drift `config` (above) makes observable. `codex-gate.sh install` copies
-the versioned **source** onto the installed **runtime** so a subsequent `config` reports `parity: MATCH`.
+the versioned **source** skill onto the installed **runtime** skill so a subsequent `config` reports
+`parity: MATCH`.
 
-- **The ONLY mode that writes the runtime file, and only when invoked by its own explicit name.** It is
+### The sync unit is the whole skill directory
+
+Sync operates on an **explicit, documented file inventory** — not on `codex-gate.sh` alone. Syncing the
+script by itself was broken in two separate ways: a first-time create landed a script whose *very first*
+invocation exited 2 (`missing schema` — `main` requires the sibling `verdict.schema.json` and
+`reviewer-instructions.md` before dispatching any mode), and an update left the installed `SKILL.md` /
+`README.md` still documenting superseded dials while the parity report cheerfully said `MATCH`.
+
+| # | inventory member | why it is in the sync unit |
+| --- | --- | --- |
+| 1 | `codex-gate.sh` | the gate itself. Its two endpoints are the explicitly-named `CODEX_GATE_SOURCE` / `CODEX_GATE_RUNTIME` paths, whatever they are called, so both knobs keep pointing at a script; every other member is resolved as a sibling |
+| 2 | `verdict.schema.json` | required by `main` before ANY mode dispatches |
+| 3 | `question.schema.json` | the `question` grounding mode's output schema |
+| 4 | `investigate.schema.json` | the `investigate` mode's output schema |
+| 5 | `reviewer-instructions.md` | required by `main` before ANY mode dispatches |
+| 6–9 | `reviewer-instructions.{arch,frontend,security,tests}.md` | the four multi-lens personas |
+| 10 | `question-instructions.md` | the `question` mode's reviewer brief |
+| 11 | `investigate-instructions.md` | the `investigate` mode's reviewer brief |
+| 12 | `SKILL.md` | the operational contract an agent reads to drive the gate |
+| 13 | `README.md` | this contract |
+
+`config` reports the same list as `syncInventory`, so it is machine-readable and cannot silently drift from
+what the sync actually writes. **Anything outside the inventory is never written and never removed** —
+`codex-gate.test.sh` is deliberately excluded (the suite is developed against the checkout, not shipped into
+the runtime), and an owner's own notes sitting in the installed skill directory survive a sync untouched.
+
+- **The ONLY mode that writes the runtime, and only when invoked by its own explicit name.** It is
   never triggered as a side effect of `config`, a review, `investigate`, or anything else — the owner
   decides when to sync, this script never decides for them. (Enforced structurally: the `mode_install`
   function has exactly one caller in the whole file — its own dispatch arm.)
@@ -314,22 +345,34 @@ the versioned **source** onto the installed **runtime** so a subsequent `config`
 
   | topology | why it refuses |
   | --- | --- |
-  | **symlink** | a `cp`/`mv` would silently turn a linked install into a copied one — a topology change nobody asked for. Repoint/replace it yourself, then re-run. |
+  | **symlink** | **any component** of the destination path is a symlink, not merely the leaf. The repo-root README's documented personal-skill setup symlinks the skill *directory*, so a leaf-only `-L` test misses the one topology that actually ships — and every write then goes **through** the link into a location the caller never named, silently turning a linked install into a copied one. Repoint/replace it yourself, then re-run. |
   | **missing** | a missing install is itself an anomaly worth a human look, not an auto-heal. `CODEX_GATE_INSTALL_ALLOW_CREATE=1` is a distinct, non-default opt-in for a genuine first-time install. |
-  | **other** (dir/device/fifo) | a plain file is expected there; refuses rather than guess what to do with it. |
-  | **plugin-managed** | the runtime path resolves **inside** the plugin scan root (`CODEX_GATE_PLUGIN_SCAN_ROOT`, default `$HOME/.claude/plugins/marketplaces`) — that copy is owned by the Claude Code plugin installer and gets overwritten on the next plugin update regardless. Edit the source and update/reinstall the plugin instead. |
+  | **other** (dir/device/fifo) | a plain file is expected at the runtime path, and a directory where the skill directory belongs; refuses rather than guess what to do with anything else. |
+  | **plugin-managed** | the runtime path resolves **inside** the plugin scan root (`CODEX_GATE_PLUGIN_SCAN_ROOT`, default `$HOME/.claude/plugins/marketplaces`) — that copy is owned by the Claude Code plugin installer and gets overwritten on the next plugin update regardless. Edit the source and update/reinstall the plugin instead. Containment is evaluated against the **deepest existing ancestor** and **before any `mkdir`**: canonicalizing `dirname(runtimePath)` returns *empty* when that parent does not exist yet, and an empty canonical path used to disable the check entirely, so allow-create would happily build a brand-new marketplace tree inside the plugin root and report success. |
   | **duplicate** | the runtime is a personal-skill copy *outside* the plugin root, but a plugin-managed `codex-gate.sh` **also** exists somewhere under the scan root — exactly the topology the repo-root README's "pick one install mode" warns about. Installing only one of two active installs would leave the owner silently running the other; both paths are named so the owner can reconcile (uninstall one) before re-running. |
 
-- **A byte-identical pair is a no-op** — `changed:false`, zero writes, no mtime churn. Otherwise the copy
-  is **atomic**: source → a same-directory temp file → `chmod +x` → `mv` over the runtime path. `mv` within
-  one filesystem is an atomic rename, so anything reading the runtime concurrently (a gate mid-review)
-  always sees the complete OLD script or the complete NEW one, never a partial write — this is what makes
-  `install` safe to run at any time.
+- **An incomplete source is an `INFRA_ERROR`, never a partial install.** If any inventory member is missing
+  or unreadable on the source side there is nothing safe to write, because the copy we would produce could
+  not run. A first-time create therefore either yields a **complete, runnable** skill or leaves nothing
+  behind at all.
+- **An already-matching install is a true no-op** — `changed:false`, **zero writes**, every member's mtime
+  *and* inode untouched. Members that are already byte-identical are skipped even when others need
+  updating, so `filesWritten` lists exactly what changed and nothing else.
+- **Writes are staged, then renamed.** Temp files are created with `mktemp` **inside the destination
+  directory** (O_EXCL, unpredictable name — a `$$`-derived name is guessable, and a pre-existing symlink
+  sitting on it would redirect the write). Every member is staged and digest-verified *before the first
+  rename*, so a failure part-way through leaves the destination completely untouched rather than
+  half-updated; each rename is then an atomic same-filesystem `mv`, so a gate reading a member concurrently
+  always sees the complete OLD file or the complete NEW one. A first-time create is built in full in a
+  staging directory and moved into place with **one** rename, so the destination is either absent or a
+  complete skill — there is no partial-install state to observe. The whole inventory is re-verified against
+  the source afterwards; a mismatch is an `INFRA_ERROR` rather than a claimed success.
 
 **Status line** (`outcome ∈ INSTALLED | REFUSED | INFRA_ERROR`): `{outcome, runtimePath, runtimeKind,
-sourcePath, sourceDigest, runtimeDigestBefore, runtimeDigestAfter, changed, summary}`. `REFUSED` is a
-confident, deliberate safety refusal (distinct from `INFRA_ERROR`, which means "could not determine" — no
-readable source located, or the atomic replace itself failed despite passing every topology check).
+runtimeDir, sourceDir, sourcePath, sourceDigest, runtimeDigestBefore, runtimeDigestAfter, changed,
+syncInventory, filesWritten, summary}`. `REFUSED` is a confident, deliberate safety refusal (distinct from
+`INFRA_ERROR`, which means "could not determine, or could not do this safely" — no readable source located,
+an incomplete source, or a staged replace that failed despite passing every topology check).
 
 **Sync the real install, then verify:**
 ```bash
@@ -340,11 +383,16 @@ Run both **from the checkout carrying the fix** — `<skill-dir>` resolves `CODE
 auto-discovery to itself when it is checked out in a git work tree, so no env var is needed for the
 common case; `CODEX_GATE_RUNTIME` defaults to the real installed gate.
 
-Status: **Install contracts GREEN** — exercised by `codex-gate.test.sh` (a divergent fixture pair
-installs and `config` on the same pair afterwards confirms `parity: MATCH`; a second run on an
-already-matching pair is a verified no-op; symlinked/missing/directory-kind runtimes refuse with the
-target left byte-unmodified; `CODEX_GATE_INSTALL_ALLOW_CREATE=1` is the sole path to creating a missing
-install; a runtime inside the plugin scan root refuses as plugin-managed; a personal-skill runtime
-alongside a plugin-managed copy refuses as a duplicate and names both paths; an absent plugin scan root
-never blocks a normal install; a normal review run and `config` are both proven to never write to
+Status: **Install contracts GREEN** — exercised by `codex-gate.test.sh` (a divergent fixture pair of skill
+*directories* installs, every inventory member ends byte-identical, and `config` on the same pair afterwards
+confirms `parity: MATCH`; a second run on an already-matching pair is a no-op verified by **mtime and
+inode**, not by digest; leaf-symlinked, **directory-symlinked**, missing and directory-kind runtimes all
+refuse with the target left byte-unmodified; `CODEX_GATE_INSTALL_ALLOW_CREATE=1` is the sole path to creating
+a missing install, the created skill is **invoked** and its own `config` exits 0, and an incomplete source
+refuses with nothing left behind; a runtime inside the plugin scan root refuses as plugin-managed **even
+when its parent directory does not exist yet**, with nothing created under the root, while the same
+missing-parent shape outside the root still installs; a personal-skill runtime alongside a plugin-managed
+copy refuses as a duplicate and names both paths; an absent plugin scan root never blocks a normal install;
+a docs-only divergence is reported as MISMATCH and synced, while a non-inventory file in the destination is
+neither written nor removed; a normal review run and `config` are both proven to never write to
 `CODEX_GATE_RUNTIME`'s path; and `install` fails closed on a bogus argument and an unlocatable source).
