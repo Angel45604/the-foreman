@@ -1031,41 +1031,99 @@ run_test_19() {
 }
 
 #############################################################################
-# TEST 20 — fast mode: CODEX_GATE_FAST default-ON adds fast flags (both via the
-#   shared tail), CODEX_GATE_FAST=0 omits them, and gpt-5.6-sol/ultra stay intact. [FAST]
+# TEST 20 — model/effort defaults + fast-mode dial [FAST/EFFORT]
+#   Default (no env set): -m gpt-5.6-sol + model_reasoning_effort="xhigh", and
+#   fast mode OFF (fast flags absent — fast is now opt-in, not enforced).
+#   Negative invariant: the default argv must NEVER carry the OLD
+#   model_reasoning_effort="ultra" value — this protects against silently
+#   reverting to a natively-delegating tier, independent of which non-delegating
+#   tier ends up chosen. CODEX_GATE_FAST=1: fast flags appear AND gpt-5.6-sol/
+#   xhigh survive (fast is a speed knob, not a quality knob).
 #############################################################################
 run_test_20() {
-  local repo qfile argv_on argv_off
+  local repo qfile argv_default argv_fast1 model_val
   repo="$(make_repo)"
   printf 'seed\n' > "$repo/seed.txt"
   git -C "$repo" add seed.txt && git -C "$repo" commit -qm init
   qfile="$SANDBOX/decision_fast.md"
   printf 'DECISION: x?\n\nOPTIONS:\n- Option A\n- Option B\n' > "$qfile"
 
-  # default (CODEX_GATE_FAST unset -> 1): fast flags present
+  # default (no env set): -m gpt-5.6-sol + model_reasoning_effort="xhigh"
   reset_argv_log
-  ( cd "$repo" && STUB_MODE=grounded bash "$WRAPPER" question "$qfile" ) > "$SANDBOX/f1.txt" 2>"$SANDBOX/f1.err"
-  argv_on="$(cat "$STUB_ARGV_LOG")"
-  if printf '%s' "$argv_on" | grep -q 'fast_mode' && printf '%s' "$argv_on" | grep -q 'service_tier="fast"'; then
-    pass 'fast-mode: default ON passes --enable fast_mode + service_tier="fast"'
+  ( cd "$repo" && STUB_MODE=grounded bash "$WRAPPER" question "$qfile" ) > "$SANDBOX/f_def.txt" 2>"$SANDBOX/f_def.err"
+  argv_default="$(cat "$STUB_ARGV_LOG")"
+  model_val="$(awk 'prev=="-m"{print; exit} {prev=$0}' "$STUB_ARGV_LOG")"
+  if [ "$model_val" = "gpt-5.6-sol" ] && printf '%s' "$argv_default" | grep -q 'model_reasoning_effort="xhigh"'; then
+    pass 'defaults: no-env argv carries -m gpt-5.6-sol + model_reasoning_effort="xhigh"'
   else
-    fail "fast-mode: default did NOT pass fast flags :: $argv_on"
-  fi
-  # fast != dumb: model + reasoning effort must remain
-  if printf '%s' "$argv_on" | grep -q 'gpt-5.6-sol' && printf '%s' "$argv_on" | grep -q 'model_reasoning_effort="ultra"'; then
-    pass "fast-mode: gpt-5.6-sol model + ultra reasoning effort preserved under fast mode"
-  else
-    fail "fast-mode: model/reasoning defaults NOT preserved under fast mode :: $argv_on"
+    fail "defaults: no-env argv expected -m gpt-5.6-sol + model_reasoning_effort=\"xhigh\", got -m '$model_val' :: $argv_default"
   fi
 
-  # CODEX_GATE_FAST=0: fast flags absent
-  reset_argv_log
-  ( cd "$repo" && CODEX_GATE_FAST=0 STUB_MODE=grounded bash "$WRAPPER" question "$qfile" ) > "$SANDBOX/f0.txt" 2>"$SANDBOX/f0.err"
-  argv_off="$(cat "$STUB_ARGV_LOG")"
-  if printf '%s' "$argv_off" | grep -q 'fast_mode'; then
-    fail "fast-mode: CODEX_GATE_FAST=0 still passed fast_mode :: $argv_off"
+  # negative invariant: default argv must NOT carry the OLD ultra effort value
+  # (holds regardless of which non-delegating tier ends up chosen)
+  if printf '%s' "$argv_default" | grep -q 'model_reasoning_effort="ultra"'; then
+    fail "defaults: no-env argv still carries the OLD model_reasoning_effort=\"ultra\" :: $argv_default"
   else
-    pass "fast-mode: CODEX_GATE_FAST=0 omits fast flags"
+    pass 'defaults: no-env argv does NOT carry model_reasoning_effort="ultra"'
+  fi
+
+  # default fast is OFF: fast flags absent
+  if printf '%s' "$argv_default" | grep -q 'fast_mode' || printf '%s' "$argv_default" | grep -q 'service_tier="fast"'; then
+    fail "fast-mode: default (no env) still passed fast flags :: $argv_default"
+  else
+    pass "fast-mode: default (no env) omits fast flags (fast is opt-in, not enforced)"
+  fi
+
+  # CODEX_GATE_FAST=1: fast flags present AND fast is not a quality knob
+  reset_argv_log
+  ( cd "$repo" && CODEX_GATE_FAST=1 STUB_MODE=grounded bash "$WRAPPER" question "$qfile" ) > "$SANDBOX/f1.txt" 2>"$SANDBOX/f1.err"
+  argv_fast1="$(cat "$STUB_ARGV_LOG")"
+  if printf '%s' "$argv_fast1" | grep -q 'fast_mode' && printf '%s' "$argv_fast1" | grep -q 'service_tier="fast"'; then
+    pass 'fast-mode: CODEX_GATE_FAST=1 passes --enable fast_mode + service_tier="fast"'
+  else
+    fail "fast-mode: CODEX_GATE_FAST=1 did NOT pass fast flags :: $argv_fast1"
+  fi
+  if printf '%s' "$argv_fast1" | grep -q 'gpt-5.6-sol' && printf '%s' "$argv_fast1" | grep -q 'model_reasoning_effort="xhigh"'; then
+    pass "fast-mode: gpt-5.6-sol model + xhigh reasoning effort preserved under fast mode (fast is not a quality knob)"
+  else
+    fail "fast-mode: model/reasoning defaults NOT preserved under fast mode :: $argv_fast1"
+  fi
+}
+
+#############################################################################
+# TEST 20b — empty-vs-unset CODEX_GATE_MODEL contract [MODEL]
+#   CODEX_GATE_MODEL unset -> "${VAR:-default}" resolves to gpt-5.6-sol -> -m
+#   IS present. CODEX_GATE_MODEL="" (explicitly empty) -> the wrapper's
+#   `[ -n "$CODEX_GATE_MODEL" ]` guard must treat empty as "no override" and
+#   omit -m entirely (falls through to Codex's own default). The two states
+#   must be distinguishable, not both silently resolving to gpt-5.6-sol.
+#############################################################################
+run_test_20b() {
+  local repo qfile argv_empty model_val
+  repo="$(make_repo)"
+  printf 'seed\n' > "$repo/seed.txt"
+  git -C "$repo" add seed.txt && git -C "$repo" commit -qm init
+  qfile="$SANDBOX/decision_model.md"
+  printf 'DECISION: y?\n\nOPTIONS:\n- Option A\n- Option B\n' > "$qfile"
+
+  # unset -> -m gpt-5.6-sol
+  reset_argv_log
+  ( cd "$repo" && STUB_MODE=grounded bash "$WRAPPER" question "$qfile" ) > "$SANDBOX/m_unset.txt" 2>"$SANDBOX/m_unset.err"
+  model_val="$(awk 'prev=="-m"{print; exit} {prev=$0}' "$STUB_ARGV_LOG")"
+  if [ "$model_val" = "gpt-5.6-sol" ]; then
+    pass "model-contract: CODEX_GATE_MODEL unset -> -m gpt-5.6-sol"
+  else
+    fail "model-contract: CODEX_GATE_MODEL unset -> expected -m gpt-5.6-sol, got -m '$model_val' :: $(cat "$STUB_ARGV_LOG")"
+  fi
+
+  # explicitly empty -> NO -m flag at all (distinct from unset)
+  reset_argv_log
+  ( cd "$repo" && CODEX_GATE_MODEL="" STUB_MODE=grounded bash "$WRAPPER" question "$qfile" ) > "$SANDBOX/m_empty.txt" 2>"$SANDBOX/m_empty.err"
+  argv_empty="$(cat "$STUB_ARGV_LOG")"
+  if printf '%s\n' "$argv_empty" | grep -qx -- '-m'; then
+    fail "model-contract: CODEX_GATE_MODEL=\"\" still emitted -m (empty treated as unset) :: $argv_empty"
+  else
+    pass 'model-contract: CODEX_GATE_MODEL="" omits -m entirely (falls through to Codex default)'
   fi
 }
 
@@ -3034,6 +3092,7 @@ run_test_17
 run_test_18
 run_test_19
 run_test_20
+run_test_20b
 run_test_21
 run_test_22
 run_test_23
