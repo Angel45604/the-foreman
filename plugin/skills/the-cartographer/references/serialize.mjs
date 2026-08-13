@@ -21,65 +21,41 @@ const PRESENTATION_ORDER_PATHS = new Set(['views.*.columns']);
 // ─── the ADR C-003 wall-clock guard ──────────────────────────────────────────────────────────────
 //
 // THE RULE, stated once. Inside a JSON STRING token of the serialized text — a value or a key — a
-// wall-clock timestamp is either of:
+// wall-clock timestamp is a DATE-TIME: an ISO-8601 date immediately followed by a time of day, in
+// either spelling and at any precision from the HOUR down — `2026-08-11T13Z`, `2026-08-11 13:45`,
+// `20260811T13`, `20260811T134500Z`. Refused wherever it appears, a path included: a stamped
+// directory (`logs/20260811T1345/run.json`) is still a stamp.
 //
-//   (a) a DATE-TIME: an ISO-8601 date immediately followed by a time of day, in either spelling and
-//       at any precision from the HOUR down — `2026-08-11T13Z`, `2026-08-11 13:45`, `20260811T13`,
-//       `20260811T134500Z`. Refused wherever it appears, a path included.
-//   (b) a bare DATE: extended `2026-08-11`, or basic `20260811` restricted to the wall-clock band
-//       (year 1900-2199, month 01-12, day 01-31) and delimited by non-alphanumerics. Refused
-//       everywhere a string can carry it — as the whole value, as a key, and embedded in PROSE —
-//       with ONE carve-out: a PATH TOKEN, meaning the date's own whitespace-delimited run contains
-//       a `/`.
+// A BARE DATE IS NOT ONE, and is carried through wherever it appears — as the whole value, as a key,
+// embedded in prose, and inside a path (amended 2026-08-13, owner-authorized; ADR C-003). The churn
+// this rule exists to prevent comes from a GENERATION STAMP, and a generation stamp is always a
+// date-time: `new Date().toISOString()` produces one. A bare date is ordinary source text — a
+// changelog line, a version note, a dated directory, a quoted release line — which the extractor is
+// required to record verbatim. Refusing it prevented no churn and blocked real maps: the first REAL
+// subject the pipeline was pointed at could not be rendered at all, because its map quotes a README
+// line reading "…(245 as of 2026-08-01)".
 //
-// Each narrowing carries its weight:
-//   • STRING TOKENS ONLY, so a JSON number is never a date: `"lines": 20260811` is a count and
-//     carries no quotes. (A date-time cannot occur outside a string in JSON at all.)
-//   • THE CARVE-OUT IS A PATH, not "any longer string". `docs/initiatives/2026-08-11-the-cartographer/PDR.md`
-//     is a source path; `"generated on 2026-08-11"` is a stamp with words around it — and the
-//     whole-VALUE carve-out this replaces could not tell them apart, so it let the second through.
-//     The test is applied per MATCH, so a path cannot launder a second date sitting beside it, and
-//     it does not apply to (a): a stamped directory IS a stamp.
-//   • THE BASIC DATE MUST BE CALENDAR-SHAPED, because eight bare digits are also an id, a count or a
-//     hash prefix: `20261301` (month 13), `12345678` (year 1234) and `20260811abcdef01` are data.
-//     Shape, not calendar — `20260229` in a non-leap year is still refused, because the guard exists
-//     to fail closed, and no legitimate IR value is an eight-digit string in the wall-clock band.
+// The one narrowing left carries its weight: STRING TOKENS ONLY, so a JSON number is never read as a
+// date (`"lines": 20260811` is a count and carries no quotes), and the offending text a refusal
+// reports is text the file would actually carry.
 //
-// Deliberately NOT matched: a precision coarser than a day (`2026-08`, `2026`) and a bare time of
-// day (`13:45`). Those are indistinguishable from a version, an id, or a duration, and the false
-// positives would cost more than a stamp too coarse to churn a same-day regeneration.
+// Deliberately NOT matched, as before: a precision coarser than a day (`2026-08`, `2026`) and a bare
+// time of day (`13:45`). Those are indistinguishable from a version, an id, or a duration, and the
+// false positives would cost more than a stamp too coarse to churn a same-day regeneration.
 
-/** One JSON string token — the only place in JSON text where a date can be written. */
+/** One JSON string token — the only place in JSON text where a date-time can be written. */
 const JSON_STRING_RE = /"(?:[^"\\]|\\.)*"/g;
 /** hh, hhmm, hh:mm, hh:mm:ss(.sss), with an optional Z or ±hh:mm — precision from the hour down. */
 const TIME_OF_DAY = String.raw`(?:[01]\d|2[0-3])(?::?[0-5]\d)*(?:[.,]\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):?[0-5]\d)?`;
 /** An ISO date in either spelling; the basic form must not be a slice of a longer alphanumeric run. */
 const DATE_EITHER_SPELLING = String.raw`(?:\d{4}-\d{2}-\d{2}|(?<![0-9A-Za-z])\d{8})`;
 const ISO_DATETIME_RE = new RegExp(`${DATE_EITHER_SPELLING}[T ]${TIME_OF_DAY}(?![0-9A-Za-z])`);
-const ISO_DATE_RE = new RegExp(
-  String.raw`(?<![0-9A-Za-z])(?:\d{4}-\d{2}-\d{2}`
-  + String.raw`|(?:19|20|21)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))(?![0-9A-Za-z])`,
-  'g',
-);
-
-/** Is the match part of a PATH — the one token shape a bare date is allowed to be part of? */
-function isInsidePathToken(body, from, to) {
-  let start = from;
-  while (start > 0 && !/\s/.test(body[start - 1])) start -= 1;
-  let stop = to;
-  while (stop < body.length && !/\s/.test(body[stop])) stop += 1;
-  return body.slice(start, stop).includes('/');
-}
 
 /** The offending text, or null. Reads only the string tokens of the serialized JSON. */
 function findWallClockStamp(text) {
   for (const [token] of text.matchAll(JSON_STRING_RE)) {
-    const body = token.slice(1, -1);
-    const dateTime = ISO_DATETIME_RE.exec(body);
-    if (dateTime) return dateTime[0];
-    for (const date of body.matchAll(ISO_DATE_RE)) {
-      if (!isInsidePathToken(body, date.index, date.index + date[0].length)) return date[0];
-    }
+    const hit = ISO_DATETIME_RE.exec(token.slice(1, -1));
+    if (hit) return hit[0];
   }
   return null;
 }

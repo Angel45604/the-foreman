@@ -160,7 +160,7 @@ test('7 · normalize does not mutate its argument and returns a fresh object', (
   assert.deepEqual(out.nodes.map((n) => n.id), ['component.core', 'mode.check']);
 });
 
-test('8 · serialize FAILS CLOSED on an ISO-8601-shaped string anywhere (ADR C-003)', () => {
+test('8 · serialize FAILS CLOSED on an ISO-8601 date-TIME anywhere (ADR C-003)', () => {
   const clean = scrambledMap();
   assert.doesNotThrow(() => serialize(clean));
 
@@ -172,9 +172,10 @@ test('8 · serialize FAILS CLOSED on an ISO-8601-shaped string anywhere (ADR C-0
   top.generatedAt = '2026-08-11T13:45:00Z';
   assert.throws(() => serialize(top), /timestamp/i);
 
+  // A BARE date is not a wall-clock timestamp (C-003 as amended 2026-08-13) — see test 13.
   const dateOnly = scrambledMap();
   dateOnly.subject.summary = '2026-08-11';
-  assert.throws(() => serialize(dateOnly), /timestamp/i);
+  assert.doesNotThrow(() => serialize(dateOnly));
 
   const spaced = scrambledMap();
   spaced.nodes[1].summary = 'run 2026-08-11 13:45';
@@ -260,55 +261,61 @@ test('12 · presentation order is keyed on the IR LOCATION (views[].columns), no
     ['Capability', 'Kind', 'Evidence', 'Documented']);
 });
 
-test('13 · the C-003 guard closes the BASIC calendar-date VALUE (20260811) it used to let through', () => {
-  // FAIL-OPEN: `"2026-08-11"` was rejected as a whole value while its BASIC-form spelling — exactly
-  // what `date +%Y%m%d` produces — serialized straight into map.json. ADR C-003 prohibits an
-  // ISO-8601-shaped timestamp generally, not one spelling of it.
-  const asValue = scrambledMap();
-  asValue.nodes[0].attrs = { generated: '20260811' };
-  assert.throws(() => serialize(asValue), /timestamp/i);
+test('13 · a BARE DATE is source text, not a stamp — carried in EVERY position (C-003, amended)', () => {
+  // FAIL-CLOSED TOO HARD: the guard refused bare dates as well as date-times, and that refused the
+  // first REAL subject the pipeline was pointed at — its map quotes a README line carrying a release
+  // date, verbatim source text the extractor is required to record, and no page could be rendered at
+  // all. A generation stamp is always a date-TIME (`new Date().toISOString()` makes one); a bare date
+  // is ordinary source text — a changelog line, a version note, a dated directory — so refusing it
+  // blocked legitimate maps while preventing no churn. Owner-authorized 2026-08-13.
 
+  // the exact line that failed on the first real subject
+  const realSubject = scrambledMap();
+  realSubject.nodes[0].claims = [{
+    path: 'fx/tiny/SKILL.md', line: 7, claimKind: 'doc',
+    text: 'The printed PASS= count is the authoritative assert total (245 as of 2026-08-01)',
+  }];
+  assert.doesNotThrow(() => serialize(realSubject));
+
+  // as the WHOLE VALUE, in both spellings
+  for (const d of ['2026-08-01', '20260801', '2026-08-11', '20260811', '19000101', '21991231']) {
+    const m = scrambledMap();
+    m.nodes[0].attrs = { released: d };
+    assert.doesNotThrow(() => serialize(m), `${d} is a bare date, not a wall-clock stamp`);
+  }
+
+  // as a KEY, in both spellings
   const asKey = scrambledMap();
-  asKey.nodes[0].attrs = { 20260811: 'run' };
-  assert.throws(() => serialize(asKey), /timestamp/i);
+  asKey.nodes[0].attrs = { '2026-08-01': 'release', 20260811: 'run' };
+  assert.doesNotThrow(() => serialize(asKey));
 
-  const boundaries = ['19000101', '21991231', '20260229', '20261131'];
-  for (const d of boundaries) {
-    const m = scrambledMap();
-    m.nodes[1].attrs = { generated: d };
-    assert.throws(() => serialize(m), /timestamp/i, `${d} is date-shaped`);
-  }
-});
-
-test('13 · …without firing on an 8-digit value that is genuinely NOT a date', () => {
-  // The whole point of the narrowed rule: a bare run of 8 digits is only a timestamp when it can
-  // actually BE one. A count, an id, or a hex prefix that fails the calendar shape must pass.
-  const notDates = [
-    '20261301',   // month 13
-    '20260832',   // day 32
-    '20260800',   // day 00
-    '20261000',   // day 00
-    '12345678',   // year 1234 (outside the wall-clock band) and month 34
-    '99999999',
-    '00000000',
-    '20260811abcdef01',   // a hash prefix that merely STARTS with a date-shaped run
-    'a20260811',
+  // embedded in PROSE — a quoted release line is the commonest shape of all
+  const prose = [
+    'released 2026-08-01',
+    'generated on 2026-08-11',
+    'snapshot taken 2026-08-11 by the extractor',
+    'as of 20260811, before the rename',
+    'extracted 2026-08-11.',
+    'run 20260811 of the audit',
   ];
-  for (const v of notDates) {
+  for (const text of prose) {
     const m = scrambledMap();
-    m.nodes[0].attrs = { id: v };
-    assert.doesNotThrow(() => serialize(m), `${v} is not a wall-clock timestamp`);
+    m.nodes[1].summary = text;
+    assert.doesNotThrow(() => serialize(m), `a bare date inside ${JSON.stringify(text)}`);
   }
 
-  // a NUMBER is never a timestamp field — `"lines": 20260811` is a count, not a date
-  const numeric = scrambledMap();
-  numeric.nodes[0].attrs = { lines: 20260811, count: 20260811 };
-  assert.doesNotThrow(() => serialize(numeric));
-
-  // and the dated-PATH carve-out holds in BASIC form too, exactly as it does in extended form
-  const basicPath = scrambledMap();
-  basicPath.nodes[1].summary = 'see docs/initiatives/20260811-the-cartographer/PDR.md';
-  assert.doesNotThrow(() => serialize(basicPath));
+  // and in a PATH, which needs no carve-out of its own once a bare date is allowed outright
+  for (const text of [
+    'docs/initiatives/2026-08-11-the-cartographer/PDR.md',
+    'see docs/initiatives/2026-08-11-the-cartographer/PDR.md',
+    'docs/initiatives/20260811-the-cartographer/PDR.md',
+    'logs/2026-08-11/run.json',
+    'see docs/initiatives/2026-08-11-the-cartographer/PDR.md — released 2026-08-12',
+  ]) {
+    const m = scrambledMap();
+    m.nodes[1].summary = text;
+    assert.doesNotThrow(() => serialize(m), `${JSON.stringify(text)} carries only bare dates`);
+  }
 });
 
 test('14 · the C-003 guard closes REDUCED-PRECISION date-times — an hour is a wall clock too', () => {
@@ -327,41 +334,39 @@ test('14 · the C-003 guard closes REDUCED-PRECISION date-times — an hour is a
   }
 });
 
-test('14 · …and a generated date EMBEDDED IN PROSE, which the whole-value carve-out let through', () => {
-  // FAIL-OPEN: narrowing the bare-date rule to a whole string value (quote to quote) — the carve-out
-  // that keeps a dated PATH passing — also exempted every date written into a sentence, which is
-  // how a generation stamp actually reaches a summary.
-  const prose = [
-    'generated on 2026-08-11',
-    'snapshot taken 2026-08-11 by the extractor',
-    'as of 20260811, before the rename',
-    'extracted 2026-08-11.',
-    'run 20260811 of the audit',
-  ];
+test('14 · …and a date-TIME is refused WHEREVER it sits — value, key, prose or path', () => {
+  // The narrowing is to the SHAPE, never to the position: a stamp reaches the snapshot as a summary
+  // sentence or a stamped directory name just as readily as it reaches a dedicated field.
+  const asKey = scrambledMap();
+  asKey.nodes[0].attrs = { '2026-08-11T13:45': 'run' };
+  assert.throws(() => serialize(asKey), /timestamp/i);
+
+  const prose = ['generated on 2026-08-11T13:45Z', 'snapshot taken 20260811T1345 by the extractor'];
   for (const text of prose) {
     const m = scrambledMap();
     m.nodes[1].summary = text;
-    assert.throws(() => serialize(m), /timestamp/i, `a date inside ${JSON.stringify(text)}`);
+    assert.throws(() => serialize(m), /timestamp/i, `a date-time inside ${JSON.stringify(text)}`);
   }
 
-  // the dated-PATH carve-out is exactly that — a PATH. One string may carry both, and the path must
-  // not launder the stamp beside it.
+  // a stamped DIRECTORY is still a stamp — being part of a path exempts nothing
+  const stampedDir = scrambledMap();
+  stampedDir.nodes[1].summary = 'logs/20260811T1345/run.json';
+  assert.throws(() => serialize(stampedDir), /timestamp/i);
+
+  // …and a legitimate dated path beside it does not launder it
   const both = scrambledMap();
-  both.nodes[1].summary = 'see docs/initiatives/2026-08-11-the-cartographer/PDR.md — generated 2026-08-12';
+  both.nodes[1].summary =
+    'see docs/initiatives/2026-08-11-the-cartographer/PDR.md — generated 2026-08-12T09:00Z';
   assert.throws(() => serialize(both), /timestamp/i);
 });
 
-test('14 · …while a dated PATH, a coarser date, and a non-date digit run all still pass', () => {
+test('14 · …while a coarser date, a bare time and a non-date digit run all still pass', () => {
   const allowed = [
-    // the required carve-out, in both spellings, bare and inside a sentence
-    'docs/initiatives/2026-08-11-the-cartographer/PDR.md',
-    'see docs/initiatives/2026-08-11-the-cartographer/PDR.md',
-    'docs/initiatives/20260811-the-cartographer/PDR.md',
-    'logs/2026-08-11/run.json',
     // coarser than a day: indistinguishable from a version or an id, so deliberately NOT matched
     '2026-08', 'v2026', 'schema 2026',
-    // eight digits that cannot BE a date, and date-shaped runs glued to more alphanumerics
-    '20261301', '20260832', '12345678', '99999999', '20260811abcdef01', 'a20260811',
+    // eight digits that are plainly data, and date-shaped runs glued to more alphanumerics
+    '20261301', '20260832', '20260800', '20261000', '12345678', '99999999', '00000000',
+    '20260811abcdef01', 'a20260811',
     // a time with no date is not a wall-clock STAMP — it is a duration or a clock face
     '13:45', 'runs at 13:45:00',
   ];
@@ -375,11 +380,6 @@ test('14 · …while a dated PATH, a coarser date, and a non-date digit run all 
   const numeric = scrambledMap();
   numeric.nodes[0].attrs = { lines: 20260811, count: 20261231 };
   assert.doesNotThrow(() => serialize(numeric));
-
-  // …but a full date-TIME is refused even inside a path token: a stamped directory IS a stamp
-  const stampedDir = scrambledMap();
-  stampedDir.nodes[1].summary = 'logs/20260811T1345/run.json';
-  assert.throws(() => serialize(stampedDir), /timestamp/i);
 });
 
 test('9 · the committed fixture is ALREADY canonical — re-serializing it is byte-identical', () => {
