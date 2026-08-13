@@ -251,8 +251,10 @@ runtime at `~/.claude/skills/codex-gate/codex-gate.sh` ended up with a different
 default, and a different sha256. Nobody noticed, so a fix committed to the repo would never have reached
 the running gate. This subcommand makes that condition observable.
 
-- **Read-only, always.** ZERO Codex calls, **no run dir**, no ledger, no repo mutation — it reads three
-  files and runs `git rev-parse`. Exit **0** on success. Safe to run while another gate is mid-review.
+- **Read-only, always.** ZERO Codex calls, **no run dir**, no ledger, no repo mutation — it reads the
+  13-member inventory at both endpoints and runs read-only Git queries (`git rev-parse` to locate a work
+  tree, `git ls-files` to prove the source is tracked at its canonical path). Exit **0** on success.
+  Safe to run while another gate is mid-review.
 - **Fails closed** like the rest of the script: an unexpected argument ⇒ `exit 2` (the arg-validation
   convention); anything that would make the report a guess ⇒ `die_infra` ⇒ an `INFRA_ERROR` status line.
 

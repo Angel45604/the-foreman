@@ -1241,7 +1241,10 @@ run_test_20() {
 
 #############################################################################
 # TEST 20b — empty-vs-unset CODEX_GATE_MODEL contract [MODEL]
-#   CODEX_GATE_MODEL unset -> "${VAR:-default}" resolves to gpt-5.6-sol -> -m
+#   The production declaration is "${VAR-default}" -- WITHOUT the colon. That
+#   operator is the whole point: ":-" treats empty like unset, "-" does not, so
+#   only "-" lets an explicitly empty value stand as a real override.
+#   CODEX_GATE_MODEL unset -> "${VAR-default}" resolves to gpt-5.6-sol -> -m
 #   IS present. CODEX_GATE_MODEL="" (explicitly empty) -> the wrapper's
 #   `[ -n "$CODEX_GATE_MODEL" ]` guard must treat empty as "no override" and
 #   omit -m entirely (falls through to Codex's own default). The two states
