@@ -1,0 +1,195 @@
+/* the-cartographer — the map page's OWN token block (ADR C-007).
+ *
+ * Self-contained on purpose. Reusing the-foreman's stylesheet would be marginally cheaper and would
+ * recreate exactly the coupling that got Option C rejected: a standalone skill's output must not
+ * restyle itself because a sibling skill changed its deck. Nothing here is imported, and nothing here
+ * reaches the network: no stylesheet import, no asset reference, no web font, no remote anything.
+ * `render.mjs` inlines this file into a page that must render identically from a published Artifact,
+ * from a local file page, and inside a the-foreman deck — so a fetch construct anywhere in these
+ * bytes would break the one property the page is built for. (The tests assert that literally, which
+ * is why the forbidden spellings do not appear even inside this comment.)
+ *
+ * ─── the two theme carriers, and why BOTH are needed ───────────────────────────────────────────
+ *
+ * (1) AUTO — `prefers-color-scheme`, the viewer's OS setting.
+ * (2) FORCED — `:root[data-theme="dark"|"light"]`, which an Artifact host's theme toggle stamps on
+ *     the root element.
+ *
+ * The subtle half is that the toggle must win in BOTH directions. A bare `@media (prefers-color-
+ * scheme: dark)` block would keep applying to a viewer whose OS is dark but who has just toggled the
+ * page to light — the media query and the attribute rule have equal specificity, and the later one
+ * wins, so "force light" would silently do nothing. The auto block is therefore scoped
+ * `:root:not([data-theme="light"])`: once a theme is forced, the OS stops being consulted for it.
+ *
+ * The drift palette is derived from the tokens rather than hard-coded per class, so a re-theme moves
+ * all four classes at once. `--carto-warn` and `--carto-info` are the two names `svg.mjs` reads
+ * directly (it emits `var(--carto-warn, …)` with a literal fallback, so the hero still renders in a
+ * bare context — but themed values must exist here or the picture stops following the page).
+ */
+
+:root {
+  color-scheme: light;
+  --carto-paper: #ffffff;
+  --carto-soft: #f6f7f9;
+  --carto-ink: #1a1d21;
+  --carto-muted: #5b6573;
+  --carto-faint: #8a94a3;
+  --carto-line: #e2e6ea;
+  --carto-accent: #0f6fa8;
+  --carto-tint: #e8f2f8;
+  --carto-warn: #b45309;
+  --carto-warn-tint: #fdf1e3;
+  --carto-info: #2563eb;
+  --carto-ok: #1a7f5a;
+  --carto-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --carto-sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --carto-paper: #0f1419;
+    --carto-soft: #161b22;
+    --carto-ink: #e6edf3;
+    --carto-muted: #9ba8b7;
+    --carto-faint: #6b7684;
+    --carto-line: #2a313a;
+    --carto-accent: #56b6e6;
+    --carto-tint: #102a38;
+    --carto-warn: #f0a34a;
+    --carto-warn-tint: #33230f;
+    --carto-info: #7aa7ff;
+    --carto-ok: #4cc38a;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --carto-paper: #0f1419;
+  --carto-soft: #161b22;
+  --carto-ink: #e6edf3;
+  --carto-muted: #9ba8b7;
+  --carto-faint: #6b7684;
+  --carto-line: #2a313a;
+  --carto-accent: #56b6e6;
+  --carto-tint: #102a38;
+  --carto-warn: #f0a34a;
+  --carto-warn-tint: #33230f;
+  --carto-info: #7aa7ff;
+  --carto-ok: #4cc38a;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --carto-paper: #ffffff;
+  --carto-soft: #f6f7f9;
+  --carto-ink: #1a1d21;
+  --carto-muted: #5b6573;
+  --carto-faint: #8a94a3;
+  --carto-line: #e2e6ea;
+  --carto-accent: #0f6fa8;
+  --carto-tint: #e8f2f8;
+  --carto-warn: #b45309;
+  --carto-warn-tint: #fdf1e3;
+  --carto-info: #2563eb;
+  --carto-ok: #1a7f5a;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--carto-paper);
+  color: var(--carto-ink);
+  font-family: var(--carto-sans);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+.carto { max-width: 1040px; margin: 0 auto; padding: 32px 20px 72px; }
+
+.carto-kicker {
+  margin: 0 0 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--carto-accent);
+}
+
+.carto h1 { font-size: clamp(26px, 4.4vw, 40px); line-height: 1.12; margin: 0 0 12px; letter-spacing: -0.015em; }
+.carto h2 { font-size: clamp(18px, 2.6vw, 24px); margin: 0 0 6px; letter-spacing: -0.01em; }
+.carto h3 { font-size: clamp(15px, 2vw, 18px); margin: 0 0 6px; }
+.carto p { margin: 0 0 12px; color: var(--carto-muted); }
+.carto-lead { color: var(--carto-ink); font-size: 17px; }
+.carto-note { font-size: 13.5px; color: var(--carto-faint); }
+
+.carto-meta { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0 0 8px; font-size: 14px; }
+.carto-meta dt { color: var(--carto-faint); font-weight: 600; }
+.carto-meta dd { margin: 0; color: var(--carto-ink); font-family: var(--carto-mono); font-size: 13px; overflow-wrap: anywhere; }
+
+.carto-section { margin-top: 40px; padding-top: 24px; border-top: 1px solid var(--carto-line); }
+.carto-section > h2 { color: var(--carto-ink); }
+
+code, .carto-mono { font-family: var(--carto-mono); font-size: 0.88em; overflow-wrap: anywhere; }
+code { background: var(--carto-tint); color: var(--carto-ink); border-radius: 5px; padding: 0.1em 0.36em; }
+
+/* ─── the one scroll container ───────────────────────────────────────────────────────────────────
+ * Wide content — a capability table, a mermaid diagram, a long citation row — scrolls INSIDE its own
+ * box. Without this the page body itself scrolls sideways and every other section's text goes with
+ * it, which on a phone makes the whole report unreadable rather than one table inconvenient. */
+.carto-scroll { overflow-x: auto; max-width: 100%; }
+
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--carto-line); vertical-align: top; }
+th { color: var(--carto-faint); font-size: 11.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; }
+tbody tr:last-child td { border-bottom: none; }
+
+pre.mermaid {
+  margin: 0;
+  padding: 16px;
+  background: var(--carto-soft);
+  border: 1px solid var(--carto-line);
+  border-radius: 10px;
+  font-family: var(--carto-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+/* ─── drift ─────────────────────────────────────────────────────────────────────────────────────
+ * Every class is legible from the badge alone — colour is never the only carrier. UNVERIFIED reads
+ * as an ABSENCE of information (muted, dotted) rather than as a confirmed defect: PDR §8.1 guardrail
+ * 3 requires it to be visually distinct from one. */
+.carto-badge {
+  display: inline-block;
+  font-family: var(--carto-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+.carto-badge--stale { color: var(--carto-warn); background: var(--carto-warn-tint); }
+.carto-badge--phantom { color: var(--carto-muted); border-style: dashed; }
+.carto-badge--undocumented { color: var(--carto-info); background: var(--carto-tint); }
+.carto-badge--unverified { color: var(--carto-faint); border-style: dotted; }
+
+.carto-clean { color: var(--carto-ok); font-weight: 600; }
+.carto-cite { font-family: var(--carto-mono); font-size: 12.5px; color: var(--carto-muted); }
+.carto-quote { display: block; margin-top: 4px; color: var(--carto-ink); }
+
+/* ─── the SVG hero (classes emitted by svg.mjs) ─────────────────────────────────────────────── */
+.carto-figure { margin: 0; }
+.carto-hero__svg { display: block; width: 100%; height: auto; color: var(--carto-ink); }
+.carto-figure figcaption { margin-top: 10px; font-size: 13px; color: var(--carto-muted); }
+.carto-lane { text-transform: uppercase; letter-spacing: 0.1em; }
+.carto-edge { color: var(--carto-muted); }
+.carto-node { color: var(--carto-ink); }
+.carto-node--phantom { color: var(--carto-muted); }
+.carto-node--stale { color: var(--carto-warn); }
+.carto-node--undocumented { color: var(--carto-info); }
+.carto-node--unverified { color: var(--carto-faint); }
