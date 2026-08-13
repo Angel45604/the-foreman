@@ -27,6 +27,7 @@ REPORTED_FAULTS = (
     manifest.ManifestError,
     paths.ContainmentError,
     paths.OutputCapExceeded,
+    paths.GitCommandFailed,
     atomic.AtomicWriteError,
 )
 

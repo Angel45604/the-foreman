@@ -4,6 +4,7 @@ Deliberately dependency-free and sibling-skill-free (#29): nothing here reads,
 imports, or shells out to any skill other than `the-steward`.
 """
 
+import contextlib
 import os
 import subprocess
 import sys
@@ -87,6 +88,33 @@ def make_git_repo(prefix="steward-fixture-"):
 
 def porcelain(root):
     return git(root, "status", "--porcelain").stdout.decode("utf-8")
+
+
+def tree_snapshot(root):
+    """P2.4 — the cleanliness reading every read-only test asserts on.
+
+    `git status --porcelain` **plus** the untracked-file listing, because
+    porcelain collapses an untracked directory to one line: a read-only verb
+    that created `docs/steward/orphans.md` inside an already-untracked `docs/`
+    would leave porcelain byte-identical. It reads git through the test's own
+    subprocess helper, **not** through the core's `paths.git_output`, so the
+    subject under test is never also the oracle (the trap
+    `RepoRootTest.test_returns_none_outside_a_repository` documents).
+    """
+    status = git(root, "status", "--porcelain", "--untracked-files=all")
+    return status.stdout.decode("utf-8", "surrogateescape")
+
+
+@contextlib.contextmanager
+def unchanged_tree(test, root):
+    """Assert the working tree is byte-identical across the block.
+
+    Sensitivity is asserted directly in `test_gitstate.py` — a cleanliness
+    guard that cannot fail is the dead test this project exists to refuse.
+    """
+    before = tree_snapshot(root)
+    yield
+    test.assertEqual(before, tree_snapshot(root), "the working tree changed")
 
 
 class CoreTestCase(unittest.TestCase):

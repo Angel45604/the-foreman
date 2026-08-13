@@ -14,18 +14,30 @@ GIT_TIMEOUT_SECONDS = 30
 GIT_OUTPUT_CAP_BYTES = 8 * 1024 * 1024
 
 
-def git_output(cwd, args, timeout=GIT_TIMEOUT_SECONDS, cap=GIT_OUTPUT_CAP_BYTES):
-    """Run `git <args>` in `cwd`. Returns (returncode, stdout_bytes).
+def _run(cwd, args, timeout, cap, stdin):
+    """The one spawn site — every child is `git`, with an argument vector, an
+    explicit timeout and an explicit output cap (ADR-18).
 
-    Raises OutputCapExceeded when stdout exceeds `cap` — a corpus we could not
-    read whole must never read as a corpus we checked (ADR-10).
+    **The timeout and the cap resolve from the module constants at call time,
+    not from default arguments.** A default argument is bound once, at `def`
+    time, so `paths.GIT_OUTPUT_CAP_BYTES = 200` would be a silent no-op and
+    every test that lowered it would be vacuously green — and v0 has no flag
+    to lower it with instead (ADR-20, P1.3).
+
+    `stdin` feeds bytes to the child (`git check-attr -z --stdin`), which is
+    what keeps a large corpus off a command line bounded by `ARG_MAX`.
     """
+    if timeout is None:
+        timeout = GIT_TIMEOUT_SECONDS
+    if cap is None:
+        cap = GIT_OUTPUT_CAP_BYTES
     env = dict(os.environ)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     completed = subprocess.run(
         ["git"] + list(args),
         cwd=cwd,
         env=env,
+        input=stdin,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=timeout,
@@ -36,11 +48,51 @@ def git_output(cwd, args, timeout=GIT_TIMEOUT_SECONDS, cap=GIT_OUTPUT_CAP_BYTES)
             "refusing to report over a corpus that was not read whole."
             % (" ".join(args), len(completed.stdout), cap)
         )
+    return completed
+
+
+def git_output(cwd, args, timeout=None, cap=None, stdin=None):
+    """Run `git <args>` in `cwd`. Returns (returncode, stdout_bytes).
+
+    For the calls where a **non-zero status is an answer**: `check-ignore`
+    exits 1 for "no rule matches", `log` exits non-zero when nothing matches,
+    and `rev-parse` exits non-zero outside a repository. Callers that cannot
+    interpret a failure must use `git_checked` instead.
+    """
+    completed = _run(cwd, args, timeout, cap, stdin)
     return completed.returncode, completed.stdout
+
+
+def git_checked(cwd, args, timeout=None, cap=None, stdin=None):
+    """Run `git <args>` and **fault** on a non-zero status (ADR-13, exit 2).
+
+    For the calls where a failure has no honest interpretation. The shape this
+    replaces is `if code != 0: return []`, which turns a broken git invocation
+    into an empty corpus — "0 files checked, 0 problems found" rendered as
+    coverage, which is ADR-30's vacuous pass with our own plumbing as the
+    cause. A tool fault must never read as a pass.
+    """
+    completed = _run(cwd, args, timeout, cap, stdin)
+    if completed.returncode != 0:
+        raise GitCommandFailed(
+            "the-steward: `git %s` exited %d in %r: %s. Refusing to report "
+            "over a result we could not obtain."
+            % (
+                " ".join(args),
+                completed.returncode,
+                cwd,
+                completed.stderr.decode("utf-8", "replace").strip() or "(no stderr)",
+            )
+        )
+    return completed.stdout
 
 
 class OutputCapExceeded(Exception):
     """A git command exceeded its output cap (ADR-10, exit 2)."""
+
+
+class GitCommandFailed(Exception):
+    """A spawned git command failed unexpectedly (ADR-13, exit 2)."""
 
 
 class ContainmentError(Exception):
@@ -51,7 +103,7 @@ def repo_root(cwd):
     """Absolute, symlink-resolved repository root, or None when cwd is not in one."""
     try:
         code, out = git_output(cwd, ["rev-parse", "--show-toplevel"])
-    except (OSError, subprocess.SubprocessError, OutputCapExceeded):
+    except (OSError, subprocess.SubprocessError, OutputCapExceeded, GitCommandFailed):
         return None
     if code != 0:
         return None
