@@ -1,0 +1,222 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "claimRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence": {
+          "$ref": "#/definitions/confidence"
+        },
+        "state": {
+          "$ref": "#/definitions/state"
+        },
+        "value": {
+          "$ref": "#/definitions/recordValue"
+        },
+        "waived": {
+          "$ref": "#/definitions/waived"
+        }
+      },
+      "required": [
+        "value",
+        "state"
+      ],
+      "type": "object"
+    },
+    "commandRecord": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/claimRecord"
+        },
+        {
+          "properties": {
+            "resolution": {
+              "description": "`external` is a human's declaration and is valid only on a confirmed record; a scanner may never propose it (ADR-18).",
+              "enum": [
+                "repo-declared",
+                "external"
+              ]
+            }
+          },
+          "required": [
+            "resolution"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "confidence": {
+      "description": "Per-inference (ADR-2, ADR-28). Optional on a record: present when a scan inference produced it, absent when a human wrote it.",
+      "enum": [
+        "high",
+        "low"
+      ]
+    },
+    "pathRecord": {
+      "$ref": "#/definitions/claimRecord"
+    },
+    "recordValue": {
+      "description": "Equal to its own ASCII-stripped form, and free of ASCII control characters U+0000-U+001F and U+007F (ADR-32).",
+      "minLength": 1,
+      "type": "string"
+    },
+    "state": {
+      "description": "Exactly two stored states. `drifted` is derived at read time, never stored (ADR-11).",
+      "enum": [
+        "proposed",
+        "confirmed"
+      ]
+    },
+    "waived": {
+      "additionalProperties": false,
+      "properties": {
+        "reason": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "The readable contract. Enforcement lives in tools/steward/manifest.py, which is hand-written and dependency-free (ADR-1: zero third-party dependencies, so no JSON-Schema evaluator is vendored). A test asserts this document's `properties` and the validator's TOP_LEVEL_KEYS match, which is the drift guard between the two.",
+  "properties": {
+    "$schema": {
+      "description": "Relative path to this file inside the target repo.",
+      "type": "string"
+    },
+    "commands": {
+      "description": "The approved command set. C1's only claim source (ADR-32).",
+      "items": {
+        "$ref": "#/definitions/commandRecord"
+      },
+      "type": "array"
+    },
+    "docsScope": {
+      "additionalProperties": false,
+      "description": "The declared documentation scope (C3, C4, the indexes).",
+      "properties": {
+        "confidence": {
+          "$ref": "#/definitions/confidence"
+        },
+        "include": {
+          "items": {
+            "$ref": "#/definitions/recordValue"
+          },
+          "type": "array"
+        },
+        "state": {
+          "$ref": "#/definitions/state"
+        },
+        "waived": {
+          "$ref": "#/definitions/waived"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "type": "object"
+    },
+    "frontmatterSchema": {
+      "additionalProperties": false,
+      "description": "A required-key list plus one optional boolean, and nothing else (ADR-31). Unknown frontmatter keys pass silently; no value is ever type- or format-checked.",
+      "properties": {
+        "requireNonEmpty": {
+          "type": "boolean"
+        },
+        "requiredKeys": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "requiredKeys"
+      ],
+      "type": "object"
+    },
+    "intentionallyEmpty": {
+      "description": "One record per legitimately empty declared scope, keyed per scope (ADR-30). A record clears the vacuity error for its key only.",
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "confidence": {
+            "$ref": "#/definitions/confidence"
+          },
+          "scope": {
+            "enum": [
+              "commands",
+              "docsScope",
+              "paths"
+            ]
+          },
+          "state": {
+            "$ref": "#/definitions/state"
+          },
+          "waived": {
+            "$ref": "#/definitions/waived"
+          }
+        },
+        "required": [
+          "scope",
+          "state"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "paths": {
+      "description": "The declared path list. C2's only claim source (ADR-32).",
+      "items": {
+        "$ref": "#/definitions/pathRecord"
+      },
+      "type": "array"
+    },
+    "recorded": {
+      "description": "The paths the-steward created, each with its kind and the digest of the whole file as we last wrote it. The manifest never records itself (ADR-2).",
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "description": "rendered: a renderer produced it, so C4 can re-render it. copied: vendored bytes, never re-rendered, never in the corpus.",
+            "enum": [
+              "rendered",
+              "copied"
+            ]
+          },
+          "path": {
+            "$ref": "#/definitions/recordValue"
+          },
+          "sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "kind",
+          "sha256"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "scan": {
+      "additionalProperties": false,
+      "properties": {
+        "pending": {
+          "description": "Re-scan deltas. A re-scan may not mutate a matching confirmed record (ADR-11).",
+          "type": "array"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "title": "the-steward contract manifest (.steward.json), v1",
+  "type": "object"
+}
