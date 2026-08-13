@@ -152,7 +152,58 @@ Drift is not confined to a table. Node styling encodes drift class directly:
 
 On `codex-gate`, `CODEX_GATE_MAX_ROUNDS` appears as a ghost node with no edge into the script — the
 defect is visible in the picture, not buried in prose. Mermaid supports this via `classDef`; the SVG
-hero via stroke/fill attributes.
+hero via stroke/fill attributes. **Every drift-bearing node appears in at least one graph view**, and
+`render.mjs` fails closed when one does not — a finding a reader can meet only in a table has been
+hidden from the picture, and the map has quietly become a table with pictures.
+
+#### Attention buckets — how the drift lane is ORDERED (ADR C-017)
+
+Detection stays universal. On the first real subject the drift lane carried 16 findings, 11 of them
+UNDOCUMENTED, and most of those landed on internal shell helpers — so the two that mattered were
+buried. **Every finding is still computed, still written to `drift.json`, still stated in full in
+`map.md`, and still drawn on the diagrams.** What changed is the ORDER a reader meets them in, and
+whether one group starts folded.
+
+Scoping the class by kind would have been the shorter fix and is not available: a suppressed
+UNDOCUMENTED disappears outright, because PHANTOM is the opposite cell of the same membership grid
+and STALE needs an extractor-asserted contradiction record, so no other class can recover it. §8's
+model is therefore untouched, and this section is the whole of the answer.
+
+Each finding is assigned an **attention bucket** from **both the node's `kind` and its `lane`** —
+never from kind alone, which is not a sound public-contract proxy: lane drives layout and kind
+supplies taxonomy, and neither represents documentation obligation. The taxonomy has **no
+public-entry-point kind**, so a public function commonly lands under `component`.
+
+- **`likely-contract`** — the subject's advertised surface: `mode`, `flag`, `env` and `outcome` in
+  **every** lane, plus `component` in the `entry` lane. Lane may never demote a vocabulary kind;
+  doing so would turn a layout decision into a false negative, and both findings the first run
+  genuinely wanted are `env` nodes drawn in the `core` lane.
+- **`ambiguous-review`** — genuinely uncertain, and therefore **visible by default**. This is where
+  everything unjudged lands: the `external` kind in every lane, `artifact` / `component` / `state`
+  outside `core`, and any kind, lane or drift class the table has no rule for. An undocumented hard
+  prerequisite is the canonical case — `codex-gate` exits 2 when `jq` is absent and documents it
+  nowhere, so `jq` surfaces for review rather than being dismissed as "external".
+- **`implementation-detail`** — the only collapsible group, and only **three of thirty-two** cells
+  reach it: `artifact`, `component` and `state` in the `core` lane, where the kind says
+  "implementation noun" and the map's own layout says "internal machinery". It is rendered as a
+  native `<details>`, closed — no script, because the page stays self-contained and CSP-safe (§6,
+  ADR C-007).
+
+Two invariants make this presentation rather than suppression:
+
+1. **Only `UNDOCUMENTED` can be collapsed.** PHANTOM, STALE and UNVERIFIED all require somebody to
+   have WRITTEN a claim, so the subject has already declared the node part of its documented surface;
+   UNDOCUMENTED is the only class derived from the ABSENCE of documentation, and so the only one that
+   fires mechanically on every internal. A class floor lifts any other class out of the collapsed
+   group — which is what keeps the run's most consequential finding, a STALE on
+   `component × core`, in front of the reader.
+2. **The rule is one exported table**, `references/attention.mjs`, read by both renderers. A bucket
+   decided in two places is the two-artifacts-that-must-agree drift this skill exists to detect, one
+   level down.
+
+The lane states the RAW count and the per-bucket tally, so a reader can see that nothing was
+filtered — only that some of it was folded. `map.md` groups nothing and folds nothing: it is the
+self-sufficient report (§12), so the bucket arrives there as one more stated fact per finding.
 
 ## 7 · The IR contract (`map.json`)
 
@@ -227,28 +278,30 @@ extractor/schema version, with no observation timestamp churn"*):
 
 1. Object keys serialized in a fixed order; arrays sorted by `id` (`sources` by `path`).
 2. **No wall-clock timestamp anywhere in `map.json`.** Generation time is rendered into `map.html` and
-   `map.md` only. Without this, every regeneration reports spurious structural drift. The serializer
-   fails closed on an ISO-8601-shaped timestamp in **either spelling** — extended (`2026-08-11`,
-   `2026-08-11T13:45`) and basic (`20260811`, `20260811T134500Z`) — because ADR C-003 prohibits the
-   shape, not one way of writing it. The guard reads the **JSON string tokens** of the serialized
-   text, so a number is never a date (`"lines": 20260811` is a count), and within them refuses:
-   - a **date-time** — a date immediately followed by a time of day, at any precision from the
-     **hour** down (`2026-08-11T13Z`, `20260811T13`, `2026-08-11 13:45`, `20260811T134500Z`) —
-     wherever it appears, a path included: a stamped directory is still a stamp;
-   - a **bare date** everywhere a string can carry it — as the whole value, as a key, and **embedded
-     in prose** (`"generated on 2026-08-11"`) — with ONE carve-out: a **path token**, the date's own
-     whitespace-delimited run containing a `/`. That is what keeps
-     `docs/initiatives/2026-08-11-the-cartographer/PDR.md` from being a false positive, and it is
-     narrower than exempting any longer string, which would let the prose stamp through. The test is
-     applied per match, so a path cannot launder a second date written beside it.
+   `map.md` only. Without this, every regeneration reports spurious structural drift. **A wall-clock
+   timestamp is a date-TIME**, and that is what the serializer fails closed on, in **either
+   spelling** — extended (`2026-08-11T13:45`) and basic (`20260811T134500Z`) — because ADR C-003
+   prohibits the shape, not one way of writing it. The guard reads the **JSON string tokens** of the
+   serialized text, so a number is never a date (`"lines": 20260811` is a count), and within them
+   refuses a date immediately followed by a time of day at any precision from the **hour** down
+   (`2026-08-11T13Z`, `20260811T13`, `2026-08-11 13:45`, `20260811T134500Z`) — **wherever it appears,
+   a path included**: a stamped directory (`logs/20260811T1345/run.json`) is still a stamp, and a
+   legitimate dated path written beside a stamp does not launder it.
 
-   The basic form is additionally required to be calendar-shaped — year 1900–2199, month 01–12, day
-   01–31 — and delimited by non-alphanumerics, so that an eight-digit id, count or hash prefix such
-   as `20261301`, `12345678` or `20260811abcdef01` is data, not a date. Shape is checked, not a
-   calendar: `20260229` in a non-leap year is still refused, because the guard fails closed.
-   Deliberately **not** matched: a precision coarser than a day (`2026-08`, `2026`) and a bare time
-   of day (`13:45`) — those are indistinguishable from a version, an id or a duration, and the false
-   positives would cost more than a stamp too coarse to churn a same-day regeneration.
+   A **bare date is NOT a timestamp for this rule and is carried**, in either spelling
+   (`2026-08-01`, `20260801`), wherever it appears — as the whole value, as a key, embedded in
+   **prose**, and inside a path (`docs/initiatives/2026-08-11-the-cartographer/PDR.md`). *Amended
+   2026-08-13, owner-authorized, after the first real subject failed:* the guard originally refused
+   bare dates too, and refused the first real map outright — it quotes a README line reading *"…(245
+   as of 2026-08-01)"*, verbatim source text the extractor is required to record. A generation stamp
+   is always a date-time (`new Date().toISOString()` produces one), while a bare date is ordinary
+   source text — a changelog line, a version note, a quoted release line — so refusing it blocked
+   legitimate maps and prevented no churn. The bare-date matcher, its 1900–2199 calendar band and the
+   path-token carve-out went with the rule, since all three existed only to let bare dates through.
+
+   Deliberately **not** matched either: a precision coarser than a day (`2026-08`, `2026`) and a bare
+   time of day (`13:45`) — those are indistinguishable from a version, an id or a duration, and the
+   false positives would cost more than a stamp too coarse to churn a same-day regeneration.
 3. IDs are derived deterministically from kind + label, never from position or read order.
 4. `sha256` per source file is what proves an extraction corresponds to a specific source state.
 5. **The IR is plain JSON data, and every tool reads it through one boundary.** `map.json` holds
@@ -436,6 +489,12 @@ STALE, but does not make a capability documented. Counting comments as docs woul
 `CODEX_GATE_RUNS` "documented" via the usage header at `codex-gate.sh:6` and destabilised the §12
 oracle — and would leave the audit quietest on the subjects that most need it.
 
+**Detection is universal, and stays universal.** UNDOCUMENTED therefore fires on every evidenced,
+undocumented internal — which on a real subject is most of the lane. That is a READABILITY problem and
+it is answered in §6.2 by presentation (ADR C-017), never by scoping the class: a suppressed
+UNDOCUMENTED disappears outright, since PHANTOM is the opposite cell of the same membership grid and
+STALE needs a contradiction record, so no other class can recover it.
+
 **STALE is extractor-asserted, not derived.** A contradiction between a documented value and observed
 behaviour cannot be computed from set membership. The extractor raises it explicitly by emitting a
 `contradiction` record on the node — `{ claim: {path,line,text}, evidence: {path,line,note},
@@ -480,7 +539,13 @@ This is a real limitation and the design absorbs it explicitly rather than prete
 | `validate.mjs` | code | the IR contract, enforced — the single source of truth (ADR C-006); no separate schema file ships, because a schema plus a validator is two artifacts that can drift from each other |
 | extraction protocol | agent-driven | read source → emit `map.json` with citations |
 | `diff.mjs` | code | the four drift classes; emits `drift.json` |
+| `attention.mjs` | code | the kind × lane attention table (§6.2, ADR C-017) — PRESENTATION only; the one place a bucket is decided, read by both renderers |
+| `canonical.mjs` | code | the shared ingest boundary (§7.1 rule 12) — what a value in the IR may BE, applied once by every entry point |
 | `layout.mjs` | code | bounded lane layout for the SVG hero |
+| `svg.mjs` / `mermaid.mjs` | code | the two graph emitters — inline SVG hero, mermaid for the detail views |
+| `markdown.mjs` | code | the self-sufficient `map.md` report (§12) |
+| `freshness.mjs` | code | source digests and line counts — does this snapshot still describe the files on disk? |
+| `secret-scan.mjs` | code | the fail-closed secret / PII gate, run over all four artifacts before any write (ADR C-008) |
 | `render.mjs` | code | `map.json` + `drift.json` → `map.html` + `map.md` |
 | `serialize.mjs` | code | the deterministic serializer (§7) |
 

@@ -44,10 +44,37 @@ into `map.html` / `map.md` only.
 
 **Why.** Codex: *"Treat map.json as generated audit/render IR, not behavioral canon … with no
 observation timestamp churn."* A timestamp inside the snapshot would make every regeneration report
-spurious structural drift, destroying Phase 2. Enforced by a serializer guard that throws on any
-ISO-8601-shaped string (C-006), not by discipline.
+spurious structural drift, destroying Phase 2. Enforced by a serializer guard that throws on an
+ISO-8601 **date-time** (C-006), not by discipline.
 
-**Revisit if.** Never for the timestamp rule — it is load-bearing for Phase 2.
+**Amended 2026-08-13 — owner-authorized, after the first real subject failed.** A wall-clock timestamp
+is a **date-time**; a **bare date is source text**, and is carried.
+
+The guard originally refused bare dates too, and that refused the first REAL subject the pipeline was
+ever pointed at: the `codex-gate` map quotes a README line reading *"…(245 as of 2026-08-01)"* —
+verbatim source text the extractor is required to record — and `render.mjs` could not produce a page at
+all. The guard cannot tell a quoted release line from a generation stamp, so the strict rule blocked
+every real map while preventing no churn.
+
+The narrowing is sound because a **generation stamp is always a date-time**: `new Date().toISOString()`
+produces one, and that is the churn this rule exists to prevent. A bare date is ordinary source text —
+a changelog line, a version note, a dated directory, a quoted release line — and refusing it protected
+nothing.
+
+- **Still refused**, in any position (value, key, prose, path), in both spellings, at any precision
+  from the hour down: `2026-08-11T13:45:00Z`, `2026-08-11 13:45`, `20260811T134500Z`, `20260811T13`,
+  `2026-08-11T13Z`. A stamped directory (`logs/20260811T1345/run.json`) is still a stamp.
+- **Carried**: a bare date in either spelling — `2026-08-01`, `20260801` — wherever it appears.
+
+Simplified with it, because all three existed only to let legitimate bare dates through: the bare-date
+matcher, its 1900–2199 calendar band, and the path-token carve-out. Verified end to end on the real
+subject — the map renders, and two regenerations produce byte-identical `map.json` and `drift.json`
+while the wall-clock stamp stays in `map.md`.
+
+**Revisit if.** Not for the date-time half — that is the load-bearing one for Phase 2, and it should
+not be narrowed further. The bare-date half revisits only if a bare date is ever observed *churning* a
+regeneration, i.e. an extractor writing today's date into the snapshot as data. The answer then is to
+stop the extractor writing it, not to re-refuse quoted source text.
 
 ## C-004 · `drift.json` is derived output, not part of the snapshot
 
@@ -258,3 +285,76 @@ authorized; the work stays uncommitted until the owner grants it.
 **Revisit if.** Phase 1's `phase-review` also fails to converge — that would indicate the problem is the
 specification's substance rather than its medium, and the remedy would be scope reduction, not another
 change of venue.
+
+## C-017 · Attention buckets are PRESENTATION; detection stays universal
+
+**Decision.** Every drift finding is assigned an **attention bucket** — `likely-contract`,
+`ambiguous-review` or `implementation-detail` — derived from **both** the node's `kind` and its
+`lane`, by one exported table in `references/attention.mjs` that both renderers read. In `map.html`
+the drift lane is grouped by bucket; `likely-contract` and `ambiguous-review` are readable without
+expanding anything, and only `implementation-detail` renders as a native `<details>`, closed. Nothing
+else changes: `computeDrift` is untouched, `drift.json` is byte-identical, `map.md` groups and folds
+nothing, and every finding still appears in at least one graph view.
+
+**Owner decision, 2026-08-13.** Presented as Option E of five — "universal audit plus three
+conservative attention buckets" — against Option B (scope UNDOCUMENTED by node kind), Option C (an
+explicit per-node `surface` field), Option D (severity on the finding) and Option A (rank only). The
+owner chose E.
+
+**Detection was never on the table, and this is why.** The decision was grounded with
+`codex-gate question` before being put to the owner, and the grounding returned
+**`settledByCanon: true`**: canon already makes UNDOCUMENTED universal for every non-inferred node.
+It is settled in three places that agree — **C-005** above ("`diff.mjs` derives PHANTOM and
+UNDOCUMENTED from set membership alone", with `inferred: true` as the *only* exclusion), **C-014**
+above (the `doc`-claim narrowing is the one narrowing, and its accepted cost is stated), and **PDR
+§8**, whose class table has no kind or lane term — as `diff.mjs` has no kind check.
+
+Scoping detection by kind would not have been a quieter audit; it would have been a deliberate
+**false-negative stage**. A suppressed UNDOCUMENTED does not resurface elsewhere: PHANTOM is the
+opposite membership cell of the same grid and STALE requires an extractor-asserted contradiction
+record, so neither can recover a finding this class declines to raise. This initiative has twice
+treated exactly that shape as its most serious defect class — a hollow citation record that silently
+deleted a PHANTOM, and a defaulted `findings = []` that drew a drifting map as clean. Building one on
+purpose is not available.
+
+**What made it necessary.** The first run against a real subject (`codex-gate`, 91 nodes,
+[oracle-run-1.md](./oracle-run-1.md)) produced 16 findings, 11 UNDOCUMENTED. Roughly 2–4 are what a
+reader means by "a documentation gap"; the rest landed on internal shell helpers — `build_manifest`,
+`classify_verdict_file`, `append_context_if_present` — and buried the ones that mattered. An audit
+nobody reads because it cries wolf is worse than no audit, and the owner's stated purpose is *"a way
+for humans to understand a system at a glance"*.
+
+**Why the rule reads BOTH kind and lane.** Codex, grounding the same question: *"lane drives layout,
+kind supplies taxonomy and identity; neither explicitly represents visibility or documentation
+obligation."* The taxonomy has **no public-entry-point kind**, so a public function commonly lands
+under `component` — which is precisely why `component` DEFAULTS to `ambiguous-review` rather than to
+`implementation-detail`. Reading both axes is what lets the one demotion be conservative: a finding
+collapses only where the kind says "implementation noun" **and** the map's own layout says "internal
+machinery". Three of thirty-two cells qualify (`artifact`, `component`, `state` × `core`), all in one
+lane, none for a kind a caller interacts with directly. The full table, with a justification per
+cell, is in `references/attention.mjs` and summarised in PDR §6.2.
+
+**How PHANTOM and STALE are protected.** By a class floor, not by care. Only `UNDOCUMENTED` can reach
+the collapsed bucket; PHANTOM, STALE and UNVERIFIED are floored at `ambiguous-review` whatever their
+cell says, and the floor is one-directional — it raises a collapsed cell and never lowers a visible
+one. The principle behind it is not a special case: all three of those classes require somebody to
+have WRITTEN a claim, so the subject has already declared the node part of its documented surface,
+while UNDOCUMENTED is the only class derived from the ABSENCE of documentation and therefore the only
+one that fires mechanically on every internal. The floor is stated as a list of never-collapsed
+classes rather than as "not UNDOCUMENTED", so a fifth drift class is never-collapsible by default.
+The real subject proves the floor does work rather than merely exist: the run's most consequential
+finding — `emit_synthetic_approve` claiming a ledger write it never performs — is a STALE on
+`component × core`, the one collapsible cell.
+
+**Accepted cost.** A reader who never expands the disclosure sees 11 of the real subject's 16
+findings rather than all 16. That is the trade the owner chose, and it is bounded by everything above:
+the collapsed five are UNDOCUMENTED-on-internal-core-nouns only, the lane states the raw count and the
+per-bucket tally above the groups, and `drift.json` and `map.md` carry the full set unfolded. A second
+cost is that the table is a judgement recorded in code, so a subject whose `component × core` nodes
+really are its public surface will have them folded — the mitigation is that folding is reversible in
+one click and reversible for free, which is the whole reason detection was left alone.
+
+**Revisit if.** A real subject is observed whose *collapsed* group contained a finding that mattered
+— that is evidence about a specific cell, and the remedy is to promote that cell, never to reintroduce
+scoping in `diff.mjs`. Also revisit if `NODE_KINDS` ever gains a public-entry-point kind, which would
+let `likely-contract` stop leaning on the `entry` lane to say what the taxonomy cannot.

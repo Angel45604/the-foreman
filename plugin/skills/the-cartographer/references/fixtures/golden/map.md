@@ -12,28 +12,28 @@ This report is self-sufficient. Every node, edge, claim, evidence citation, cove
 
 ## Drift
 
-4 findings, in the drift engine's reporting order: a confirmed defect before an uncheckable claim.
+4 findings, in the drift engine's reporting order: a confirmed defect before an uncheckable claim. Each carries the attention bucket the page groups by — likely contract, ambiguous (needs review), or implementation detail. That is presentation only: detection is universal, and every finding is listed here in full whatever its bucket.
 
-- **`PHANTOM`** — `mode.build` (`build`)
+- **`PHANTOM`** — `mode.build` (`build`) · attention: `likely-contract`
   - `Documented at plugin/skills/the-cartographer/references/fixtures/tiny/SKILL.md:7, but the map carries no code evidence that it exists.`
   - Citations:
     - `plugin/skills/the-cartographer/references/fixtures/tiny/SKILL.md`:7
       - claimKind: `doc`
       - checked: **yes**
       - text: ``- `build` — compiles the project before running.``
-- **`UNDOCUMENTED`** — `env.tiny_debug` (`TINY_DEBUG`)
+- **`UNDOCUMENTED`** — `env.tiny_debug` (`TINY_DEBUG`) · attention: `likely-contract`
   - `Evidenced at plugin/skills/the-cartographer/references/fixtures/tiny/run.sh:7, but no claimKind:"doc" claim documents it — a code-comment claim is not documentation (ADR C-014).`
   - Citations:
     - `plugin/skills/the-cartographer/references/fixtures/tiny/run.sh`:7
       - note: `[ "${TINY_DEBUG:-0}" = "1" ] && printf ... >&2`
-- **`STALE`** — `mode.check` (`check`)
+- **`STALE`** — `mode.check` (`check`) · attention: `likely-contract`
   - `The doc says check prints "check ran"; the code prints "core ran for check".`
   - Citations:
     - `plugin/skills/the-cartographer/references/fixtures/tiny/SKILL.md`:8
       - text: ``- `check` — runs the core routine and prints `check ran`.``
     - `plugin/skills/the-cartographer/references/fixtures/tiny/run.sh`:8
       - note: `printf 'core ran for %s\\n' "$1"`
-- **`STALE`** — `outcome.pass` (`PASS`)
+- **`STALE`** — `outcome.pass` (`PASS`) · attention: `likely-contract`
   - `The comment says PASS goes to stdout; the code redirects it to stderr.`
   - Citations:
     - `plugin/skills/the-cartographer/references/fixtures/tiny/run.sh`:16

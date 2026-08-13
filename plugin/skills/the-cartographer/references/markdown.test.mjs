@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 import { toMarkdown, safeText, recoverText } from './markdown.mjs';
 import { computeDrift } from './diff.mjs';
+import { bucketForFinding } from './attention.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TINY = path.join(HERE, 'fixtures', 'tiny.map.json');
@@ -218,6 +219,44 @@ test('8 · every drift finding appears with its class and citations', () => {
       assert.ok(md.includes(`${c.path}\`:${c.line}`), `finding citation ${c.path}:${c.line} missing`);
     }
   }
+});
+
+test('8d · every finding states its attention bucket, and NOTHING is folded away in Markdown', () => {
+  // `map.md` has no disclosure element and gets none: it is the self-sufficient report (PDR §12), so
+  // a bucket here is a LABEL a reader can triage by, never a place a finding goes to be hidden. The
+  // report keeps the drift engine's reporting order untouched for the same reason.
+  const map = loadTiny();
+  const byId = new Map(map.nodes.map((n) => [n.id, n]));
+  const findings = driftOf(map);
+  const md = toMarkdown(map, findings);
+
+  for (const f of findings) {
+    const bucket = bucketForFinding(f, byId.get(f.nodeId));
+    assert.ok(
+      md.includes(`${safeText(f.class)}** — ${safeText(f.nodeId)} (${safeText(f.label)}) · attention: ${safeText(bucket)}`),
+      `${f.nodeId} must be labelled ${bucket}`,
+    );
+  }
+  const order = md.split('\n')
+    .map((l) => l.match(/^- \*\*`([A-Z]+)`\*\* — .* · attention: /)?.[1])
+    .filter((cls) => cls !== undefined);
+  assert.deepEqual(order, findings.map((f) => f.class), 'the report must keep the engine\'s order');
+  assert.doesNotMatch(md, /<details/i, 'the Markdown report may never collapse a finding');
+});
+
+test('8e · a finding on a COLLAPSIBLE node is still stated in full in map.md', () => {
+  // The readability layer folds `component × core` away in the page. `map.md` must not: an agent
+  // handed only the report has to be able to reconstruct every finding (PDR §12).
+  const map = loadTiny();
+  map.nodes.find((n) => n.id === 'component.tiny_core').claims = [];
+  const findings = driftOf(map);
+  const internal = findings.find((f) => f.nodeId === 'component.tiny_core');
+  assert.ok(internal, 'fixture precondition: the internal helper is now UNDOCUMENTED');
+
+  const md = toMarkdown(map, findings);
+  assert.ok(md.includes(`· attention: ${safeText('implementation-detail')}`));
+  assert.ok(md.includes(safeText(internal.detail)), 'the collapsed-bucket finding must be stated in full');
+  for (const c of internal.citations) assert.ok(md.includes(`${c.path}\`:${c.line}`));
 });
 
 test('8b · a clean map states plainly that no drift was found', () => {

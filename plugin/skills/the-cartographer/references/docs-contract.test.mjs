@@ -189,22 +189,110 @@ test('PDR §7.1 states the FAIL-CLOSED rules validate.mjs enforces (ADR C-006)',
   }
 });
 
+/**
+ * PDR §6.2 is the human-readable half of `attention.mjs` and of `render.mjs`'s drift lane, exactly as
+ * §7.1 is the human-readable half of `validate.mjs`. It carries a heavier obligation than most prose
+ * here, because it documents a feature whose whole safety argument is a NEGATIVE: bucketing may fold
+ * and may never suppress. A §6.2 that stated the grouping without stating the invariants would read
+ * as permission to scope detection — the one thing ADR C-017 refuses — so each invariant is pinned
+ * where a reader would look for it.
+ */
+test('PDR §6.2 states the attention-bucket rules attention.mjs enforces (ADR C-017)', (t) => {
+  if (!docsPresent) return t.skip('initiative docs not present in this checkout');
+  const drift = section(read(PDR), '### 6.2 · Drift renders on the map');
+  for (const [what, re] of [
+    // the ADR it comes from, and the pre-existing rule render.mjs fails closed on
+    ['ADR C-017 as the buckets\' source', /ADR C-017/],
+    ['that every drift-bearing node is drawn in a graph view',
+      /Every drift-bearing node appears in at least one graph view/],
+    // ── the invariant that makes this presentation and not suppression ───────────────────────────
+    ['that detection stays universal', /Detection stays universal/],
+    ['that every finding survives bucketing, in every output',
+      /still computed, still written to `drift\.json`, still stated in full in\s*\n?`map\.md`, and still drawn on the diagrams/],
+    ['that what changed is the ORDER, not the set', /What changed is the ORDER a reader meets them in/],
+    ['that scoping detection was NOT the fix, and why it could not be',
+      /suppressed\s*\n?UNDOCUMENTED disappears outright/],
+    // ── the rule itself: BOTH axes, never kind alone ─────────────────────────────────────────────
+    ['that a bucket is derived from BOTH kind and lane',
+      /from \*\*both the node's `kind` and its `lane`\*\*/],
+    ['that kind alone is not a sound public-contract proxy',
+      /never from kind alone, which is not a sound public-contract proxy/],
+    ['the reason it is not — the taxonomy has no public-entry-point kind',
+      /\*\*no\s*\n?public-entry-point kind\*\*, so a public function commonly lands under `component`/],
+    // ── the three buckets, each by what it contains ──────────────────────────────────────────────
+    ['the likely-contract bucket and the kinds in it',
+      /\*\*`likely-contract`\*\* — .{0,80}`mode`, `flag`, `env` and `outcome` in\s*\n?\*\*every\*\* lane/],
+    ['that a component at the ENTRY lane is contract too', /plus `component` in the `entry` lane/],
+    ['that lane may never demote a vocabulary kind', /Lane may never demote a vocabulary kind/],
+    ['the ambiguous-review bucket, and that it is VISIBLE by default',
+      /\*\*`ambiguous-review`\*\* — genuinely uncertain, and therefore \*\*visible by\s*\n?default\*\*/],
+    ['that the external KIND is ambiguous in every lane, never informational',
+      /the `external` kind in every lane/],
+    ['the jq case by name — an undocumented hard prerequisite surfaces for review',
+      /`codex-gate` exits 2 when `jq` is absent and documents it\s*\n?nowhere/],
+    ['that an unjudged kind, lane or class lands in ambiguous-review',
+      /any kind, lane or drift class the table has no rule for/],
+    ['the implementation-detail bucket and the EXACT cells that reach it',
+      /only \*\*three of thirty-two\*\* cells\s*\n?\s*reach it: `artifact`, `component` and `state` in the `core` lane/],
+    ['that both signals must agree before a finding is folded',
+      /the kind says\s*\n?\s*"implementation noun" and the map's own layout says "internal machinery"/],
+    ['that the collapse is a native <details> and carries NO script',
+      /native `<details>`, closed — no script/],
+    // ── the two invariants ───────────────────────────────────────────────────────────────────────
+    ['that ONLY UNDOCUMENTED can be collapsed', /\*\*Only `UNDOCUMENTED` can be collapsed\.\*\*/],
+    ['why the other classes cannot be — somebody WROTE a claim',
+      /require somebody to\s*\n?\s*have WRITTEN a claim/],
+    ['that a class floor lifts every other class out of the collapsed group',
+      /A class floor lifts any other class out of the collapsed\s*\n?\s*group/],
+    ['the real finding the floor protects — a STALE on component × core',
+      /a STALE on\s*\n?\s*`component × core`/],
+    ['that the rule is ONE exported table read by both renderers',
+      /\*\*The rule is one exported table\*\*, `references\/attention\.mjs`, read by both renderers/],
+    ['the two-artifacts-that-must-agree reason for that',
+      /A bucket\s*\n?\s*decided in two places is the two-artifacts-that-must-agree drift/],
+    // ── what the reader is told, so folding is never mistaken for filtering ──────────────────────
+    ['that the lane states the RAW count and the per-bucket tally',
+      /states the RAW count and the per-bucket tally/],
+    ['that map.md folds nothing, because it is the self-sufficient report',
+      /`map\.md` groups nothing and folds nothing/],
+  ]) {
+    assert.match(drift, re, `PDR §6.2 must state ${what} — attention.mjs implements it`);
+  }
+});
+
 test('PDR §7 states the timestamp rule serialize.mjs enforces (ADR C-003)', (t) => {
   if (!docsPresent) return t.skip('initiative docs not present in this checkout');
   const ir = section(read(PDR), '## 7 · The IR contract');
   for (const [what, re] of [
     ['that no wall-clock timestamp may appear in map.json', /no wall-clock timestamp/i],
     ['that BOTH ISO-8601 spellings are rejected', /basic[\s\S]{0,120}extended|extended[\s\S]{0,120}basic/i],
-    ['the basic spelling by example', /20260811/],
-    // the guard reads STRING TOKENS and refuses a date wherever a string can carry it — the
-    // whole-value form this replaces exempted every date written into a sentence
+    ['the basic spelling by example', /20260811T134500Z/],
+    // the guard reads STRING TOKENS, so a JSON number is never read as a date
     ['that the guard reads JSON string tokens, so a number is never a date', /string token/i],
-    ['that a date embedded in PROSE is refused, not only a whole value', /prose/i],
-    ['the ONE carve-out — a path token — and not "any longer string"', /path token/i],
-    ['the dated-PATH carve-out that keeps it from firing on a path', /2026-08-11-the-cartographer/],
     ['that a date-TIME is caught down to the HOUR, not only to the minute', /hour/i],
-    ['the calendar band that keeps an eight-digit id out of it', /1900[\s\S]{0,40}2199|20261301/],
     ['the precision the rule deliberately does NOT match', /coarser than a day|`2026-08`/],
+    // ── the 2026-08-13 amendment: the rule names DATE-TIMES only ─────────────────────────────────
+    // The guard refused bare dates too, and so refused the first REAL subject — its map quotes a
+    // dated README line. A doc still stating the old rule would describe a guard that no longer
+    // exists, which is this repo's own drift class.
+    ['that a wall-clock timestamp is specifically a date-TIME', /wall-clock\s+timestamp is a date-TIME/i],
+    ['that a date-time is refused in EVERY position, a path included',
+      /wherever it appears,\s*\n?\s*a path included/i],
+    ['that a stamped directory is still a stamp', /stamped directory[\s\S]{0,80}still a stamp/i],
+    ['that a bare date is NOT a timestamp and is CARRIED', /bare date is NOT a timestamp[\s\S]{0,60}carried/i],
+    // NOT a bare /prose/ — §7.1 rule 2 uses the word too, so a bare pin would match with this
+    // sentence deleted and pin nothing at all.
+    ['that a bare date is carried in PROSE too, not only as a whole value',
+      /embedded in\s*\n?\s*\*\*prose\*\*/i],
+    ['the bare-date spellings by example', /`2026-08-01`, `20260801`/],
+    ['that the amendment is dated and owner-authorized', /Amended\s*\n?\s*2026-08-13, owner-authorized/],
+    ['what triggered it — the first real subject failed', /first real subject failed/i],
+    ['the reasoning: a generation stamp is always a date-time',
+      /generation stamp\s*\n?\s*is always a date-time/i],
+    ['that the bare-date carve-outs were REMOVED with the rule they served',
+      /calendar band and the\s*\n?\s*path-token carve-out went with the rule/i],
+    ['the dated-PATH example that must no longer be a false positive',
+      /2026-08-11-the-cartographer/],
   ]) {
     assert.match(ir, re, `PDR §7 must state ${what} — serialize.mjs enforces it`);
   }

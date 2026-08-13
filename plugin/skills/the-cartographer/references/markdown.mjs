@@ -46,6 +46,7 @@
 import { ingestStrict } from './canonical.mjs';
 import { normalize } from './serialize.mjs';
 import { renderMermaid } from './mermaid.mjs';
+import { bucketForFinding } from './attention.mjs';
 
 /**
  * The one source string a code span cannot hold. CommonMark has no spelling for an EMPTY span —
@@ -403,7 +404,7 @@ export function toMarkdown(map, findings, opts = {}) {
 
   const out = [];
   out.push(...header(snapshot, opts));
-  out.push(...driftSection(drift));
+  out.push(...driftSection(drift, nodesById));
   out.push(...nodesSection(nodes, driftByNode));
   out.push(...edgesSection(edges));
   out.push(...viewsSection(views, snapshot, drift, nodesById, driftByNode));
@@ -439,7 +440,17 @@ function header(snapshot, opts) {
   return lines;
 }
 
-function driftSection(drift) {
+/**
+ * The drift findings, in the drift engine's REPORTING order, each labelled with its attention bucket
+ * (ADR C-017, PDR §6.2).
+ *
+ * Labelled, and NOT grouped. `map.html` folds the `implementation-detail` group behind a `<details>`
+ * because a page has a reader who scrolls; `map.md` is the SELF-SUFFICIENT report (PDR §12), whose
+ * whole contract is that an agent handed only this file can reconstruct every finding. So the bucket
+ * arrives here as one more stated fact — usable for triage, and incapable of hiding anything. The
+ * order stays the engine's, which is what the sentence above the list promises.
+ */
+function driftSection(drift, nodesById) {
   const lines = ['## Drift', ''];
   if (drift.length === 0) {
     lines.push(
@@ -457,11 +468,17 @@ function driftSection(drift) {
   // not have.
   lines.push(
     `${plural(drift.length, 'finding')}, in the drift engine's reporting order: a confirmed defect`
-    + ' before an uncheckable claim.',
+    + ' before an uncheckable claim. Each carries the attention bucket the page groups by — likely'
+    + ' contract, ambiguous (needs review), or implementation detail. That is presentation only:'
+    + ' detection is universal, and every finding is listed here in full whatever its bucket.',
     '',
   );
   for (const finding of drift) {
-    lines.push(`- **${safeText(finding.class)}** — ${safeText(finding.nodeId)} (${safeText(finding.label)})`);
+    const bucket = bucketForFinding(finding, nodesById.get(finding.nodeId));
+    lines.push(
+      `- **${safeText(finding.class)}** — ${safeText(finding.nodeId)} (${safeText(finding.label)})`
+      + ` · attention: ${safeText(bucket)}`,
+    );
     lines.push(`  - ${safeText(finding.detail)}`);
     lines.push('  - Citations:');
     for (const record of asArray(finding.citations)) lines.push(...citationBlock(record, 4));

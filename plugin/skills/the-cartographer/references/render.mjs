@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { groupByAttention } from './attention.mjs';
 import { ingestStrict } from './canonical.mjs';
 import { normalize, serialize } from './serialize.mjs';
 import { validate } from './validate.mjs';
@@ -282,9 +283,17 @@ function headerSection(snapshot, opts) {
  * nodes, and its rows have a different shape from a capability table, so making the generic table
  * renderer carry both would give one renderer two unrelated row shapes. The `data-carto-lane="drift"`
  * marker is what lets a test assert "exactly once" rather than "at least once".
+ *
+ * Within the lane the findings are GROUPED by attention bucket (ADR C-017, PDR §6.2). That is
+ * presentation and nothing else: the count stated is the raw count, every finding is rendered, and
+ * `enforceOnMapDrift` above still runs over ALL of them, so nothing a bucket touches can remove a
+ * finding from the page or from the diagrams. `likely-contract` and `ambiguous-review` are plain
+ * blocks a reader meets without acting; only `implementation-detail` is a native `<details>` — no
+ * script, because the page is self-contained and CSP-safe (ADR C-007) and an accordion is not worth
+ * a script tag.
  */
 function driftSection(snapshot, drift) {
-  const labels = new Map(asArray(snapshot.nodes).map((n) => [n.id, n.label]));
+  const nodesById = new Map(asArray(snapshot.nodes).map((n) => [n.id, n]));
   const parts = [
     '<section class="carto-section" id="drift" data-carto-lane="drift">',
     '<h2>Drift</h2>',
@@ -301,18 +310,45 @@ function driftSection(snapshot, drift) {
     return parts.join('\n');
   }
 
+  const groups = groupByAttention(drift, nodesById);
   parts.push(
     `<p>${plural(drift.length, 'finding')}, in the drift engine's reporting order: a confirmed defect`
     + ' before an uncheckable claim. Every finding below is also drawn on the diagrams.</p>',
+    // The tally names every group, empty ones included, so a reader can see that nothing was
+    // filtered — only that some of it was folded away.
+    `<p class="carto-note">Grouped by how much attention each is likely to need — presentation only:`
+    + ` ${groups.map((g) => `${g.findings.length} ${escapeXml(g.title.toLowerCase())}`).join(', ')}.`
+    + ' Detection is unchanged and universal; every finding here is in <code>drift.json</code> and in'
+    + ' <code>map.md</code> whichever group it lands in.</p>',
   );
-  const rows = drift.map((finding) => [
+  for (const group of groups) {
+    if (group.findings.length > 0) parts.push(driftGroup(group, nodesById));
+  }
+  parts.push('</section>');
+  return parts.join('\n');
+}
+
+/** One attention bucket: a heading, what the bucket promises, and its findings table. */
+function driftGroup(group, nodesById) {
+  const heading = `${escapeXml(group.title)} · ${plural(group.findings.length, 'finding')}`;
+  const rows = group.findings.map((finding) => [
     cell(badge(finding.class)),
-    cell(`<code>${escapeXml(finding.nodeId)}</code><span class="carto-quote">${escapeXml(labels.get(finding.nodeId) ?? finding.label)}</span>`),
+    cell(`<code>${escapeXml(finding.nodeId)}</code><span class="carto-quote">${escapeXml(nodesById.get(finding.nodeId)?.label ?? finding.label)}</span>`),
     cell(escapeXml(finding.detail)),
     cell(asArray(finding.citations).map((c) => `<span class="carto-cite">${citation(c)}${quoted(c)}</span>`).join('')),
   ]);
-  parts.push(table(['Class', 'Node', 'What was found', 'Cited at'], rows), '</section>');
-  return parts.join('\n');
+  const inner = [
+    `<p class="carto-note">${escapeXml(group.blurb)}</p>`,
+    table(['Class', 'Node', 'What was found', 'Cited at'], rows),
+  ];
+  const attrs = `class="carto-bucket" data-carto-bucket="${escapeXml(group.bucket)}"`;
+  // The trailing comment is a structural marker, not decoration: it is what lets a test slice the
+  // page into groups without parsing HTML, and therefore what lets "visible without expanding" be
+  // asserted rather than eyeballed.
+  const body = group.collapsible
+    ? [`<details ${attrs}>`, `<summary>${heading}</summary>`, ...inner, '</details>']
+    : [`<div ${attrs}>`, `<h3>${heading}</h3>`, ...inner, '</div>'];
+  return [...body, '<!-- /carto-bucket -->'].join('\n');
 }
 
 function viewSection(view, snapshot, drift) {
@@ -487,8 +523,13 @@ const ARTIFACT_NAMES = Object.freeze(['map.json', 'drift.json', 'map.html', 'map
  *
  * `opts.repoRoot`   — see `resolveRepoRoot`. Optional here, never inferred from cwd.
  * `opts.generatedAt`— the display stamp. Defaults to now. It reaches `map.html` and `map.md` only:
- *                     `serialize` refuses an ISO-shaped string in `map.json` or `drift.json`
- *                     (ADR C-003), so the rule is enforced by the writer rather than by discipline.
+ *                     `serialize` refuses a DATE-TIME in `map.json` or `drift.json` (ADR C-003, as
+ *                     amended 2026-08-13), so the rule is enforced by the writer rather than by
+ *                     discipline. Date-time, and not "ISO-shaped": a generation stamp is always a
+ *                     date-time — `new Date().toISOString()` produces one — while a BARE DATE is
+ *                     ordinary source text and is carried, which is what lets a map quote a dated
+ *                     changelog line. The default here is a real instant, so it is refused by
+ *                     construction if it ever reaches the snapshot.
  *
  * There is NO option that skips validation, freshness or the secret scan. An unrecognised option is
  * simply ignored, so a hopeful `{ force: true }` changes nothing.

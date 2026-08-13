@@ -136,6 +136,116 @@ test('P4b · a drift-bearing node in NO graph view is refused — the defect mus
   );
 });
 
+/**
+ * The tiny fixture's four findings all land in `likely-contract`, which is the right answer for it
+ * and useless for testing the other two groups. This variant plants one finding in EACH bucket by
+ * moving documentation and lanes ONLY — no finding is added or removed by the mutation, so the raw
+ * layer stays comparable to the fixture's own.
+ */
+function threeBucketMap() {
+  const map = loadTiny();
+  const byId = new Map(map.nodes.map((n) => [n.id, n]));
+  // component × core, undocumented → implementation-detail (the one collapsible cell).
+  byId.get('component.tiny_core').claims = [];
+  // component × output, undocumented → ambiguous-review. Un-inferring it is what makes it auditable
+  // at all (ADR C-005), and `output` is the lane that says "this is exposed, not internal".
+  const exposed = byId.get('component.dispatch_table');
+  exposed.inferred = false;
+  exposed.lane = 'output';
+  exposed.claims = [];
+  exposed.evidence = [{
+    line: 11, note: 'case "$1" in', path: `${TINY_REL}/run.sh`,
+  }];
+  return map;
+}
+
+/** The page's three bucket blocks, keyed by bucket, each as its own slice of the HTML. */
+function bucketBlocks(html) {
+  const blocks = new Map();
+  for (const match of html.matchAll(/data-carto-bucket="([a-z-]+)"([\s\S]*?)<!-- \/carto-bucket -->/g)) {
+    blocks.set(match[1], match[2]);
+  }
+  return blocks;
+}
+
+test('P4c · the drift lane groups every finding into the three attention buckets (ADR C-017)', () => {
+  const map = threeBucketMap();
+  const findings = driftOf(map);
+  const html = renderPage(map, findings);
+  const blocks = bucketBlocks(html);
+
+  assert.deepEqual([...blocks.keys()], ['likely-contract', 'ambiguous-review', 'implementation-detail']);
+
+  // A PARTITION of the findings the engine computed — not a filter of them.
+  const placed = [];
+  for (const [bucket, block] of blocks) {
+    for (const finding of findings) {
+      if (block.includes(`<code>${finding.nodeId}</code>`)) placed.push([finding.nodeId, finding.class, bucket]);
+    }
+  }
+  assert.equal(placed.length, findings.length, `every finding must appear exactly once: ${JSON.stringify(placed)}`);
+  const where = new Map(placed.map(([id, , bucket]) => [id, bucket]));
+  assert.equal(where.get('mode.build'), 'likely-contract', 'PHANTOM on a mode');
+  assert.equal(where.get('env.tiny_debug'), 'likely-contract', 'UNDOCUMENTED on an env var');
+  assert.equal(where.get('component.dispatch_table'), 'ambiguous-review', 'component × output');
+  assert.equal(where.get('component.tiny_core'), 'implementation-detail', 'component × core');
+});
+
+test('P4d · ONLY implementation-detail starts collapsed — and the page stays script-free', () => {
+  const html = renderPage(threeBucketMap(), driftOf(threeBucketMap()));
+
+  // Exactly one <details>, and it is the collapsible bucket. Native disclosure, no JS: the page is
+  // CSP-safe and self-contained (ADR C-007), so a scripted accordion is not available and not wanted.
+  assert.equal(html.split('<details').length - 1, 1, 'exactly one disclosure element');
+  assert.match(html, /<details[^>]*data-carto-bucket="implementation-detail"/);
+  assert.doesNotMatch(html, /<details[^>]*open/, 'the collapsed group must start CLOSED');
+  assert.doesNotMatch(html, /<script/i);
+
+  // …and the two prioritised groups sit OUTSIDE every <details>, so a reader meets them without
+  // expanding anything. Checked by deleting every disclosure region from the page first.
+  const withoutDisclosures = html.replace(/<details[\s\S]*?<\/details>/g, '');
+  assert.ok(withoutDisclosures.includes('<code>mode.build</code>'), 'the PHANTOM must be visible unexpanded');
+  assert.ok(withoutDisclosures.includes('<code>component.dispatch_table</code>'), 'the ambiguous finding must be visible unexpanded');
+  assert.ok(!withoutDisclosures.includes('<code>component.tiny_core</code>'), 'fixture precondition: the internal one IS inside the disclosure');
+});
+
+test('P4e · bucketing is PRESENTATION ONLY — the drift lane still carries every finding, in one lane', () => {
+  const map = threeBucketMap();
+  const findings = driftOf(map);
+  const html = renderPage(map, findings);
+
+  assert.equal(html.split('data-carto-lane="drift"').length - 1, 1, 'still exactly one drift lane');
+  for (const finding of findings) {
+    assert.ok(html.includes(`<code>${finding.nodeId}</code>`), `${finding.nodeId} missing from the page`);
+    assert.ok(html.includes(finding.class), `class ${finding.class} missing`);
+  }
+  // The count a reader sees is the RAW count, not the prioritised one.
+  assert.ok(html.includes(`${findings.length} findings`), `the lane must state all ${findings.length} findings`);
+});
+
+test('P4f · a STALE or PHANTOM on an internal node is NEVER collapsed', () => {
+  // The two classes with the strongest signal. `component × core` is the one collapsible cell, so a
+  // finding of another class sitting there is the exact case the class floor exists for — and the
+  // real subject has one: the `emit_synthetic_approve` STALE, the most consequential of that run.
+  const map = threeBucketMap();
+  const core = map.nodes.find((n) => n.id === 'component.tiny_core');
+  core.contradictions = [{
+    claim: { line: 16, path: `${TINY_REL}/SKILL.md`, text: '`tiny_core` is the shared routine every mode calls.' },
+    evidence: { line: 6, note: 'tiny_core() {', path: `${TINY_REL}/run.sh` },
+    statement: 'The doc says every mode calls it; build does not.',
+  }];
+  const findings = driftOf(map);
+  assert.deepEqual(
+    findings.filter((f) => f.nodeId === 'component.tiny_core').map((f) => f.class).sort(),
+    ['STALE', 'UNDOCUMENTED'],
+  );
+
+  const blocks = bucketBlocks(renderPage(map, findings));
+  assert.ok(blocks.get('ambiguous-review').includes('STALE'), 'the STALE was lifted out of the collapsed group');
+  assert.ok(!blocks.get('implementation-detail').includes('STALE'), 'a STALE must never be collapsed');
+  assert.ok(blocks.get('implementation-detail').includes('UNDOCUMENTED'));
+});
+
 test('P5 · coverage renders partial/skipped WITH reasons, and says plainly when neither occurred', () => {
   assert.match(page(loadTiny()), /no file was partially read or skipped/i);
 

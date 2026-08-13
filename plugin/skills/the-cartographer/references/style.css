@@ -182,6 +182,31 @@ pre.mermaid {
 .carto-cite { font-family: var(--carto-mono); font-size: 12.5px; color: var(--carto-muted); }
 .carto-quote { display: block; margin-top: 4px; color: var(--carto-ink); }
 
+/* ─── attention buckets (ADR C-017) ──────────────────────────────────────────────────────────────
+ * Presentation only. The two prioritised groups are ordinary blocks; the third is a NATIVE
+ * details/summary disclosure, which is the whole reason the grouping needs no script — the page stays
+ * self-contained and CSP-safe (ADR C-007). The collapsed group is styled as folded-away, never as
+ * unimportant: it carries real findings and its summary states how many.
+ *
+ * (The element name is written without angle brackets on purpose: this file is INLINED into the page,
+ * so a literal tag in a comment would be indistinguishable from a real one to anything counting
+ * disclosures in the rendered bytes.) */
+.carto-bucket { margin: 0 0 20px; }
+.carto-bucket > h3 { color: var(--carto-ink); }
+details.carto-bucket {
+  border: 1px dashed var(--carto-line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--carto-soft);
+}
+details.carto-bucket > summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--carto-muted);
+  font-size: clamp(15px, 2vw, 18px);
+}
+details.carto-bucket[open] > summary { margin-bottom: 8px; color: var(--carto-ink); }
+
 /* ─── the SVG hero (classes emitted by svg.mjs) ─────────────────────────────────────────────── */
 .carto-figure { margin: 0; }
 .carto-hero__svg { display: block; width: 100%; height: auto; color: var(--carto-ink); }
