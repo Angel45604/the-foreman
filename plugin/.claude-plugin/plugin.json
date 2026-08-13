@@ -1,7 +1,7 @@
 {
   "name": "the-foreman",
   "version": "1.1.0",
-  "description": "Gated development conductor: standing posture, fail-closed Stage-0 preflight, lifecycle gates (plan / phase / decision-fork / live-run) enforced via render-then-ask, a secret-scanned Artifact engine, and a right-sized subagent dispatch policy. Bundles codex-gate (independent Codex second-reviewer gate), handoff (cold-start handoff docs), and keep-it-simple (complexity killer).",
+  "description": "Gated development conductor: standing posture, fail-closed Stage-0 preflight, lifecycle gates (plan / phase / decision-fork / live-run) enforced via render-then-ask, a secret-scanned Artifact engine, and a right-sized subagent dispatch policy. Bundles codex-gate (independent Codex second-reviewer gate), handoff (cold-start handoff docs), keep-it-simple (complexity killer), the-cartographer (source-derived system maps + doc-vs-code drift audit), and the-steward (read-only repo agentizer: creates AGENTS.md / CLAUDE.md routing and doc indexes, then reports whether their claims still resolve).",
   "author": {
     "name": "Angel Marcos"
   },

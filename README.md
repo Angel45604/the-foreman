@@ -2,11 +2,13 @@
 
 A Claude Code plugin that turns Claude into a **gated development conductor**: it drives a
 feature from idea → shipped through an explicit, fail-closed state machine instead of
-free-running. The plugin bundles four skills: **the-foreman** (the conductor),
+free-running. The plugin bundles six skills: **the-foreman** (the conductor),
 **codex-gate** (the independent Codex second-reviewer gate), **handoff** (cold-start handoff
-docs + kickoff prompts), and **keep-it-simple** (the complexity killer).
+docs + kickoff prompts), **keep-it-simple** (the complexity killer), **the-cartographer**
+(derives a visual system map + doc-vs-code audit from a subject's own source), and
+**the-steward** (agentizes a repo, then reports whether its agent docs are still true).
 
-What the skill owns:
+What the-foreman owns:
 
 - **Standing posture** — verify-before-assert, simpler-is-always-better, git discipline
   (LOCAL-only by default, never `git add -A`), and a verified-wins-only celebration threshold.
@@ -44,6 +46,13 @@ plugin/
     codex-gate/                   # independent Codex second-reviewer gate (CLI + test suite)
     handoff/                      # cold-start handoff doc + kickoff prompt templates
     keep-it-simple/               # ruthless complexity killer
+    the-cartographer/
+      SKILL.md                    # the extraction protocol + tagging discipline
+      references/                 # IR contract, drift engine, renderers + tests
+    the-steward/
+      SKILL.md                    # the four verbs + how to read a report
+      core/                       # vendored dependency-free Python 3 core (floor 3.9)
+      tests/                      # stdlib unittest suite
 ```
 
 ## Install
@@ -55,9 +64,10 @@ plugin/
 /plugin install the-foreman@angelm
 ```
 
-All four skills then load automatically (each description triggers it at the right moment) and
+All six skills then load automatically (each description triggers it at the right moment) and
 can be invoked explicitly as `/the-foreman:the-foreman`, `/the-foreman:codex-gate`,
-`/the-foreman:handoff`, and `/the-foreman:keep-it-simple`.
+`/the-foreman:handoff`, `/the-foreman:keep-it-simple`, `/the-foreman:the-cartographer`, and
+`/the-foreman:the-steward`.
 
 To try it locally before pushing anywhere:
 
@@ -73,7 +83,7 @@ Symlink each skill directory you want into your personal skills folder — then 
 
 ```bash
 git clone https://github.com/Angel45604/the-foreman ~/personal/the-foreman
-for s in the-foreman codex-gate handoff keep-it-simple; do
+for s in the-foreman codex-gate handoff keep-it-simple the-cartographer the-steward; do
   ln -s ~/personal/the-foreman/plugin/skills/$s ~/.claude/skills/$s
 done
 ```
@@ -89,6 +99,16 @@ done
 - **`handoff`** — produces the cold-start handoff doc + paste-ready kickoff prompt a fresh
   agent resumes from.
 - **`keep-it-simple`** — ruthless complexity killer; challenge every layer before it ships.
+- **`the-cartographer`** — maps a skill, feature, or subtree from its own source into an
+  at-a-glance page (inline-SVG hero + mermaid views + capability table) and, because the map is
+  derived from the code, an audit naming where the docs and the code disagree. Outputs land in the
+  *subject's* repo at `.maps/<slug>/`.
+- **`the-steward`** — read-only-by-default repo agentizer. `scan` infers a repo's stacks,
+  commands and docs scope; `generate` creates only the agent docs that are absent
+  (`AGENTS.md`, `CLAUDE.md`, `docs/steward/*`); `check` and `doctor` then report whether the
+  claims those docs carry still resolve. Ships a vendored dependency-free Python 3 core into
+  the target repo at `tools/steward/`, so `python3 -B tools/steward doctor` runs with no
+  Claude tooling installed.
 
 ## External prerequisites (not bundled)
 
@@ -116,12 +136,23 @@ node --test plugin/skills/the-foreman/references/*.test.mjs plugin/skills/the-fo
 (Node 22+: explicit globs are required — a bare directory no longer auto-discovers.)
 
 ```bash
+node --test plugin/skills/the-cartographer/references/*.test.mjs
+```
+
+```bash
 bash plugin/skills/codex-gate/codex-gate.test.sh
 ```
 
+```bash
+python3 -B -m unittest discover -s plugin/skills/the-steward/tests -t plugin/skills/the-steward/tests
+```
+
+(the-steward's core is Python, floor 3.9, stdlib only. Its dual-interpreter fixtures need both
+`/usr/bin/python3` and `/usr/local/bin/python3` and skip loudly when one is missing.)
+
 (Green run ends with `PASS=<n> FAIL=0`; the printed count is the authoritative assert total.)
 
-Both suites use no npm packages — Node stdlib + bash only. The runtime prerequisites (Codex CLI +
+All three suites use no npm packages — Node stdlib + bash only. The runtime prerequisites (Codex CLI +
 ChatGPT seat, superpowers skills, Claude Code host) are listed under
 [External prerequisites](#external-prerequisites-not-bundled).
 
