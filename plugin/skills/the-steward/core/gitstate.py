@@ -90,6 +90,28 @@ def last_commit_date(root, relpath=None):
     stored in an artifact** (ADR-2's temporal rule): a stored date is an
     observation timestamp, which changes on every run and destroys
     render-and-diff.
+
+    **DOCUMENTED AMBIGUITY — do not "fix" this into `git_answered`.** Every
+    other git call in the core has an answer set that separates answers from
+    failures; this one does not, **by construction**. Probed on git 2.50.1:
+
+        repository with commits, pathspec matches      exit 0, a date
+        repository with commits, pathspec matches none exit 0, empty output
+        repository with NO commits                     exit 128
+        pathspec outside the repository                exit 128
+        a repository git cannot read at all            exit 128
+
+    Rows three and four are the real answer *no commit touches this path*, and
+    row five is a fault — all three arrive as **128** with no field that tells
+    them apart. `answers=(0,)` would make a fresh `git init` (the greenfield
+    criterion, which must pass) exit 2; `answers=(0, 128)` would only rename
+    the ambiguity. So the reading stays `code != 0 -> None`, and the honesty
+    lives in the blast radius instead: this value is a **date on a report
+    line**, never a claim's verdict and never an input to a check. A missing
+    date under-states; it cannot manufacture a pass.
+
+    Listed as an exception in `test_imports.GitStatusDisciplineTest`, which
+    fails if any *other* site regains this shape.
     """
     args = ["log", "-1", "--format=%cI"]
     if relpath is not None:

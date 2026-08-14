@@ -46,6 +46,7 @@ import cli  # noqa: E402
 import inventory  # noqa: E402
 import jsonio  # noqa: E402
 import manifest  # noqa: E402
+import paths  # noqa: E402
 
 
 def a_manifest(**overrides):
@@ -642,6 +643,95 @@ class TrackednessTest(unittest.TestCase):
                 result.stdout.decode("utf-8", "replace"),
                 verb,
             )
+
+
+class TrackednessProbeFailureTest(unittest.TestCase):
+    """A failed `ls-files` must never render as the finding *untracked*.
+
+    `is_tracked` read `if code != 0: return False`, so a probe that never ran
+    produced the confident answer "the manifest is not in the index" — `warn`,
+    tier *inspected*, exit **0**, printed next to a remedy for a state nobody
+    has established. `ls-files` has no non-zero answer: it exits 0 whether or
+    not the pathspec matches, and reserves every non-zero status for a failure
+    it could not do the work through. So the answer set is `{0}` and the rest
+    is `paths.git_checked`'s fault — exit 2 (ADR-13).
+
+    **The corrupt-index row is the one that matters**, because it is the case
+    the tri-state fixtures cannot reach: `rev-parse` still exits 0, so the CLI
+    resolves a repository root, loads a real manifest, and walks all the way
+    into the check before git fails. Outside a repository the run never gets
+    that far.
+    """
+
+    def setUp(self):
+        self.root = S.make_git_repo()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        with open(
+            os.path.join(self.root, ".steward.json"), "w", encoding="utf-8"
+        ) as handle:
+            handle.write(jsonio.dumps(a_manifest()))
+
+    def corrupt_the_index(self):
+        with open(os.path.join(self.root, ".git", "index"), "wb") as handle:
+            handle.write(b"GARBAGE-NOT-AN-INDEX")
+        # The independent oracle, asked through the test's own subprocess
+        # helper and never through the subject: `rev-parse` still answers and
+        # `ls-files` does not, which is exactly the split the fixture needs.
+        self.assertEqual(
+            0, S.git(self.root, "rev-parse", "--show-toplevel").returncode
+        )
+        self.assertEqual(
+            128, S.git(self.root, "ls-files", "-z", "--", ".steward.json").returncode
+        )
+
+    def test_a_corrupt_index_faults_rather_than_reading_untracked(self):
+        self.corrupt_the_index()
+        with self.assertRaises(paths.GitCommandFailed) as caught:
+            manifest.is_tracked(self.root)
+        self.assertIn("ls-files", str(caught.exception))
+
+    def test_outside_a_repository_it_faults_rather_than_reading_untracked(self):
+        outside = os.path.realpath(
+            os.path.join(self.root, os.pardir, "steward-untracked-probe-%d" % os.getpid())
+        )
+        os.makedirs(outside, exist_ok=True)
+        self.addCleanup(shutil.rmtree, outside, True)
+        if S.git(outside, "rev-parse", "--show-toplevel").returncode == 0:
+            self.skipTest("the system temp dir is itself inside a git repository")
+        with self.assertRaises(paths.GitCommandFailed) as caught:
+            manifest.is_tracked(outside)
+        self.assertIn("128", str(caught.exception))
+
+    def test_doctor_exits_two_instead_of_warning_about_an_untracked_manifest(self):
+        """The end-to-end shape of the disease, through the real verb.
+
+        This is the *changed* `doctor` behavior: the failure case used to print
+        the `manifest-untracked` warn and exit 0. It now exits 2 and prints no
+        finding, because a report we could not gather is not a report. No
+        pre-existing test asserted the old failure shape — `TrackednessTest`
+        only ever ran against a healthy repository — so nothing was relaxed to
+        make this pass.
+        """
+        self.corrupt_the_index()
+        result = S.run_core(S.MODERN_PYTHON, ["doctor"], cwd=self.root)
+        out = result.stdout.decode("utf-8", "replace")
+        err = result.stderr.decode("utf-8", "replace")
+        self.assertEqual(2, result.returncode, out + err)
+        self.assertIn("ls-files", err)
+        self.assertNotIn("Traceback", err, "a predicted fault printed a crash")
+        self.assertNotIn("git clean", out, "it warned off a probe that failed")
+        self.assertNotIn("1 warn", out)
+
+    def test_a_zero_status_listing_nothing_is_still_a_real_untracked(self):
+        """Non-vacuity: faulting on every non-zero must not swallow the
+        genuine negative. `ls-files` exits 0 and prints nothing when the
+        pathspec matches no index entry, and that is a real *untracked*."""
+        self.assertEqual(
+            0, S.git(self.root, "ls-files", "-z", "--", ".steward.json").returncode
+        )
+        self.assertFalse(manifest.is_tracked(self.root))
+        S.git(self.root, "add", ".steward.json")
+        self.assertTrue(manifest.is_tracked(self.root))
 
 
 class SchemaFileTest(unittest.TestCase):

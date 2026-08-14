@@ -31,6 +31,7 @@ cannot quietly turn `doctor` into exit 2 on every repository.
 import os
 import shutil
 import stat
+import subprocess
 import unittest
 
 import _support as S
@@ -38,6 +39,7 @@ import _support as S
 S.import_core()
 
 import hooks  # noqa: E402
+import paths  # noqa: E402
 
 
 class HooksFixture(unittest.TestCase):
@@ -343,6 +345,67 @@ class FindingsTest(HooksFixture):
         ).lower()
         for banned in ("protect", "guarantee", "enforce", "will run", "prevents"):
             self.assertNotIn(banned, rendered, banned)
+
+
+class ConfiguredValueProbeFailureTest(HooksFixture):
+    """`core.hooksPath` is *unset* only on the status git reserves for that.
+
+    `git config --get` answers with two statuses and reserves the rest:
+    **0** — the value, printed; **1** — the key is not set. Everything above is
+    a failure to read the configuration at all (a bad include, a config file
+    git cannot parse or open). `if code != 0: return None` collapsed all three
+    into "unset", which is a false A3 in the worst direction: the inspection
+    would print *core.hooksPath is unset* over a clone whose hooks path we
+    never managed to ask about.
+
+    Both rows are here because either alone is a trap. Fault on every non-zero
+    and *unset* — the overwhelmingly common state, and the reference repo's —
+    becomes unreachable; fault on none and the failure keeps reading as an
+    answer. The answer set is exactly `{0, 1}`.
+    """
+
+    def test_exit_one_is_the_real_answer_unset(self):
+        """Non-vacuity, with git as the independent oracle for the status."""
+        self.assertEqual(
+            1, S.git(self.root, "config", "--get", "core.hooksPath").returncode
+        )
+        self.assertIsNone(hooks.inspect(self.root).configured)
+
+    def test_exit_zero_is_the_real_answer_a_value(self):
+        self.configure(".githooks")
+        self.assertEqual(
+            0, S.git(self.root, "config", "--get", "core.hooksPath").returncode
+        )
+        self.assertEqual(".githooks", hooks.inspect(self.root).configured)
+
+    def test_a_status_above_one_faults_rather_than_reading_unset(self):
+        """Failed **at the child**, at `paths._run`'s single documented spawn
+        site, for the reason `test_gitstate.py` already had to fail
+        `check-ignore` there: no fixture makes real git fail here *alone*.
+        Everything that stops `git config --get` from reading the
+        configuration — an unparseable `.git/config`, an unreadable
+        `GIT_CONFIG_GLOBAL`, a bad `[include]` — stops `git rev-parse` on the
+        same clone, so `_rev_parse` faults first and this branch would never
+        be reached by a real repository. Probed on git 2.50.1: a garbage
+        global config exits **128** for `rev-parse`, `config --get` *and*
+        `ls-files` alike. Only the child's exit status is fabricated; both
+        `_configured_value` and `inspect` run for real.
+        """
+        real = paths._run
+
+        def failing_config(cwd, args, *rest):
+            if args and args[0] == "config":
+                return subprocess.CompletedProcess(
+                    args, 128, b"", b"fatal: bad config line 1 in file .git/bogus.conf"
+                )
+            return real(cwd, args, *rest)
+
+        paths._run = failing_config
+        self.addCleanup(setattr, paths, "_run", real)
+        with self.assertRaises(paths.GitCommandFailed) as caught:
+            hooks.inspect(self.root)
+        self.assertIn("config", str(caught.exception))
+        self.assertIn("128", str(caught.exception))
 
 
 class ReadOnlyTest(HooksFixture):

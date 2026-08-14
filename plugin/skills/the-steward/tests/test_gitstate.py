@@ -23,6 +23,7 @@ worse than none** — it is the vacuous pass this project exists to refuse. So
 import os
 import shutil
 import subprocess
+import tempfile
 import unittest
 
 import _support as S
@@ -363,6 +364,58 @@ class GitFailureIsNeverAConfidentAnswerTest(TriStateFixture):
         with self.assertRaises(paths.GitCommandFailed) as caught:
             self.state("AGENTS.md")
         self.assertIn("check-ignore", str(caught.exception))
+
+
+class CommitDateAmbiguityIsDeliberateTest(unittest.TestCase):
+    """The one site that is **not** fixed, pinned so it stays a decision.
+
+    Every other git call in the core separates answers from failures by exit
+    status. `git log -1` cannot: **128** is the real answer *no commit touches
+    this path* in a repository with no commits, and it is also every genuine
+    failure. This is a pin, not a bugfix — it fails if someone tightens the
+    site into `git_checked` and makes a fresh `git init` exit 2, and it records
+    the probe so the next reader does not have to re-derive it.
+    """
+
+    def setUp(self):
+        self.root = os.path.realpath(
+            tempfile.mkdtemp(prefix="steward-no-commits-")
+        )
+        self.addCleanup(shutil.rmtree, self.root, True)
+        S.git(self.root, "init", "-q")
+
+    def test_a_repository_with_no_commits_answers_none_and_does_not_fault(self):
+        """The greenfield criterion: `git init`, then run the tool. If 128 were
+        a fault this would be exit 2 on every brand-new repository."""
+        self.assertEqual(128, S.git(self.root, "log", "-1", "--format=%cI").returncode)
+        self.assertIsNone(gitstate.last_commit_date(self.root))
+        self.assertIsNone(gitstate.last_commit_date(self.root, "README.md"))
+
+    def test_the_answer_and_the_failure_are_the_same_status(self):
+        """Why `git_answered` cannot help: the set that admits the answer
+        admits the failure too, so it would only rename the ambiguity."""
+        S.git(self.root, "config", "user.email", "fixture@example.invalid")
+        S.git(self.root, "config", "user.name", "Fixture")
+        with open(os.path.join(self.root, "a.md"), "w", encoding="utf-8") as handle:
+            handle.write("a\n")
+        S.git(self.root, "add", "a.md")
+        S.git(self.root, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "init")
+        # A pathspec that matches nothing is exit 0 with empty output — so the
+        # only *answers* git spends 128 on are the two indistinguishable ones.
+        self.assertEqual(
+            0, S.git(self.root, "log", "-1", "--format=%cI", "--", "nope.md").returncode
+        )
+        self.assertEqual(
+            128,
+            S.git(self.root, "log", "-1", "--format=%cI", "--", "../outside.md").returncode,
+        )
+
+    def test_the_value_cannot_manufacture_a_pass(self):
+        """The blast radius is what makes the ambiguity tolerable: a date is a
+        report line, never a verdict. Nothing in the core branches on it."""
+        for module in ("cli.py", "findings.py", "manifest.py", "corpus.py", "hooks.py"):
+            source = S.read_text(os.path.join(S.CORE_DIR, module))
+            self.assertNotIn("last_commit_date", source, module)
 
 
 class TheArgvIsTheContractTest(TriStateFixture):

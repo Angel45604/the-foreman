@@ -316,10 +316,17 @@ def is_tracked(root):
     own output, so a fresh manifest is untracked, and one `git clean -xdf`
     then deletes the control plane. `doctor` reports it (`warn`, tier
     *inspected*, exit 0 — ADR-13).
+
+    **`ls-files` has no non-zero answer, so a non-zero status is a fault and
+    never `False`.** It exits 0 whether or not the pathspec matches; every
+    non-zero status means it could not do the work — a corrupt `.git/index`
+    exits 128 while `rev-parse` still exits 0, so the run reaches here with a
+    resolved root and a loaded manifest. `if code != 0: return False` turned
+    that into the confident finding *the manifest is not in the index*, warned
+    about a state nobody had established, and exited 0. A failed probe is not
+    an answer (ADR-13, exit 2).
     """
-    code, out = paths.git_output(root, ["ls-files", "-z", "--", MANIFEST_NAME])
-    if code != 0:
-        return False
+    out = paths.git_checked(root, ["ls-files", "-z", "--", MANIFEST_NAME])
     listed = out.decode("utf-8", "surrogateescape").split("\0")
     return MANIFEST_NAME in listed
 

@@ -66,6 +66,74 @@ class RepoRootTest(unittest.TestCase):
         self.assertIsNone(paths.repo_root(outside))
 
 
+class RepoRootProbeFailureTest(unittest.TestCase):
+    """`repo_root` may answer *None* off a **status**, never off a **fault**.
+
+    The status branch is a documented ambiguity and stays: `git rev-parse
+    --show-toplevel` exits **128** outside a repository *and* on a repository
+    git cannot read, and no status separates them (probed on git 2.50.1: a
+    garbage `GIT_CONFIG_GLOBAL` exits 128 for `rev-parse`, `config --get` and
+    `ls-files` alike). Forcing that one into a fault would make *not a
+    repository* — a first-class, reported state — unreachable.
+
+    What was never ambiguous is everything that is **not a status**. `git`
+    missing from `PATH`, a child that timed out, output over ADR-10's cap:
+    none of those is evidence about whether cwd is inside a repository, and
+    `except (OSError, subprocess.SubprocessError, OutputCapExceeded, ...):
+    return None` turned each of them into `doctor` printing *this directory is
+    not inside a git repository* and exiting **0** — a green report produced by
+    never having run git at all.
+    """
+
+    def setUp(self):
+        self.root = S.make_git_repo()
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def test_a_missing_git_faults_rather_than_reading_not_a_repository(self):
+        original = os.environ.get("PATH", "")
+        self.addCleanup(os.environ.__setitem__, "PATH", original)
+        os.environ["PATH"] = os.path.join(self.root, "no-git-here")
+        with self.assertRaises(paths.GitCommandFailed) as caught:
+            paths.repo_root(self.root)
+        self.assertIn("rev-parse", str(caught.exception))
+        self.assertIn("git", str(caught.exception))
+
+    def test_a_cap_breach_faults_rather_than_reading_not_a_repository(self):
+        """ADR-10's cap is a fault everywhere else; here it was swallowed."""
+        original = paths.GIT_OUTPUT_CAP_BYTES
+        self.addCleanup(setattr, paths, "GIT_OUTPUT_CAP_BYTES", original)
+        paths.GIT_OUTPUT_CAP_BYTES = 1
+        with self.assertRaises(paths.OutputCapExceeded):
+            paths.repo_root(self.root)
+
+    def test_it_exits_two_through_the_cli_without_a_traceback(self):
+        original = os.environ.get("PATH", "")
+        self.addCleanup(os.environ.__setitem__, "PATH", original)
+        os.environ["PATH"] = os.path.join(self.root, "no-git-here")
+        out, err = io.StringIO(), io.StringIO()
+        code = cli.main(["doctor"], out, err, cwd=self.root)
+        self.assertEqual(2, code, out.getvalue() + err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue(), "a predicted fault crashed")
+        self.assertNotIn(
+            "not inside a git repository",
+            out.getvalue(),
+            "it reported an environment fact it never established",
+        )
+
+    def test_a_real_status_of_128_is_still_the_answer_none(self):
+        """Non-vacuity: the documented ambiguity must stay reachable."""
+        outside = os.path.realpath(
+            os.path.join(self.root, os.pardir, "steward-root-probe-%d" % os.getpid())
+        )
+        os.makedirs(outside, exist_ok=True)
+        self.addCleanup(shutil.rmtree, outside, True)
+        probe = S.git(outside, "rev-parse", "--show-toplevel")
+        if probe.returncode == 0:
+            self.skipTest("the system temp dir is itself inside a git repository")
+        self.assertEqual(128, probe.returncode)
+        self.assertIsNone(paths.repo_root(outside))
+
+
 class GitAnsweredTest(unittest.TestCase):
     """One place decides what a git exit status *means* (ADR-13).
 

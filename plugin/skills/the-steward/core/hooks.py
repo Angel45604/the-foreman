@@ -93,9 +93,22 @@ def _rev_parse(cwd, args):
     return value
 
 
+# `git config --get` answers with two statuses and reserves the rest: **0** is
+# the value and **1** is *the key is not set*. Everything above means it could
+# not read the configuration at all — a bad `[include]`, a config file it
+# cannot parse or open. `code != 0` collapsed all three into *unset*, which is
+# a false A3 in the worst direction: the inspection would report
+# `core.hooksPath is unset` over a clone whose hooks path we never managed to
+# ask about, and `branch` would read `default` off it.
+CONFIG_GET_ANSWERS = (0, 1)
+CONFIG_GET_UNSET = 1
+
+
 def _configured_value(cwd):
-    code, out = paths.git_output(cwd, ["config", "--get", "core.hooksPath"])
-    if code != 0:
+    code, out = paths.git_answered(
+        cwd, ["config", "--get", "core.hooksPath"], CONFIG_GET_ANSWERS
+    )
+    if code == CONFIG_GET_UNSET:
         return None
     value = out.decode("utf-8", "surrogateescape").strip()
     return value or None

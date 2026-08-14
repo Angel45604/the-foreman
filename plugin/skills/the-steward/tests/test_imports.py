@@ -158,6 +158,173 @@ class SubprocessDisciplineTest(unittest.TestCase):
         self.assertGreater(paths.GIT_OUTPUT_CAP_BYTES, 0)
 
 
+# Every call site allowed to take a raw git exit status and decide for itself
+# what it means, and the reason each one cannot use a declared answer set. The
+# map is the contract: a new site fails the audit, and so does an entry whose
+# site is gone — an allowlist nobody prunes is how an exception becomes a
+# habit. `git_output` is the only primitive that hands back an uninterpreted
+# status, so this is the whole surface: `git_checked` faults on everything but
+# 0, and `git_answered`'s caller has already written its answer set down.
+GIT_OUTPUT_ALLOWLIST = {
+    ("paths.py", "repo_root"): (
+        "`git rev-parse --show-toplevel` exits 128 both outside a repository "
+        "and on a repository git cannot read. No status separates them, and "
+        "answers=(0,) would make `not a repository` — a first-class reported "
+        "state — unreachable."
+    ),
+    ("gitstate.py", "last_commit_date"): (
+        "`git log -1` exits 128 for the real answer `no commit touches this "
+        "path` in a repository with no commits, which is indistinguishable "
+        "from an error by construction. answers=(0,) would exit 2 on every "
+        "freshly initialised repository. The value is a date on a report "
+        "line, never a verdict, so a missing one under-states and cannot "
+        "manufacture a pass."
+    ),
+}
+
+DOCUMENTED_AMBIGUITY_MARKER = "DOCUMENTED AMBIGUITY"
+
+
+def call_sites(source, wanted):
+    """(function name) for every call to `wanted`, bare or via `paths.`.
+
+    Attribution is by enclosing `def`, walked with an explicit scope stack
+    rather than `ast.walk`, which flattens the tree and loses exactly the
+    information the allowlist is keyed on.
+    """
+    found = []
+
+    def called_name(node):
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            base = func.value
+            if isinstance(base, ast.Name) and base.id == "paths":
+                return func.attr
+            return None
+        if isinstance(func, ast.Name):
+            return func.id
+        return None
+
+    def visit(node, enclosing):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                visit(child, child.name)
+                continue
+            if isinstance(child, ast.Call) and called_name(child) == wanted:
+                found.append(enclosing)
+            visit(child, enclosing)
+
+    visit(ast.parse(source), "<module>")
+    return found
+
+
+def function_source(source, name):
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return ast.get_source_segment(source, node)
+    return None
+
+
+class GitStatusDisciplineTest(unittest.TestCase):
+    """A failed git probe must never be readable as an answer (ADR-13).
+
+    This shape has arrived six times in five layers, always looking local and
+    always reading the same: `if code != 0: return <a confident answer>`, so a
+    probe that never ran renders as a finding. `paths.git_answered` fixed the
+    *mechanism* — the caller declares which statuses git uses as answers and
+    everything else faults — but a mechanism nobody is forced to use is a
+    convention, and conventions are what produced instances two through six.
+
+    So the audit is structural: **`paths.git_output` is the only way to obtain
+    a status the caller must interpret, and every one of its call sites is
+    named here with the reason it cannot declare an answer set.** Two sites
+    qualify, both because the same status carries a real answer and a real
+    failure. Everything else routes through `git_checked` or `git_answered`.
+    """
+
+    def observed_sites(self):
+        sites = {}
+        for module in core_modules():
+            source = S.read_text(os.path.join(S.CORE_DIR, module))
+            for function in call_sites(source, "git_output"):
+                sites.setdefault((module, function), 0)
+                sites[(module, function)] += 1
+        return sites
+
+    def test_every_raw_status_call_site_is_a_documented_exception(self):
+        """Equality, not containment, in both directions.
+
+        A **new** site is the regression this exists to catch. A **stale**
+        entry is the other half: an allowlist that outlives its exception
+        quietly re-licenses the shape for whoever writes there next.
+        """
+        self.assertEqual(
+            sorted(GIT_OUTPUT_ALLOWLIST),
+            sorted(self.observed_sites()),
+            "a core module calls paths.git_output outside the documented "
+            "allowlist (or an allowlist entry no longer names a real site). "
+            "Use paths.git_checked when only 0 is an answer, or "
+            "paths.git_answered(..., answers) when a status is an answer — "
+            "and if the site is genuinely ambiguous, add it here with its "
+            "reason rather than leaving `if code != 0` unexplained.",
+        )
+
+    def test_the_detector_actually_detects_the_banned_shape(self):
+        """The guard's own non-vacuity: a scanner that finds nothing would
+        pass the audit above forever. Planted in a string, so the check does
+        not depend on anyone remembering to mutate a real file."""
+        planted = (
+            "import paths\n"
+            "def is_tracked(root):\n"
+            "    code, out = paths.git_output(root, ['ls-files'])\n"
+            "    if code != 0:\n"
+            "        return False\n"
+            "    return bool(out)\n"
+        )
+        self.assertEqual(["is_tracked"], call_sites(planted, "git_output"))
+        self.assertNotIn(("manifest.py", "is_tracked"), GIT_OUTPUT_ALLOWLIST)
+
+    def test_each_exception_states_a_reason_at_the_code_too(self):
+        """The allowlist reason and the code must both carry it: a reader
+        arriving at the function sees why, and does not 'fix' it."""
+        for (module, function), reason in sorted(GIT_OUTPUT_ALLOWLIST.items()):
+            self.assertGreater(len(reason), 80, "%s:%s has a token reason" % (module, function))
+            self.assertIn("exits", reason, "%s:%s does not name a status" % (module, function))
+            source = S.read_text(os.path.join(S.CORE_DIR, module))
+            body = function_source(source, function)
+            self.assertIsNotNone(body, "%s:%s not found" % (module, function))
+            self.assertIn(
+                DOCUMENTED_AMBIGUITY_MARKER,
+                body,
+                "%s:%s is allowlisted but its own source does not say why"
+                % (module, function),
+            )
+
+    def test_nothing_bypasses_the_status_decision_by_spawning_directly(self):
+        """`paths._run` returns a `CompletedProcess`, so reaching it from
+        another module would put `.returncode` back in a caller's hands with
+        no answer set anywhere. It is private to the one spawn site."""
+        for module in core_modules():
+            if module == "paths.py":
+                continue
+            source = S.read_text(os.path.join(S.CORE_DIR, module))
+            self.assertEqual([], call_sites(source, "_run"), module)
+
+    def test_the_two_helpers_that_do_decide_are_used(self):
+        """Counter-weight: the audit must not be satisfiable by a core that
+        stopped talking to git at all."""
+        users = set()
+        for module in core_modules():
+            source = S.read_text(os.path.join(S.CORE_DIR, module))
+            if call_sites(source, "git_checked") or call_sites(source, "git_answered"):
+                users.add(module)
+        self.assertIn("corpus.py", users)
+        self.assertIn("gitstate.py", users)
+        self.assertIn("hooks.py", users)
+        self.assertIn("manifest.py", users)
+
+
 class CrossSkillIndependenceTest(unittest.TestCase):
     """Issue #29, both directions."""
 

@@ -26,6 +26,14 @@ def _run(cwd, args, timeout, cap, stdin):
 
     `stdin` feeds bytes to the child (`git check-attr -z --stdin`), which is
     what keeps a large corpus off a command line bounded by `ARG_MAX`.
+
+    **A child that never ran is a fault here, not a status for a caller to
+    read.** `git` missing from `PATH` and a child that hit the timeout raise
+    `OSError` and `subprocess.SubprocessError`, neither of which is an exit
+    status and neither of which is evidence about anything the caller asked.
+    Converting both at the one spawn site means no caller has to remember to,
+    and — the bug this replaces — no caller can turn *git did not run* into
+    one of its own answers.
     """
     if timeout is None:
         timeout = GIT_TIMEOUT_SECONDS
@@ -33,15 +41,22 @@ def _run(cwd, args, timeout, cap, stdin):
         cap = GIT_OUTPUT_CAP_BYTES
     env = dict(os.environ)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
-    completed = subprocess.run(
-        ["git"] + list(args),
-        cwd=cwd,
-        env=env,
-        input=stdin,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=timeout,
-    )
+    try:
+        completed = subprocess.run(
+            ["git"] + list(args),
+            cwd=cwd,
+            env=env,
+            input=stdin,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise GitCommandFailed(
+            "the-steward: `git %s` could not be run in %r: %s: %s. Refusing to "
+            "report over a result we could not obtain."
+            % (" ".join(args), cwd, type(exc).__name__, exc)
+        )
     if len(completed.stdout) > cap:
         raise OutputCapExceeded(
             "the-steward: `git %s` produced %d bytes, over the %d-byte cap; "
@@ -54,12 +69,21 @@ def _run(cwd, args, timeout, cap, stdin):
 def git_output(cwd, args, timeout=None, cap=None, stdin=None):
     """Run `git <args>` in `cwd`. Returns (returncode, stdout_bytes).
 
-    For the calls where a non-zero status is an answer **and every non-zero
-    status is the same answer**: `log` exits non-zero when nothing matches and
-    `rev-parse` exits non-zero outside a repository, and in both cases the
-    caller has nothing else to say. Where some statuses are answers and the
-    rest are errors — `check-ignore -q`, 0 and 1 against everything above —
-    use `git_answered`, and where none of them are, `git_checked`.
+    **The last resort, and an audited one.** This is the only primitive that
+    hands a caller a status nobody has interpreted, so it is reserved for the
+    commands where an answer and a failure arrive as the *same* status and no
+    answer set can separate them. There are exactly two, both named with their
+    reason in `test_imports.GitStatusDisciplineTest`, which fails on a third:
+
+    * `rev-parse --show-toplevel` — 128 outside a repository, and 128 on a
+      repository git cannot read;
+    * `log -1` — 128 for *no commits yet*, and 128 for a real error. (Note it
+      is **not** non-zero for *nothing matched*: a pathspec matching no commit
+      exits 0 with empty output, verified on git 2.50.1.)
+
+    Everywhere else: `git_answered(..., answers)` when a status is an answer —
+    `check-ignore -q` and `config --get`, 0 and 1 against everything above —
+    and `git_checked` when only 0 is.
     """
     completed = _run(cwd, args, timeout, cap, stdin)
     return completed.returncode, completed.stdout
@@ -117,11 +141,25 @@ class ContainmentError(Exception):
 
 
 def repo_root(cwd):
-    """Absolute, symlink-resolved repository root, or None when cwd is not in one."""
-    try:
-        code, out = git_output(cwd, ["rev-parse", "--show-toplevel"])
-    except (OSError, subprocess.SubprocessError, OutputCapExceeded, GitCommandFailed):
-        return None
+    """Absolute, symlink-resolved repository root, or None when cwd is not in one.
+
+    **DOCUMENTED AMBIGUITY — the `code != 0` here is deliberate and must
+    stay.** `rev-parse --show-toplevel` exits **128** both outside a repository
+    and on a repository git cannot read (an unparseable config, a broken
+    include), and no status separates the two. `answers=(0,)` would make *not
+    a repository* — a first-class state the report names — unreachable, so the
+    ambiguity is kept where it is honest: as *None*, which every caller
+    already treats as "no claim source here". This is one of exactly two
+    exceptions, both listed in `test_imports.GitStatusDisciplineTest`.
+
+    **Nothing that is not a status is swallowed.** A missing `git`, a timeout
+    and an over-cap read used to be caught here and returned as *None*, so
+    `doctor` printed *this directory is not inside a git repository* and exited
+    0 having never run git. `_run` raises `GitCommandFailed` for the first two
+    and `OutputCapExceeded` for the third, and both travel straight out to the
+    CLI's exit 2 (ADR-13).
+    """
+    code, out = git_output(cwd, ["rev-parse", "--show-toplevel"])
     if code != 0:
         return None
     top = out.decode("utf-8", "surrogateescape").strip()
