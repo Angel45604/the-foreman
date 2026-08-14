@@ -17,6 +17,7 @@ import traceback
 import atomic
 import bootstrap
 import findings
+import hooks
 import manifest
 import paths
 
@@ -29,6 +30,7 @@ REPORTED_FAULTS = (
     paths.OutputCapExceeded,
     paths.GitCommandFailed,
     atomic.AtomicWriteError,
+    hooks.HooksInspectionFailed,
 )
 
 # The contract path a vendored core lives at inside a target repo. Named once:
@@ -67,14 +69,21 @@ class Context(object):
 
         The report advertises `python3 -B tools/steward …` only when the
         answer is yes — printing it otherwise names a path we did not install.
+
+        **`os.path.isfile` alone answered yes for a core that is not in this
+        repository.** It follows symlinks, so a `tools/steward` pointing out of
+        the working tree resolved to somebody else's `__main__.py` and the
+        footer advertised it. `paths.contain` proves the path is in the tree
+        first and raises ContainmentError (exit 2) when it is not — ADR-26,
+        and the same symlink hole as the corpus and the manifest.
         """
         if self.repo_root is None:
             return False
-        return os.path.isfile(
-            os.path.join(
-                self.repo_root, *(INSTALLED_CORE_DIRECTORY.split("/") + ["__main__.py"])
-            )
+        located = paths.contain(
+            self.repo_root,
+            os.path.join(*(INSTALLED_CORE_DIRECTORY.split("/") + ["__main__.py"])),
         )
+        return os.path.isfile(located)
 
 
 def parse_argv(argv):

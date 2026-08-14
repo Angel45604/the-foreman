@@ -581,6 +581,83 @@ class TwoCorporaTest(CorpusFixture):
         )
 
 
+class ContainmentTest(CorpusFixture):
+    """ADR-26 applies to the corpus, and `os.path.isfile` cannot enforce it.
+
+    **The third appearance of the same hole.** Symlink escape has already been
+    closed on the atomic-write path and in the containment predicate itself;
+    here it survived because presence was tested with `os.path.isfile`, which
+    **follows symlinks** and answers about whatever is at the far end. A
+    tracked `*.md` symlink, or a recorded path under a symlinked directory,
+    therefore resolves outside the working tree and enters the corpus — and
+    the corpus is what C3, C4 and the indexes read, render and digest. ADR-26
+    says that is exit 2, not a document.
+    """
+
+    def outside_file(self, name, body="secret\n"):
+        directory = os.path.realpath(
+            os.path.join(self.root, os.pardir, "steward-outside-%d" % os.getpid())
+        )
+        os.makedirs(directory, exist_ok=True)
+        self.addCleanup(shutil.rmtree, directory, True)
+        target = os.path.join(directory, name)
+        with open(target, "w", encoding="utf-8") as handle:
+            handle.write(body)
+        return directory, target
+
+    def test_a_tracked_markdown_symlink_pointing_out_is_exit_two(self):
+        _directory, target = self.outside_file("secret.md")
+        link = os.path.join(self.root, "leak.md")
+        os.symlink(target, link)
+        self.commit()
+        control = S.git(self.root, "ls-files", "-z", "--", "leak.md")
+        self.assertIn(b"leak.md", control.stdout, "the symlink was not tracked")
+        self.assertTrue(
+            os.path.isfile(link),
+            "isfile stopped following symlinks — the fixture is inert",
+        )
+        with self.assertRaises(paths.ContainmentError) as caught:
+            corpus.enumerate_documents(self.root)
+        self.assertIn("leak.md", str(caught.exception))
+
+    def test_a_recorded_path_under_a_symlinked_directory_is_exit_two(self):
+        directory, _target = self.outside_file("x.md")
+        os.symlink(directory, os.path.join(self.root, "docs"))
+        self.commit()
+        document = {"recorded": [recorded("docs/x.md")]}
+        self.assertTrue(
+            os.path.isfile(os.path.join(self.root, "docs", "x.md")),
+            "the parent-directory escape did not resolve — fixture inert",
+        )
+        with self.assertRaises(paths.ContainmentError) as caught:
+            corpus.enumerate_documents(self.root, document)
+        self.assertIn("docs/x.md", str(caught.exception))
+
+    def test_an_in_tree_symlink_is_still_a_document(self):
+        """Non-vacuity: containment is about escape, not about symlinks.
+
+        A link resolving back inside the working tree passes ADR-26 and must
+        keep passing, or the guard is just a ban on links.
+        """
+        write(self.root, "docs/real.md")
+        os.symlink(
+            os.path.join(self.root, "docs", "real.md"),
+            os.path.join(self.root, "alias.md"),
+        )
+        self.commit()
+        self.assertEqual(
+            ["README.md", "alias.md", "docs/real.md"], list(self.documents())
+        )
+
+    def test_an_ordinary_corpus_is_unaffected(self):
+        write(self.root, "docs/x.md")
+        write(self.root, "docs/y.md")
+        self.commit()
+        self.assertEqual(
+            ["README.md", "docs/x.md", "docs/y.md"], list(self.documents())
+        )
+
+
 class ReadOnlyTest(CorpusFixture):
     """Enumeration writes nothing."""
 

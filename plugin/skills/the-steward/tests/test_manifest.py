@@ -33,6 +33,7 @@ production code, and each test says which half it is:
 """
 
 import hashlib
+import io
 import os
 import shutil
 import unittest
@@ -800,6 +801,63 @@ class SchemaFileTest(unittest.TestCase):
              properties["intentionallyEmpty"]["items"]["properties"]["scope"]["enum"]),
         ):
             self.assertEqual(sorted(expected), sorted(observed), label)
+
+
+class ManifestOutsideTheTreeTest(unittest.TestCase):
+    """ADR-26 covers the claim source itself.
+
+    `manifest.path` was `os.path.join(root, MANIFEST_NAME)` and `load` tested
+    it with `os.path.isfile`, which **follows symlinks**. A `.steward.json`
+    symlinked out of the working tree was therefore opened, parsed and
+    validated: the single claim source for C1 and C2 (ADR-32) came from a file
+    ADR-26 says the core may not read at all. That is the same hole already
+    closed on the atomic-write path, in the containment predicate and in the
+    corpus — the fourth site, found by auditing rather than by being told.
+    """
+
+    def setUp(self):
+        self.root = S.make_git_repo()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.outside = os.path.realpath(
+            os.path.join(self.root, os.pardir, "steward-foreign-%d" % os.getpid())
+        )
+        os.makedirs(self.outside, exist_ok=True)
+        self.addCleanup(shutil.rmtree, self.outside, True)
+
+    def test_a_manifest_symlinked_out_of_the_tree_is_exit_two(self):
+        foreign = os.path.join(self.outside, "foreign.json")
+        with open(foreign, "w", encoding="utf-8") as handle:
+            handle.write('{"version": 1}\n')
+        os.symlink(foreign, os.path.join(self.root, manifest.MANIFEST_NAME))
+        self.assertTrue(
+            os.path.isfile(os.path.join(self.root, manifest.MANIFEST_NAME)),
+            "isfile stopped following symlinks — the fixture is inert",
+        )
+        with self.assertRaises(paths.ContainmentError) as caught:
+            manifest.load(self.root)
+        self.assertIn(manifest.MANIFEST_NAME, str(caught.exception))
+
+    def test_it_exits_two_through_the_cli_without_a_traceback(self):
+        foreign = os.path.join(self.outside, "foreign.json")
+        with open(foreign, "w", encoding="utf-8") as handle:
+            handle.write('{"version": 1}\n')
+        os.symlink(foreign, os.path.join(self.root, manifest.MANIFEST_NAME))
+        out, err = io.StringIO(), io.StringIO()
+        code = cli.main(["doctor"], out, err, cwd=self.root)
+        self.assertEqual(2, code, out.getvalue() + err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+
+    def test_an_ordinary_manifest_still_loads(self):
+        """Non-vacuity: containment must not ban the normal case."""
+        atomic.write(
+            self.root,
+            manifest.MANIFEST_NAME,
+            jsonio.dumps(a_manifest()).encode("utf-8"),
+        )
+        self.assertIsNotNone(manifest.load(self.root))
+
+    def test_an_absent_manifest_is_still_unmanaged_not_a_fault(self):
+        self.assertIsNone(manifest.load(self.root))
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ ADR-20 : v0 has no flags at all.
 import ast
 import io
 import os
+import shutil
 import unittest
 
 import _support as S
@@ -17,6 +18,7 @@ S.import_core()
 
 import bootstrap  # noqa: E402
 import cli  # noqa: E402
+import paths  # noqa: E402
 
 VERBS = ("scan", "generate", "check", "doctor")
 
@@ -262,6 +264,71 @@ class FloorAssertionFiresTest(unittest.TestCase):
             S.MODERN_PYTHON, ["scan"], cwd=self.sandbox, core_dir=self.core
         )
         self.assertEqual(0, result.returncode, result.stderr.decode("utf-8", "replace"))
+
+
+class InstalledCoreOutsideTheTreeTest(unittest.TestCase):
+    """The footer may advertise only a core inside this working tree.
+
+    `core_is_installed` joined the contract path onto the root and asked
+    `os.path.isfile`, which follows symlinks: a `tools/steward` pointing out of
+    the tree answered **yes**, and the report then printed
+    `python3 -B tools/steward doctor` — naming an installed core the-steward
+    did not install and ADR-26 says it may not read. P1.9 and P9.4 both turn
+    on this answer.
+    """
+
+    def setUp(self):
+        self.root = S.make_git_repo()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.outside = os.path.realpath(
+            os.path.join(self.root, os.pardir, "steward-foreign-core-%d" % os.getpid())
+        )
+        os.makedirs(self.outside, exist_ok=True)
+        self.addCleanup(shutil.rmtree, self.outside, True)
+
+    def plant_a_foreign_core(self):
+        core = os.path.join(self.outside, "core")
+        os.makedirs(core, exist_ok=True)
+        with open(os.path.join(core, "__main__.py"), "w", encoding="utf-8") as handle:
+            handle.write("")
+        os.makedirs(os.path.join(self.root, "tools"), exist_ok=True)
+        os.symlink(core, os.path.join(self.root, "tools", "steward"))
+        return core
+
+    def context(self):
+        return cli.Context(
+            "doctor", self.root, io.StringIO(), io.StringIO(), repo_root=self.root
+        )
+
+    def test_a_core_symlinked_out_of_the_tree_is_exit_two(self):
+        self.plant_a_foreign_core()
+        self.assertTrue(
+            os.path.isfile(
+                os.path.join(self.root, "tools", "steward", "__main__.py")
+            ),
+            "isfile stopped following symlinks — the fixture is inert",
+        )
+        with self.assertRaises(paths.ContainmentError):
+            self.context().core_is_installed()
+
+    def test_it_never_advertises_a_command_it_did_not_install(self):
+        self.plant_a_foreign_core()
+        out, err = io.StringIO(), io.StringIO()
+        code = cli.main(["doctor"], out, err, cwd=self.root)
+        self.assertEqual(2, code, out.getvalue() + err.getvalue())
+        self.assertNotIn("tools/steward doctor", out.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+
+    def test_no_core_is_still_simply_not_installed(self):
+        """Non-vacuity, both directions: absence is an answer, not a fault."""
+        self.assertFalse(self.context().core_is_installed())
+
+    def test_a_real_in_tree_core_is_still_installed(self):
+        directory = os.path.join(self.root, "tools", "steward")
+        os.makedirs(directory)
+        with open(os.path.join(directory, "__main__.py"), "w", encoding="utf-8") as h:
+            h.write("")
+        self.assertTrue(self.context().core_is_installed())
 
 
 if __name__ == "__main__":

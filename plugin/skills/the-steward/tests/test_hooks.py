@@ -28,6 +28,7 @@ domain, and `OutsideTheWorkingTreeTest` pins that so a later containment sweep
 cannot quietly turn `doctor` into exit 2 on every repository.
 """
 
+import io
 import os
 import shutil
 import stat
@@ -38,6 +39,7 @@ import _support as S
 
 S.import_core()
 
+import cli  # noqa: E402
 import hooks  # noqa: E402
 import paths  # noqa: E402
 
@@ -406,6 +408,199 @@ class ConfiguredValueProbeFailureTest(HooksFixture):
             hooks.inspect(self.root)
         self.assertIn("config", str(caught.exception))
         self.assertIn("128", str(caught.exception))
+
+
+class UninspectableDirectoryTest(HooksFixture):
+    """A directory we could not read is not an empty directory (ADR-13).
+
+    `except OSError: return []` and `os.path.isdir` are the same disease as
+    `if code != 0: return <answer>`, one layer down: both turn a probe that
+    **failed** into a confident negative. Reported through A3 that reads *the
+    effective hooks path contains nothing*, or *no directory at that path*,
+    about a clone whose hooks path we never managed to look at — which is one
+    short step from the sentence ADR-28 bans outright.
+    """
+
+    def setUp(self):
+        HooksFixture.setUp(self)
+        if os.geteuid() == 0:
+            self.skipTest("running as root: no directory is unreadable")
+
+    def unreadable(self, path):
+        self.addCleanup(os.chmod, path, 0o755)
+        os.chmod(path, 0o000)
+        return path
+
+    def test_an_unreadable_hooks_directory_faults_rather_than_reading_empty(self):
+        directory, _path = self.make_hook_dir(".githooks")
+        self.configure(".githooks")
+        self.unreadable(directory)
+        with self.assertRaises(OSError):
+            os.listdir(directory)
+        with self.assertRaises(hooks.HooksInspectionFailed) as caught:
+            hooks.inspect(self.root)
+        self.assertIn(".githooks", str(caught.exception))
+
+    def test_the_fault_exits_two_through_the_cli_without_a_traceback(self):
+        """`doctor` gains the inspection in Phase 7, so the fault is raised
+        into the CLI here rather than pretending the wiring already exists.
+
+        The assertion that bites is *no traceback*: a fault type the CLI does
+        not know about still exits 2, through `except Exception`, and prints a
+        stack trace where a sentence belongs. Dropping it from
+        `REPORTED_FAULTS` fails this line and nothing else would.
+        """
+        self.assertIn(hooks.HooksInspectionFailed, cli.REPORTED_FAULTS)
+        original = dict(cli.VERBS)
+        self.addCleanup(setattr, cli, "VERBS", original)
+
+        def raising(_context):
+            raise hooks.HooksInspectionFailed(
+                "the-steward: the effective hooks path could not be read"
+            )
+
+        cli.VERBS = dict(original, doctor=raising)
+        out, err = io.StringIO(), io.StringIO()
+        code = cli.main(["doctor"], out, err, cwd=self.root)
+        self.assertEqual(2, code, out.getvalue() + err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue(), "a predicted fault crashed")
+        self.assertIn("could not be read", err.getvalue())
+
+    def test_an_unreadable_parent_is_refused_by_git_before_we_look(self):
+        """The EACCES that `os.path.isdir` used to swallow never reaches the
+        filesystem probe at all — `rev-parse --git-path` validates the path
+        and exits 128 first, and `git_checked` makes that a fault.
+
+        Recorded rather than asserted the other way round because it is the
+        reason the second swallow was not separately reachable: the fix
+        deletes the branch, it does not make an unreachable one honest.
+        """
+        directory, _path = self.make_hook_dir("outer/inner")
+        self.configure("outer/inner")
+        self.unreadable(os.path.join(self.root, "outer"))
+        self.assertFalse(
+            os.path.isdir(directory),
+            "isdir stopped swallowing EACCES — the fixture is inert",
+        )
+        with self.assertRaises(paths.GitCommandFailed) as caught:
+            hooks.inspect(self.root)
+        self.assertIn("rev-parse", str(caught.exception))
+
+    def test_a_genuinely_absent_directory_is_still_absent_not_a_fault(self):
+        """Non-vacuity. ENOENT is a real answer and must stay one, or every
+        repository without a hooks directory becomes exit 2."""
+        self.configure("nowhere-at-all")
+        found = hooks.inspect(self.root)
+        self.assertFalse(found.directory_exists)
+        self.assertEqual((), found.hooks)
+
+    def test_a_hooks_path_that_is_a_file_is_absent_not_a_fault(self):
+        """ENOTDIR is the other genuine absence: there is no directory
+        there, and we established that rather than failing to look."""
+        with open(os.path.join(self.root, "notadir"), "w", encoding="utf-8") as handle:
+            handle.write("x\n")
+        self.configure("notadir")
+        found = hooks.inspect(self.root)
+        self.assertFalse(found.directory_exists)
+        self.assertEqual((), found.hooks)
+
+
+class WhitespaceInGitOutputTest(HooksFixture):
+    """`.strip()` renames a hooks path, and a renamed path is a false A3.
+
+    Verified on git 2.50.1: `config --get core.hooksPath` returns
+    ` my hooks \\n` for a value set with its spaces, and
+    `rev-parse --git-path hooks` resolves it to `<root>/ my hooks \\n`. Both
+    were `.strip()`ed, so the inspection reported a *different* directory than
+    the one git would use — and then stat'ed that different directory for
+    presence and mode bits.
+    """
+
+    def test_a_configured_value_keeps_its_surrounding_spaces(self):
+        self.configure(" my hooks ")
+        control = S.git(self.root, "config", "--get", "core.hooksPath")
+        self.assertEqual(
+            b" my hooks \n",
+            control.stdout,
+            "git stopped preserving the spaces — the fixture is inert",
+        )
+        self.assertEqual(" my hooks ", hooks.inspect(self.root).configured)
+
+    def test_the_effective_path_keeps_its_trailing_space(self):
+        directory = os.path.join(self.root, " my hooks ")
+        os.makedirs(directory)
+        with open(os.path.join(directory, "pre-commit"), "w", encoding="utf-8") as h:
+            h.write("#!/bin/sh\nexit 0\n")
+        self.configure(" my hooks ")
+        found = hooks.inspect(self.root)
+        self.assertTrue(
+            found.effective_path.endswith(" my hooks "),
+            "the effective path was trimmed to %r" % found.effective_path,
+        )
+        self.assertTrue(found.directory_exists)
+        self.assertEqual(["pre-commit"], [hook.name for hook in found.hooks])
+
+
+class EntryTypeTest(HooksFixture):
+    """Finding text may claim only what was stat'ed (ADR-28).
+
+    Every entry was rendered as *a file present at the effective hooks path*
+    with an *executable bit*, whatever it actually was. A subdirectory — a
+    `helpers/` beside the hooks, mode 0755 like every directory — therefore
+    read as an executable hook, which is a fabricated fact in the one report
+    whose whole purpose is to state only what inspection established.
+    """
+
+    def rendered(self):
+        return [
+            "%s | %s | %s" % (item["claim"], item["observed"], item["where"])
+            for item in hooks.inspection_findings(hooks.inspect(self.root))
+        ]
+
+    def line_for(self, name):
+        for line in self.rendered():
+            if name in line:
+                return line
+        raise AssertionError("%r is in no finding: %r" % (name, self.rendered()))
+
+    def test_a_subdirectory_is_not_called_a_file(self):
+        directory, _path = self.make_hook_dir(".githooks")
+        os.makedirs(os.path.join(directory, "helpers"), 0o755)
+        self.configure(".githooks")
+        line = self.line_for("helpers")
+        self.assertIn("directory", line.lower())
+        self.assertNotIn("a file present", line)
+
+    def test_a_subdirectory_is_not_called_executable(self):
+        directory, _path = self.make_hook_dir(".githooks")
+        os.makedirs(os.path.join(directory, "helpers"), 0o755)
+        self.configure(".githooks")
+        self.assertNotIn("executable bit set", self.line_for("helpers"))
+
+    def test_a_dangling_symlink_is_named_as_one(self):
+        directory, _path = self.make_hook_dir(".githooks")
+        os.symlink("gone.sh", os.path.join(directory, "post-commit"))
+        self.configure(".githooks")
+        line = self.line_for("post-commit")
+        self.assertNotIn("a file present", line)
+        self.assertNotIn("executable bit set", line)
+
+    def test_a_regular_hook_is_still_a_file_with_its_mode_and_bit(self):
+        """Non-vacuity: the real case must keep reading exactly as before."""
+        self.make_hook_dir(".githooks", mode=0o755)
+        self.configure(".githooks")
+        line = self.line_for("pre-commit")
+        self.assertIn("a file present", line)
+        self.assertIn("755", line)
+        self.assertIn("executable bit set", line)
+
+    def test_a_non_executable_regular_hook_still_says_the_bit_is_clear(self):
+        self.make_hook_dir(".githooks", mode=0o644)
+        self.configure(".githooks")
+        line = self.line_for("pre-commit")
+        self.assertIn("a file present", line)
+        self.assertIn("644", line)
+        self.assertIn("executable bit clear", line)
 
 
 class ReadOnlyTest(HooksFixture):

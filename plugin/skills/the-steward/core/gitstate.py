@@ -59,16 +59,38 @@ def _is_in_the_index(root, relpath):
     """`ls-files` has no non-zero answer: a failure here is exit 2, never
     `False`. `False` would flow on to `untracked`, and C2 treats
     untracked-but-present as **resolved** — a claim reported verified off a
-    probe that never ran, which is the disease this tool exists to find."""
-    out = paths.git_checked(root, ["ls-files", "-z", "--", relpath])
+    probe that never ran, which is the disease this tool exists to find.
+
+    The pathspec is made literal both ways (`paths.literal_pathspec` plus
+    `--literal-pathspecs`), because a declared name is a name: without it,
+    `[R]EADME.md` and `:(top)README.md` both answer **tracked** off the
+    unrelated `README.md` sitting in the index.
+    """
+    out = paths.git_checked(
+        root,
+        [
+            paths.LITERAL_PATHSPECS,
+            "ls-files",
+            "-z",
+            "--",
+            paths.literal_pathspec(relpath),
+        ],
+    )
     return bool(out.replace(b"\0", b""))
 
 
 def _matches_an_ignore_rule(root, relpath):
     # `--no-index`: the pure pattern question (see the module docstring).
+    #
+    # **`--literal-pathspecs` cannot go here** [verified, git 2.50.1]:
+    # `check-ignore` rejects pathspec magic outright and `literal` is magic —
+    # `fatal: pathspec magic not supported by this command: 'literal'`, exit
+    # 128. It also does not glob its pathnames, so the flag has nothing to do
+    # here anyway. What it *does* parse is a leading `:`, which is why the
+    # `./` half of the rule is the half that matters at this call site.
     code, _out = paths.git_answered(
         root,
-        ["check-ignore", "-q", "--no-index", "--", relpath],
+        ["check-ignore", "-q", "--no-index", "--", paths.literal_pathspec(relpath)],
         CHECK_IGNORE_ANSWERS,
     )
     return code == CHECK_IGNORE_MATCHED
@@ -113,11 +135,13 @@ def last_commit_date(root, relpath=None):
     Listed as an exception in `test_imports.GitStatusDisciplineTest`, which
     fails if any *other* site regains this shape.
     """
-    args = ["log", "-1", "--format=%cI"]
+    args = [paths.LITERAL_PATHSPECS, "log", "-1", "--format=%cI"]
     if relpath is not None:
-        args.extend(["--", relpath])
+        # Literal, for the reason `_is_in_the_index` states: `log -1 --
+        # '[R]EADME.md'` matches the committed `README.md` and hands back its
+        # date for a path that has never been committed.
+        args.extend(["--", paths.literal_pathspec(relpath)])
     code, out = paths.git_output(root, args)
     if code != 0:
         return None
-    value = out.decode("utf-8", "surrogateescape").strip()
-    return value or None
+    return paths.one_record(out) or None

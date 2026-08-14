@@ -32,6 +32,7 @@ always were. Routing this through `paths.contain` would hard-error on every
 repository, because the default hooks path lives under `.git`.
 """
 
+import errno
 import os
 import stat
 
@@ -42,6 +43,29 @@ DEFAULT = "default"
 REDIRECTED = "redirected"
 BRANCHES = (DEFAULT, REDIRECTED)
 
+# What one entry in the hooks directory turned out to be. `UNSTATTABLE` is the
+# honest fourth: the entry is listed and we could not stat it, which is not the
+# same as it being any of the other three.
+FILE = "file"
+DIRECTORY = "directory"
+DANGLING_SYMLINK = "dangling symlink"
+OTHER = "not a regular file"
+UNSTATTABLE = "an entry the-steward could not stat"
+
+# The two errnos that mean *there is genuinely no directory there* — which is
+# an answer, and a common one. Everything else means the look did not succeed.
+GENUINE_ABSENCE = (errno.ENOENT, errno.ENOTDIR)
+
+
+class HooksInspectionFailed(Exception):
+    """The hooks path could not be inspected (ADR-13, exit 2).
+
+    Not the same as *there is nothing there*. `except OSError: return []` and
+    `os.path.isdir` both collapse those two into one value, which is how a
+    clone we never managed to look at gets reported as a clone with no hooks —
+    one step from the sentence ADR-28 bans outright.
+    """
+
 
 class HookFile(object):
     """One entry found in the effective hooks directory.
@@ -49,20 +73,27 @@ class HookFile(object):
     `mode` is None when the entry could not be stat'ed at all — a dangling
     symlink is the ordinary case, and it must not turn `doctor` into exit 2
     for the whole repository.
+
+    `kind` is what the entry actually is. It exists because the report used to
+    call every entry *a file* and print an execute bit for it: a `helpers/`
+    subdirectory beside the hooks, mode 0755 like every directory, read as an
+    executable hook. `is_file` already knew better and nothing consulted it.
     """
 
-    def __init__(self, name, path, mode, is_file):
+    def __init__(self, name, path, mode, is_file, kind):
         self.name = name
         self.path = path
         self.mode = mode
         self.is_file = is_file
+        self.kind = kind
         self.is_executable = bool(mode & 0o111) if mode is not None else False
 
 
 class HooksInspection(object):
     """What one read-only look at the hooks path saw."""
 
-    def __init__(self, effective_path, default_path, configured, hooks):
+    def __init__(self, effective_path, default_path, configured, directory_exists,
+                 hooks):
         self.effective_path = effective_path
         self.default_path = default_path
         # The raw `core.hooksPath` value, verbatim, or None when unset. Kept
@@ -75,16 +106,27 @@ class HooksInspection(object):
             if os.path.realpath(effective_path) == os.path.realpath(default_path)
             else REDIRECTED
         )
-        self.directory_exists = os.path.isdir(effective_path)
+        # Established by the same `listdir` that produced `hooks`, never by a
+        # second probe: two probes are two chances to disagree, and
+        # `os.path.isdir` answers False for *unreadable* exactly as it does
+        # for *absent*.
+        self.directory_exists = directory_exists
         self.hooks = tuple(hooks)
 
 
 def _rev_parse(cwd, args):
     """Checked: inside a repository these cannot fail, and swallowing a
     failure would hand the inspection a `None` path to report facts about
-    (ADR-13, exit 2)."""
+    (ADR-13, exit 2).
+
+    `paths.one_record`, not `.strip()`: a hooks path is a path, and trimming
+    it renames the directory the inspection then stats for presence and mode
+    bits. Verified on git 2.50.1 — a relative `core.hooksPath` of ` my hooks `
+    resolves to `<root>/ my hooks \\n`, which `.strip()` turned into a
+    different, absent directory.
+    """
     out = paths.git_checked(cwd, ["rev-parse"] + list(args))
-    value = out.decode("utf-8", "surrogateescape").strip()
+    value = paths.one_record(out)
     if not value:
         raise paths.GitCommandFailed(
             "the-steward: `git rev-parse %s` returned nothing in %r; the hooks "
@@ -110,27 +152,69 @@ def _configured_value(cwd):
     )
     if code == CONFIG_GET_UNSET:
         return None
-    value = out.decode("utf-8", "surrogateescape").strip()
+    # Verbatim but for the record terminator: git returns ` my hooks \n` for a
+    # value set with its spaces, and the raw value is what A3 quotes back.
+    value = paths.one_record(out)
     return value or None
 
 
-def _entries(directory):
+def _kind_of_an_unstattable_entry(path):
+    """Narrow a **known** stat failure, or leave it named as one.
+
+    Asked only after `os.stat` has already failed, and it never manufactures a
+    negative out of its own failure: an `lstat` that also fails falls through
+    to `UNSTATTABLE`, which is the honest weaker answer — *we could not tell* —
+    rather than a confident *it is not a symlink*.
+    """
+    try:
+        if stat.S_ISLNK(os.lstat(path).st_mode):
+            return DANGLING_SYMLINK
+    except OSError:
+        pass
+    return UNSTATTABLE
+
+
+def _entry(directory, name):
+    path = os.path.join(directory, name)
+    try:
+        info = os.stat(path)
+    except OSError:
+        return HookFile(
+            name, path, None, False, _kind_of_an_unstattable_entry(path)
+        )
+    if stat.S_ISREG(info.st_mode):
+        kind = FILE
+    elif stat.S_ISDIR(info.st_mode):
+        kind = DIRECTORY
+    else:
+        kind = OTHER
+    return HookFile(
+        name, path, stat.S_IMODE(info.st_mode), stat.S_ISREG(info.st_mode), kind
+    )
+
+
+def _look_at(directory):
+    """(the directory is there, its entries) — or **fault** (exit 2).
+
+    One probe, because two were two chances to disagree and both were failing
+    in the same direction. `os.listdir` distinguishes the cases `os.path.isdir`
+    flattens: `ENOENT` and `ENOTDIR` are *there is genuinely no directory
+    there*, an answer the greenfield criterion depends on, and every other
+    error means the look did not succeed. Reporting *no directory at that
+    path*, or an empty hook list, off an `EACCES` is a confident negative
+    about a clone nobody read.
+    """
     try:
         names = sorted(os.listdir(directory))
-    except OSError:
-        return []
-    found = []
-    for name in names:
-        path = os.path.join(directory, name)
-        try:
-            info = os.stat(path)
-        except OSError:
-            found.append(HookFile(name, path, None, False))
-            continue
-        found.append(
-            HookFile(name, path, stat.S_IMODE(info.st_mode), stat.S_ISREG(info.st_mode))
+    except OSError as exc:
+        if exc.errno in GENUINE_ABSENCE:
+            return False, ()
+        raise HooksInspectionFailed(
+            "the-steward: the effective hooks path %r could not be read: %s. "
+            "Refusing to report over a directory we did not manage to look "
+            "at — that is not the same as an empty one." % (directory, exc)
         )
-    return found
+    return True, tuple(_entry(directory, name) for name in names)
 
 
 def inspect(root, cwd=None):
@@ -143,11 +227,13 @@ def inspect(root, cwd=None):
     where = root if cwd is None else cwd
     effective = _rev_parse(where, ["--path-format=absolute", "--git-path", "hooks"])
     common = _rev_parse(where, ["--path-format=absolute", "--git-common-dir"])
+    exists, entries = _look_at(effective)
     return HooksInspection(
         effective_path=effective,
         default_path=os.path.join(common, "hooks"),
         configured=_configured_value(where),
-        hooks=_entries(effective),
+        directory_exists=exists,
+        hooks=entries,
     )
 
 
@@ -191,21 +277,38 @@ def inspection_findings(inspection):
         )
         return found
     for hook in inspection.hooks:
-        found.append(
-            findings.finding(
-                id="hook-file",
-                severity="info",
-                tier="inspected",
-                claim="a file present at the effective hooks path",
-                observed=(
-                    "%s, mode %s, executable bit %s"
-                    % (
-                        hook.name,
-                        "unreadable" if hook.mode is None else "%o" % hook.mode,
-                        "set" if hook.is_executable else "clear",
-                    )
-                ),
-                where=hook.path,
-            )
-        )
+        found.append(_entry_finding(hook))
     return found
+
+
+def _entry_finding(hook):
+    """One entry, described as **what it is** (ADR-28).
+
+    The execute bit is stated only for a regular file. A directory carries
+    0755 like every directory does, and rendering that as *a file … executable
+    bit set* invented a hook that is not there — a fabricated fact in the one
+    report whose entire purpose is to state nothing inspection did not
+    establish. The claim line names the type, so a reader can see which
+    question was answered.
+    """
+    mode = "unreadable" if hook.mode is None else "%o" % hook.mode
+    if hook.kind == FILE:
+        return findings.finding(
+            id="hook-file",
+            severity="info",
+            tier="inspected",
+            claim="a file present at the effective hooks path",
+            observed=(
+                "%s, mode %s, executable bit %s"
+                % (hook.name, mode, "set" if hook.is_executable else "clear")
+            ),
+            where=hook.path,
+        )
+    return findings.finding(
+        id="hook-entry",
+        severity="info",
+        tier="inspected",
+        claim="an entry at the effective hooks path that is not a regular file",
+        observed="%s, %s, mode %s" % (hook.name, hook.kind, mode),
+        where=hook.path,
+    )

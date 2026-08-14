@@ -18,6 +18,9 @@ import hashlib
 import io
 import os
 import shutil
+import subprocess
+import sys
+import tempfile
 import unittest
 
 import _support as S
@@ -176,6 +179,210 @@ class GitAnsweredTest(unittest.TestCase):
     def test_git_checked_returns_stdout_on_success(self):
         out = paths.git_checked(self.root, ["ls-files", "-z", "--", "*.md"])
         self.assertEqual(b"README.md\0", out)
+
+
+# A blob big enough that buffering it whole is unmistakable in `ru_maxrss`,
+# and a cap far below it. The blob is one repeated byte, so the object store
+# holds a few kilobytes and only the *stream* is large.
+CAP_PROBE_BLOB_BYTES = 192 * 1024 * 1024
+CAP_PROBE_CAP_BYTES = 1024 * 1024
+# Peak RSS the child is allowed above its own pre-git baseline. Generous by
+# two orders of magnitude against the blob, and an implementation that
+# buffers the stream cannot fit under it.
+CAP_PROBE_HEADROOM_BYTES = 48 * 1024 * 1024
+
+_CAP_PROBE = """
+import resource, sys
+sys.path.insert(0, sys.argv[1])
+import paths
+paths.GIT_OUTPUT_CAP_BYTES = int(sys.argv[4])
+baseline = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+try:
+    paths.git_checked(sys.argv[2], ["cat-file", "blob", sys.argv[3]])
+    outcome = "returned-a-result"
+except paths.OutputCapExceeded:
+    outcome = "OutputCapExceeded"
+except MemoryError:
+    outcome = "MemoryError"
+except BaseException as exc:
+    outcome = type(exc).__name__
+peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+print(outcome)
+print(peak - baseline)
+"""
+
+
+class OutputCapTest(unittest.TestCase):
+    """ADR-18/ADR-10: the cap is a **bound on what is read**, both pipes.
+
+    The shape this replaces measured `len(completed.stdout)` — that is, it
+    asked how big the output was *after* `subprocess.run` had already
+    materialised all of it in this process. A cap checked after the fact
+    reports the breach it was supposed to prevent, and `stderr` was not
+    measured at all, so the one stream a failing git command makes large was
+    unbounded outright.
+    """
+
+    def setUp(self):
+        self.root = S.make_git_repo()
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def lower_the_cap(self, value):
+        original = paths.GIT_OUTPUT_CAP_BYTES
+        self.addCleanup(setattr, paths, "GIT_OUTPUT_CAP_BYTES", original)
+        paths.GIT_OUTPUT_CAP_BYTES = value
+
+    def noisy_attributes(self, lines=500):
+        """A repo whose every `check-attr` writes a warning per bad line.
+
+        `b@d` is not a valid attribute name, so git warns and carries on: the
+        command **succeeds** with a small stdout and a large stderr, which is
+        exactly the case an stdout-only cap cannot see.
+        """
+        body = "".join("p%d.md b@d%d\n" % (i, i) for i in range(lines))
+        with open(
+            os.path.join(self.root, ".gitattributes"), "w", encoding="utf-8"
+        ) as handle:
+            handle.write(body)
+
+    def test_an_oversized_stdout_faults(self):
+        self.lower_the_cap(4)
+        with self.assertRaises(paths.OutputCapExceeded) as caught:
+            paths.git_checked(self.root, ["ls-files", "-z", "--", "*.md"])
+        self.assertIn("ls-files", str(caught.exception))
+
+    def test_an_oversized_stderr_faults(self):
+        """git succeeded and its stdout is tiny; the flood is on stderr."""
+        self.noisy_attributes()
+        control = S.git(self.root, "check-attr", "-a", "README.md")
+        self.assertGreater(
+            len(control.stderr), 4096, "git stopped warning — the fixture is inert"
+        )
+        self.lower_the_cap(4096)
+        with self.assertRaises(paths.OutputCapExceeded) as caught:
+            paths.git_checked(
+                self.root,
+                ["check-attr", "-z", "--stdin", "linguist-generated"],
+                stdin=b"README.md\0",
+            )
+        self.assertIn("check-attr", str(caught.exception))
+
+    def test_the_stream_is_bounded_as_it_is_read_not_after(self):
+        """The finding itself: a cap enforced after `subprocess.run` returns
+        has already paid the memory it exists to refuse.
+
+        Measured in a **fresh child**, because `ru_maxrss` is a high-water
+        mark: in this process an earlier test could have set it above the
+        threshold and the assertion would be vacuous.
+        """
+        if sys.platform != "darwin":
+            self.skipTest("ru_maxrss is only in bytes on darwin (%s)" % sys.platform)
+        blob = subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"],
+            cwd=self.root,
+            input=b"s" * CAP_PROBE_BLOB_BYTES,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertEqual(0, blob.returncode, blob.stderr.decode("utf-8", "replace"))
+        sha = blob.stdout.decode("ascii").strip()
+
+        probe = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                "-c",
+                _CAP_PROBE,
+                S.CORE_DIR,
+                self.root,
+                sha,
+                str(CAP_PROBE_CAP_BYTES),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertEqual(
+            0, probe.returncode, probe.stderr.decode("utf-8", "replace")[-4000:]
+        )
+        outcome, peak = probe.stdout.decode("utf-8").split()
+        self.assertEqual(
+            "OutputCapExceeded",
+            outcome,
+            "a %d-byte stream under a %d-byte cap produced %r"
+            % (CAP_PROBE_BLOB_BYTES, CAP_PROBE_CAP_BYTES, outcome),
+        )
+        self.assertLess(
+            int(peak),
+            CAP_PROBE_HEADROOM_BYTES,
+            "the child's peak RSS grew by %s bytes reading a %d-byte stream "
+            "under a %d-byte cap — the whole stream was buffered before the "
+            "cap was consulted" % (peak, CAP_PROBE_BLOB_BYTES, CAP_PROBE_CAP_BYTES),
+        )
+
+    def test_a_breach_returns_no_partial_result(self):
+        self.lower_the_cap(4)
+        for call in (
+            lambda: paths.git_output(self.root, ["ls-files", "-z", "--", "*.md"]),
+            lambda: paths.git_answered(
+                self.root, ["ls-files", "-z", "--", "*.md"], (0,)
+            ),
+            lambda: paths.git_checked(self.root, ["ls-files", "-z", "--", "*.md"]),
+        ):
+            with self.assertRaises(paths.OutputCapExceeded):
+                call()
+
+    def test_a_stream_at_the_cap_is_still_an_answer(self):
+        """Non-vacuity in the other direction: the bound is `>`, not `>=`,
+        and an ordinary read must not start failing."""
+        expected = b"README.md\0"
+        self.lower_the_cap(len(expected))
+        self.assertEqual(
+            expected, paths.git_checked(self.root, ["ls-files", "-z", "--", "*.md"])
+        )
+
+    def test_a_timeout_is_still_a_fault_not_an_answer(self):
+        original = paths.GIT_TIMEOUT_SECONDS
+        self.addCleanup(setattr, paths, "GIT_TIMEOUT_SECONDS", original)
+        paths.GIT_TIMEOUT_SECONDS = 0.000001
+        with self.assertRaises(paths.GitCommandFailed) as caught:
+            paths.git_checked(self.root, ["ls-files", "-z", "--", "*.md"])
+        self.assertIn("ls-files", str(caught.exception))
+
+
+class GitOutputDecodingTest(unittest.TestCase):
+    """`.strip()` on git output is lossy, and paths are where it bites.
+
+    `git rev-parse --show-toplevel` terminates its one record with a single
+    `\\n` and prints every other byte of the path verbatim. A directory whose
+    name ends in a space is legal on every filesystem this runs on, and
+    `.strip()` silently renames it: the root resolves to a path that does not
+    exist, so the manifest, the claims and the whole managed scope vanish and
+    the run reports a clean, unmanaged repository. Verified on git 2.50.1 —
+    `show-toplevel` for `<tmp>/repo dir ` emits exactly `...repo dir \\n`.
+    """
+
+    def make_repo_named(self, name):
+        parent = tempfile.mkdtemp(prefix="steward-oddname-")
+        self.addCleanup(shutil.rmtree, parent, True)
+        root = os.path.join(os.path.realpath(parent), name)
+        os.mkdir(root)
+        S.git(root, "init", "-q")
+        S.git(root, "config", "user.email", "fixture@example.invalid")
+        S.git(root, "config", "user.name", "Fixture")
+        return root
+
+    def test_a_repository_root_ending_in_a_space_is_preserved(self):
+        root = self.make_repo_named("repo dir ")
+        self.assertTrue(os.path.isdir(root), "the fixture name did not survive mkdir")
+        self.assertEqual(root, paths.repo_root(root))
+
+    def test_a_repository_root_starting_with_a_space_is_preserved(self):
+        root = self.make_repo_named(" leading repo")
+        self.assertEqual(root, paths.repo_root(root))
+
+    def test_a_repository_root_ending_in_a_tab_is_preserved(self):
+        root = self.make_repo_named("tabbed repo\t")
+        self.assertEqual(root, paths.repo_root(root))
 
 
 class ContainTest(unittest.TestCase):

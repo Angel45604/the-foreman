@@ -7,11 +7,152 @@ target (ADR-1, bootstrap form).
 
 import os
 import subprocess
+import threading
 
 # ADR-18: the only child process is git, with an argument vector (never a
 # shell string), an explicit timeout, and an explicit output cap.
 GIT_TIMEOUT_SECONDS = 30
 GIT_OUTPUT_CAP_BYTES = 8 * 1024 * 1024
+
+# How much of a pipe is taken per read. Small enough that the cap is crossed
+# within one chunk of where it truly falls, large enough not to syscall a
+# corpus to death.
+_READ_CHUNK_BYTES = 64 * 1024
+
+# `git --literal-pathspecs <subcommand>`: a git-level option that turns every
+# pathspec in the command into a literal string, so `[R]EADME.md` stops being
+# a character class. It is **half** the rule — see `literal_pathspec` — and it
+# is not universal: `check-ignore` rejects pathspec magic outright, `literal`
+# included, so passing it there is a fatal 128.
+LITERAL_PATHSPECS = "--literal-pathspecs"
+
+
+def literal_pathspec(relpath):
+    """A caller-supplied path, shaped so git reads it as a **name**.
+
+    **`--` is not enough, and neither is `--literal-pathspecs` alone.** `--`
+    ends *option* parsing; it says nothing about pathspec syntax. Two separate
+    things then remain, verified on git 2.50.1 in a repo holding both
+    `README.md` and `[R]EADME.md`:
+
+    * **globbing.** `ls-files -- '[R]EADME.md'` lists **both** files, so a
+      probe about one path answers about another. `--literal-pathspecs` is
+      what turns that off, and `ls-files` and `log` accept it.
+    * **magic prefixes.** A pathspec beginning with `:` is parsed as magic
+      wherever it appears: `check-ignore --no-index -- ':(top)README.md'`
+      exits **0** — *ignored* — for a repository that ignores `README.md` and
+      has never heard of the literal name. `check-ignore` is precisely the
+      command that cannot be given `--literal-pathspecs`
+      (`fatal: pathspec magic not supported by this command: 'literal'`), so
+      the flag cannot be the whole answer.
+
+    Prefixing `./` moves the colon off position 0, which is the only place
+    magic is recognised, and git normalises the prefix away — `./sub/deep.md`
+    and `sub/deep.md` give identical answers from `check-ignore`, `ls-files`
+    and `log`. So: **`./` here, at the argument, and `--literal-pathspecs` at
+    the command wherever it is accepted.** Neither alone is sufficient.
+
+    An absolute path is returned unchanged: it cannot begin with `:`, and
+    globbing is the flag's job.
+    """
+    if os.path.isabs(relpath):
+        return relpath
+    return "./" + relpath
+
+
+def one_record(raw):
+    """Decode one git record, removing **only** git's record terminator.
+
+    `.strip()` is the shape this replaces, and a path is where it bites: git
+    prints a path verbatim and ends the record with a single `\\n`, so a
+    repository whose directory name ends in a space came back renamed. The
+    resolved root then names a directory that does not exist, the manifest and
+    every claim under it disappear, and the run reports a clean, *unmanaged*
+    repository — a confident answer about a probe that in effect never ran.
+    Verified on git 2.50.1: `rev-parse --show-toplevel` in `<tmp>/repo dir `
+    emits `<tmp>/repo dir \\n`, and `config --get core.hooksPath` returns
+    ` my hooks \\n` for a value set with its spaces.
+    """
+    text = raw.decode("utf-8", "surrogateescape")
+    if text.endswith("\n"):
+        text = text[:-1]
+    return text
+
+
+class _Completed(object):
+    """What one bounded run produced. Shaped like `CompletedProcess`."""
+
+    def __init__(self, returncode, stdout, stderr):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+class _BoundedReader(threading.Thread):
+    """Drain one pipe, enforcing the cap **as it reads**.
+
+    The moment the cap is crossed the accumulated bytes are dropped and the
+    child is killed: there is no partial result, because a partial result is
+    the thing ADR-10 refuses to report over. Reading continues to EOF after
+    the kill so the child can never block on a full pipe and the thread always
+    finishes.
+    """
+
+    def __init__(self, label, handle, cap, on_breach):
+        threading.Thread.__init__(self)
+        self.daemon = True
+        self.label = label
+        self.handle = handle
+        self.cap = cap
+        self.on_breach = on_breach
+        self.total = 0
+        self.over_cap = False
+        self._chunks = []
+
+    def run(self):
+        try:
+            while True:
+                chunk = self.handle.read(_READ_CHUNK_BYTES)
+                if not chunk:
+                    return
+                self.total += len(chunk)
+                if self.over_cap:
+                    continue
+                if self.total > self.cap:
+                    self.over_cap = True
+                    self._chunks = []
+                    self.on_breach()
+                    continue
+                self._chunks.append(chunk)
+        except (OSError, ValueError):
+            # The pipe was closed under us by the kill this class asked for.
+            # It is not a fact about git's output; `over_cap` already is.
+            return
+        finally:
+            _close(self.handle)
+
+    def data(self):
+        return b"".join(self._chunks)
+
+
+def _close(handle):
+    try:
+        handle.close()
+    except (OSError, ValueError):
+        pass
+
+
+def _feed(handle, payload):
+    """Write the child's stdin on its own thread, so a child that never reads
+    it cannot outlast the timeout by blocking this one."""
+    try:
+        if payload:
+            handle.write(payload)
+        handle.flush()
+    except (OSError, ValueError):
+        pass
+    finally:
+        _close(handle)
 
 
 def _run(cwd, args, timeout, cap, stdin):
@@ -24,8 +165,21 @@ def _run(cwd, args, timeout, cap, stdin):
     every test that lowered it would be vacuously green — and v0 has no flag
     to lower it with instead (ADR-20, P1.3).
 
+    **The cap bounds what is READ, on BOTH pipes.** The shape this replaces
+    ran `subprocess.run` and then measured `len(completed.stdout)` — a cap
+    consulted only after the whole stream had been materialised in this
+    process, which reports the breach it exists to prevent. Measured: a
+    192 MiB blob under a 1 MiB cap grew peak RSS by 481 MiB before raising.
+    And `stderr` was never measured at all, so the one stream a *failing* git
+    command makes large was unbounded outright. Both pipes now go through
+    `_BoundedReader`, which drops what it has and kills the child at the
+    crossing.
+
     `stdin` feeds bytes to the child (`git check-attr -z --stdin`), which is
-    what keeps a large corpus off a command line bounded by `ARG_MAX`.
+    what keeps a large corpus off a command line bounded by `ARG_MAX`. It is
+    written on its own thread: with all three pipes pumped concurrently there
+    is no ordering in which the child and this process can deadlock waiting on
+    each other, and `wait(timeout=…)` stays the one bound on the whole run.
 
     **A child that never ran is a fault here, not a status for a caller to
     read.** `git` missing from `PATH` and a child that hit the timeout raise
@@ -42,28 +196,59 @@ def _run(cwd, args, timeout, cap, stdin):
     env = dict(os.environ)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     try:
-        completed = subprocess.run(
+        child = subprocess.Popen(
             ["git"] + list(args),
             cwd=cwd,
             env=env,
-            input=stdin,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=timeout,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        raise GitCommandFailed(
-            "the-steward: `git %s` could not be run in %r: %s: %s. Refusing to "
-            "report over a result we could not obtain."
-            % (" ".join(args), cwd, type(exc).__name__, exc)
-        )
-    if len(completed.stdout) > cap:
-        raise OutputCapExceeded(
-            "the-steward: `git %s` produced %d bytes, over the %d-byte cap; "
-            "refusing to report over a corpus that was not read whole."
-            % (" ".join(args), len(completed.stdout), cap)
-        )
-    return completed
+        raise GitCommandFailed(_could_not_run(args, cwd, exc))
+
+    def kill():
+        try:
+            child.kill()
+        except OSError:
+            pass
+
+    readers = (
+        _BoundedReader("stdout", child.stdout, cap, kill),
+        _BoundedReader("stderr", child.stderr, cap, kill),
+    )
+    writer = threading.Thread(target=_feed, args=(child.stdin, stdin))
+    writer.daemon = True
+    workers = readers + (writer,)
+    for worker in workers:
+        worker.start()
+    try:
+        try:
+            child.wait(timeout=timeout)
+        except (OSError, subprocess.SubprocessError) as exc:
+            kill()
+            child.wait()
+            raise GitCommandFailed(_could_not_run(args, cwd, exc))
+    finally:
+        for worker in workers:
+            worker.join()
+    for reader in readers:
+        if reader.over_cap:
+            raise OutputCapExceeded(
+                "the-steward: `git %s` produced over %d bytes on %s, past the "
+                "%d-byte cap; the child was killed and nothing partial is "
+                "reported — refusing to report over a corpus that was not "
+                "read whole." % (" ".join(args), reader.total, reader.label, cap)
+            )
+    return _Completed(child.returncode, readers[0].data(), readers[1].data())
+
+
+def _could_not_run(args, cwd, exc):
+    return (
+        "the-steward: `git %s` could not be run in %r: %s: %s. Refusing to "
+        "report over a result we could not obtain."
+        % (" ".join(args), cwd, type(exc).__name__, exc)
+    )
 
 
 def git_output(cwd, args, timeout=None, cap=None, stdin=None):
@@ -162,7 +347,7 @@ def repo_root(cwd):
     code, out = git_output(cwd, ["rev-parse", "--show-toplevel"])
     if code != 0:
         return None
-    top = out.decode("utf-8", "surrogateescape").strip()
+    top = one_record(out)
     if not top:
         return None
     return os.path.realpath(top)

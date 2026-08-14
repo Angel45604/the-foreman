@@ -266,6 +266,71 @@ class CleanlinessGuardTest(TriStateFixture):
             with S.unchanged_tree(self, self.root):
                 S.git(self.root, "add", "staged-later.md")
 
+    # ------------------------------------------------------------------
+    # The porcelain blind spots that make a *name-preserving* rewrite
+    # invisible. `git status` reports which paths differ from the index; for
+    # a path that is not in the index it reports the same one line whatever
+    # the bytes are, and for an ignored path it reports nothing at all. Every
+    # `unchanged_tree` in the suite is an assertion about *bytes*, so each of
+    # these is a way a read-only verb could rewrite a file and stay green.
+    # ------------------------------------------------------------------
+
+    def test_it_fails_when_an_existing_untracked_file_is_rewritten(self):
+        """The greenfield state this whole design is about: `generate`'s
+        output is untracked until a human stages it, so "a read-only verb
+        rewrote a freshly generated artifact" is precisely the bug the guard
+        has to be able to see."""
+        self.write("AGENTS.md", "generated\n")
+        with self.assertRaises(AssertionError):
+            with S.unchanged_tree(self, self.root):
+                self.write("AGENTS.md", "rewritten by a read-only verb\n")
+
+    def test_it_fails_when_an_ignored_file_is_rewritten(self):
+        self.write(".gitignore", "*.log\n")
+        S.git(self.root, "add", "-A")
+        S.git(self.root, "commit", "-q", "-m", "ignore")
+        self.write("run.log", "before\n")
+        with self.assertRaises(AssertionError):
+            with S.unchanged_tree(self, self.root):
+                self.write("run.log", "after\n")
+
+    def test_it_fails_when_an_ignored_file_appears(self):
+        self.write(".gitignore", "*.log\n")
+        S.git(self.root, "add", "-A")
+        S.git(self.root, "commit", "-q", "-m", "ignore")
+        with self.assertRaises(AssertionError):
+            with S.unchanged_tree(self, self.root):
+                self.write("appeared.log")
+
+    def test_it_fails_when_a_mode_bit_changes_on_an_untracked_file(self):
+        full = self.write("hook-ish.sh")
+        with self.assertRaises(AssertionError):
+            with S.unchanged_tree(self, self.root):
+                os.chmod(full, 0o755)
+
+    def test_it_fails_when_a_symlink_is_retargeted(self):
+        self.write("a.md", "a\n")
+        self.write("b.md", "b\n")
+        link = os.path.join(self.root, "link.md")
+        os.symlink("a.md", link)
+        with self.assertRaises(AssertionError):
+            with S.unchanged_tree(self, self.root):
+                os.unlink(link)
+                os.symlink("b.md", link)
+
+    def test_it_fails_when_an_empty_directory_appears(self):
+        with self.assertRaises(AssertionError):
+            with S.unchanged_tree(self, self.root):
+                os.makedirs(os.path.join(self.root, "docs", "steward"))
+
+    def test_it_ignores_churn_inside_the_git_directory(self):
+        """The guard is about repository *data*. git rewrites its own
+        bookkeeping (`index`, logs, `gc` output) on reads we do not control,
+        so digesting `.git` would make the guard flaky rather than strict."""
+        with S.unchanged_tree(self, self.root):
+            gitstate.path_state(self.root, "README.md")
+            S.git(self.root, "status")
+
 
 class GitFailureIsNeverAConfidentAnswerTest(TriStateFixture):
     """ADR-13 / ADR-30, the `corpus` rule applied to the tri-state.
@@ -443,12 +508,19 @@ class TheArgvIsTheContractTest(TriStateFixture):
         self.addCleanup(setattr, paths, "_run", real)
         return seen
 
+    def subcommand(self, args):
+        """The git subcommand, past any git-level options in front of it."""
+        for token in args:
+            if not token.startswith("-"):
+                return token
+        return None
+
     def test_the_ignore_probe_passes_no_index(self):
         self.write(".gitignore", "*.log\n")
         self.write("run.log")
         seen = self.record_the_argv()
         self.assertEqual(gitstate.IGNORED, self.state("run.log"))
-        probes = [args for args in seen if args and args[0] == "check-ignore"]
+        probes = [args for args in seen if self.subcommand(args) == "check-ignore"]
         self.assertEqual(1, len(probes), seen)
         self.assertIn(
             "--no-index",
@@ -465,10 +537,132 @@ class TheArgvIsTheContractTest(TriStateFixture):
         self.assertEqual(gitstate.TRACKED, self.state("keep.log"))
         self.assertEqual(
             ["ls-files"],
-            [args[0] for args in seen],
+            [self.subcommand(args) for args in seen],
             "either `check-ignore` was asked first, or it was asked at all "
             "after `ls-files` already said tracked",
         )
+
+    def test_every_probe_passes_the_declared_path_literally(self):
+        """The argv is the only place the literal rule is visible.
+
+        Both halves are asserted, because each is silent about the other:
+        `--literal-pathspecs` turns off globbing but `check-ignore` refuses
+        it, and the `./` prefix is what disarms a leading `:` in every
+        command. A module that dropped either half would answer correctly for
+        ordinary paths and wrongly for exactly the paths this exists for.
+        """
+        self.write(".gitignore", "*.log\n")
+        seen = self.record_the_argv()
+        self.assertEqual(gitstate.UNTRACKED, self.state("docs/notes.md"))
+        gitstate.last_commit_date(self.root, "docs/notes.md")
+        self.assertEqual(3, len(seen), seen)
+        for args in seen:
+            self.assertIn(
+                "./docs/notes.md",
+                args,
+                "%s was given a raw pathspec, so a leading `:` would be magic"
+                % self.subcommand(args),
+            )
+            if self.subcommand(args) != "check-ignore":
+                self.assertIn(
+                    paths.LITERAL_PATHSPECS,
+                    args,
+                    "%s globs its pathspec without it" % self.subcommand(args),
+                )
+
+    def test_check_ignore_is_never_given_the_literal_flag(self):
+        """It is fatal there — `pathspec magic not supported by this command:
+        'literal'`, exit 128 — so the exception is asserted, not assumed."""
+        control = S.git(
+            self.root,
+            paths.LITERAL_PATHSPECS,
+            "check-ignore",
+            "-q",
+            "--no-index",
+            "--",
+            "./anything.md",
+        )
+        self.assertEqual(
+            128, control.returncode, "check-ignore now accepts the flag: simplify"
+        )
+        seen = self.record_the_argv()
+        self.state("anything.md")
+        for args in seen:
+            if self.subcommand(args) == "check-ignore":
+                self.assertNotIn(paths.LITERAL_PATHSPECS, args)
+
+
+class PathspecMagicTest(TriStateFixture):
+    """A declared path is a **name**, and git must be asked about that name.
+
+    `--` ends *option* parsing; it does nothing about pathspec syntax, and git
+    reads a pathspec two further ways a filename does not deserve. Both are
+    live on git 2.50.1 and both make the tri-state answer about a *different
+    file* than the one a document declared:
+
+    * a **glob** — `[R]EADME.md` is a character class matching `README.md`;
+    * **magic** — a leading `:` introduces `:(top)`, `:(exclude)`, `:!`.
+
+    Either way the answer is confident and about the wrong path, which C2 then
+    reports as a resolved claim.
+    """
+
+    def test_a_glob_named_path_is_not_tracked_by_its_neighbour(self):
+        """`README.md` is tracked; the literal file `[R]EADME.md` is not."""
+        self.write("[R]EADME.md")
+        control = S.git(self.root, "ls-files", "-z", "--", "[R]EADME.md")
+        self.assertIn(
+            b"README.md\0",
+            control.stdout,
+            "git stopped globbing bracket pathspecs — the fixture is inert",
+        )
+        self.assertEqual(gitstate.UNTRACKED, self.state("[R]EADME.md"))
+
+    def test_a_glob_named_path_that_IS_tracked_is_still_tracked(self):
+        """Non-vacuity: making the probe literal must not make it blind."""
+        self.write("[R]EADME.md")
+        S.git(self.root, "add", "-A")
+        S.git(self.root, "commit", "-q", "-m", "bracket")
+        self.assertEqual(gitstate.TRACKED, self.state("[R]EADME.md"))
+
+    def test_a_magic_prefixed_name_is_not_ignored_by_its_neighbour(self):
+        """`:(top)` is pathspec magic that `--` does not disarm. The repo
+        ignores `README.md`; nothing here ignores the literal name."""
+        self.write(".gitignore", "README.md\n")
+        S.git(self.root, "add", "-A")
+        S.git(self.root, "commit", "-q", "-m", "ignore")
+        control = S.git(
+            self.root, "check-ignore", "-q", "--no-index", "--", ":(top)README.md"
+        )
+        self.assertEqual(
+            0,
+            control.returncode,
+            "git stopped honouring :(top) here — the fixture is inert",
+        )
+        self.assertEqual(gitstate.UNTRACKED, self.state(":(top)README.md"))
+
+    def test_an_ordinary_ignored_path_is_still_ignored(self):
+        """Non-vacuity for the ignore limb."""
+        self.write(".gitignore", "*.log\n")
+        S.git(self.root, "add", "-A")
+        S.git(self.root, "commit", "-q", "-m", "ignore")
+        self.assertEqual(gitstate.IGNORED, self.state("run.log"))
+        self.assertEqual(gitstate.IGNORED, self.state("nested/deep/run.log"))
+
+    def test_the_date_is_not_taken_from_a_globbed_neighbour(self):
+        """`log -1 -- '[R]EADME.md'` matches the committed `README.md` and
+        returns its date for a path that has never been committed."""
+        self.write("[R]EADME.md")
+        control = S.git(self.root, "log", "-1", "--format=%cI", "--", "[R]EADME.md")
+        self.assertTrue(
+            control.stdout.strip(),
+            "git stopped globbing the log pathspec — the fixture is inert",
+        )
+        self.assertIsNone(gitstate.last_commit_date(self.root, "[R]EADME.md"))
+
+    def test_the_date_of_a_real_path_still_arrives(self):
+        """Non-vacuity for the date limb."""
+        self.assertIsNotNone(gitstate.last_commit_date(self.root, "README.md"))
 
 
 class ReadOnlyTest(TriStateFixture):

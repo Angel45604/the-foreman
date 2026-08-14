@@ -142,6 +142,27 @@ def recorded_documents(document):
     return found
 
 
+def document_location(root, relpath):
+    """The **one** door from a corpus path to a filesystem path (ADR-26).
+
+    Every corpus path arrives from somewhere untrusted — git's index, or a
+    manifest record — and both can name a symlink. `os.path.join` plus
+    `os.path.isfile` was the shape here, and `isfile` **follows symlinks**: it
+    answers about whatever is at the far end, so a tracked `leak.md ->
+    /elsewhere/secret.md`, or any path under a symlinked `docs/`, resolved
+    outside the working tree and entered the corpus — which C3, C4 and the
+    indexes then read, render and digest. That is the same symlink hole
+    already closed on the atomic-write path and in the containment predicate,
+    arriving a third time because the join was open-coded.
+
+    `paths.contain` resolves the candidate and proves it is inside the tree,
+    raising ContainmentError (exit 2) when it is not. It returns the
+    **resolved** path, so a caller reading through this door reads the file
+    containment was proved about rather than re-deriving one.
+    """
+    return paths.contain(root, relpath.replace("/", os.sep))
+
+
 def enumerate_documents(root, document=None):
     """The checking corpus, the source corpus, and what went missing.
 
@@ -153,7 +174,7 @@ def enumerate_documents(root, document=None):
 
     present, missing = [], []
     for path in unmarked:
-        full = os.path.join(root, path.replace("/", os.sep))
+        full = document_location(root, path)
         if os.path.isfile(full):
             present.append(path)
         elif path in from_records:

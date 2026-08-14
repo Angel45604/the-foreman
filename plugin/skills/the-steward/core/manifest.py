@@ -300,7 +300,16 @@ def intentionally_empty_for(document, scope):
 
 
 def path(root):
-    return os.path.join(root, MANIFEST_NAME)
+    """Where `.steward.json` lives, **proved inside the working tree**.
+
+    `os.path.join` plus `os.path.isfile` was the shape, and `isfile` follows
+    symlinks: a `.steward.json` linked out of the tree was opened, parsed and
+    validated, so the single claim source for C1 and C2 (ADR-32) came from a
+    file ADR-26 forbids the core to read. `paths.contain` resolves it and
+    raises ContainmentError (exit 2) on escape — an in-tree link still passes,
+    because containment is about escape, not about links.
+    """
+    return paths.contain(root, MANIFEST_NAME)
 
 
 def is_tracked(root):
@@ -326,7 +335,16 @@ def is_tracked(root):
     about a state nobody had established, and exited 0. A failed probe is not
     an answer (ADR-13, exit 2).
     """
-    out = paths.git_checked(root, ["ls-files", "-z", "--", MANIFEST_NAME])
+    out = paths.git_checked(
+        root,
+        [
+            paths.LITERAL_PATHSPECS,
+            "ls-files",
+            "-z",
+            "--",
+            paths.literal_pathspec(MANIFEST_NAME),
+        ],
+    )
     listed = out.decode("utf-8", "surrogateescape").split("\0")
     return MANIFEST_NAME in listed
 

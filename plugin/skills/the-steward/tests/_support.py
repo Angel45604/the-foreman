@@ -5,7 +5,9 @@ imports, or shells out to any skill other than `the-steward`.
 """
 
 import contextlib
+import hashlib
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -90,19 +92,113 @@ def porcelain(root):
     return git(root, "status", "--porcelain").stdout.decode("utf-8")
 
 
+GIT_DIRECTORY = ".git"
+_DIGEST_CHUNK = 1 << 16
+
+
+def _digest_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while True:
+            chunk = handle.read(_DIGEST_CHUNK)
+            if not chunk:
+                return digest.hexdigest()
+            digest.update(chunk)
+
+
+def _entry_line(full):
+    """One line of ground truth about one entry, without following symlinks.
+
+    `lstat` throughout: a symlink is described by *itself* — its mode and its
+    target — never by whatever it points at, so retargeting a link is a change
+    and a link to a file outside the fixture is never read.
+    """
+    try:
+        info = os.lstat(full)
+    except OSError as exc:
+        # Not swallowed into "absent": the guard says what it could not read,
+        # and a change in *that* is still a change.
+        return "unreadable errno=%s" % exc.errno
+    mode = stat.S_IMODE(info.st_mode)
+    if stat.S_ISLNK(info.st_mode):
+        try:
+            target = os.readlink(full)
+        except OSError as exc:
+            target = "<unreadable errno=%s>" % exc.errno
+        return "symlink %04o -> %s" % (mode, target)
+    if stat.S_ISDIR(info.st_mode):
+        return "directory %04o" % mode
+    if stat.S_ISREG(info.st_mode):
+        try:
+            return "file %04o %d %s" % (mode, info.st_size, _digest_file(full))
+        except OSError as exc:
+            return "file %04o %d unreadable errno=%s" % (mode, info.st_size, exc.errno)
+    return "other %06o" % info.st_mode
+
+
+def _walk(root):
+    """Every entry under `root` except git's own bookkeeping, as relpaths.
+
+    Written as an explicit `lstat` walk rather than `os.walk`, because
+    `os.walk` classifies a symlink to a directory as a directory and this
+    snapshot must describe the link.
+    """
+    seen = {}
+    stack = [""]
+    while stack:
+        relative = stack.pop()
+        directory = os.path.join(root, relative) if relative else root
+        try:
+            names = sorted(os.listdir(directory))
+        except OSError as exc:
+            seen[relative + "/<unlistable>"] = "errno=%s" % exc.errno
+            continue
+        for name in names:
+            if name == GIT_DIRECTORY:
+                continue
+            child = name if not relative else relative + "/" + name
+            full = os.path.join(root, child.replace("/", os.sep))
+            line = _entry_line(full)
+            seen[child] = line
+            if line.startswith("directory "):
+                stack.append(child)
+    return seen
+
+
 def tree_snapshot(root):
     """P2.4 — the cleanliness reading every read-only test asserts on.
 
-    `git status --porcelain` **plus** the untracked-file listing, because
-    porcelain collapses an untracked directory to one line: a read-only verb
-    that created `docs/steward/orphans.md` inside an already-untracked `docs/`
-    would leave porcelain byte-identical. It reads git through the test's own
-    subprocess helper, **not** through the core's `paths.git_output`, so the
-    subject under test is never also the oracle (the trap
+    **Two readings, because each is blind where the other sees.**
+
+    1. `git status --porcelain --untracked-files=all` — the only half that can
+       see the **index**, which is not in the working tree at all. `git add`
+       leaves every byte on disk untouched.
+    2. A direct `lstat` walk of the working tree with a SHA-256 per regular
+       file. Porcelain answers *which paths differ from the index*, which is a
+       different question from *are the bytes the same*, and the gap between
+       them is where a read-only verb can rewrite a file and stay green:
+       porcelain prints the same single `?? AGENTS.md` whatever that file now
+       contains, prints nothing at all for an **ignored** path, and collapses
+       an untracked directory to one line. Greenfield — `generate`'s output,
+       untracked until a human stages it — sits entirely inside that gap.
+
+    The walk records type, mode, size, content digest and symlink target, so a
+    name-preserving rewrite, a `chmod`, a retargeted link and a new empty
+    directory are all changes. `.git` is excluded: git rewrites its own
+    bookkeeping on operations we do not control, and the guard is about
+    repository **data**.
+
+    Both halves read the filesystem and git through the test's own helpers,
+    **not** through the core's `paths` module, so the subject under test is
+    never also the oracle (the trap
     `RepoRootTest.test_returns_none_outside_a_repository` documents).
     """
     status = git(root, "status", "--porcelain", "--untracked-files=all")
-    return status.stdout.decode("utf-8", "surrogateescape")
+    lines = [status.stdout.decode("utf-8", "surrogateescape")]
+    entries = _walk(root)
+    for relative in sorted(entries):
+        lines.append("%s\t%s" % (relative, entries[relative]))
+    return "\n".join(lines)
 
 
 @contextlib.contextmanager
@@ -110,7 +206,9 @@ def unchanged_tree(test, root):
     """Assert the working tree is byte-identical across the block.
 
     Sensitivity is asserted directly in `test_gitstate.py` — a cleanliness
-    guard that cannot fail is the dead test this project exists to refuse.
+    guard that cannot fail is the dead test this project exists to refuse — and
+    it is asserted for each blind spot separately, because a guard that catches
+    only *new names* is the one this replaces.
     """
     before = tree_snapshot(root)
     yield
