@@ -22,6 +22,7 @@ import findings
 import hooks
 import manifest
 import paths
+import scan
 
 # Faults we raise deliberately. Each is exit 2 with its own message and no
 # traceback: a tool fault must never read as a pass (ADR-13), but it should
@@ -266,6 +267,25 @@ def _stub(context):
     return EXIT_OK
 
 
+def _scan(context):
+    """P3.1-P3.4: report what this repository declares about itself.
+
+    A pure reader. Every conclusion is tier *inferred* and severity `info`
+    (ADR-28), so this verb cannot reach exit 1 through an inference of its own
+    — `findings.exit_code` is still what produces the status, because the
+    contract is the finding set's and not this function's.
+    """
+    found, cardinalities = scan.survey_findings(
+        scan.survey(context.repo_root, context.manifest)
+    )
+    context.stdout.write(
+        findings.render_report(
+            context.verb, found, cardinalities, extra_lines=_footer(context)
+        )
+    )
+    return findings.exit_code(found)
+
+
 TRACKEDNESS_CHECK = "manifest-trackedness"
 
 
@@ -332,7 +352,7 @@ def _doctor(context):
 
 
 VERBS = {
-    "scan": _stub,
+    "scan": _scan,
     "generate": _stub,
     "check": _stub,
     "doctor": _doctor,

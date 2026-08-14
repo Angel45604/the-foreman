@@ -33,6 +33,13 @@ ALLOWED_STDLIB = {
     "json",
     "os",
     "re",
+    # A command record's value is a string a human is told they can type at the
+    # repository root, so every word in it has to survive a POSIX shell exactly
+    # as written — `npm run a;id` otherwise runs `id`, which it did. `quote` is
+    # that rule, and its predicate is already ASCII-only
+    # (`re.compile(r"[^\w@%+=:,./-]", re.ASCII)`), so nothing is gained by
+    # hand-writing a copy and a copy is where the escaping goes subtly wrong.
+    "shlex",
     "shutil",
     # ADR-18's timeout has to bound the **call**, and git's descendants
     # inherit our pipes: `SIGKILL` to the child's process group is what
