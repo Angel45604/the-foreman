@@ -323,6 +323,13 @@ renumbered and otherwise intact; the number 8 is retired, not reused.
       the tracked `.steward.json`. Tests: `generate` with unconfirmed `confidence: low` records
       **records them `proposed`, keeps the level, and neither prompts nor promotes**; the same run with stdin closed
       and with a pty gives **byte-identical** output and manifest. The tool never writes `confirmed`.
+      **PARTIALLY DEFERRED TO PHASE 6 by owner decision 2026-08-14** (see
+      `DECISION-2026-08-14-audit-shape.md`). Delivered in Phase 3: the closed-stdin vs
+      controlling-terminal byte-identity fixture for the three verbs that exist (`scan`, `check`,
+      `doctor`), and a bounded prompt lint whose claim is scoped to the forms it inspects. **Deferred,
+      because `generate` does not exist until Phase 6:** its own byte-identity run, and the
+      state-preservation invariant. The promotion AST audit was **deleted**, not narrowed — it claimed
+      an absence it could not establish (ADR-28), and a syntactic oracle is never the guarantee.
 - [ ] **P3.8** ADR-13 severity mapping asserted end-to-end as exit codes: confirmed → 1, proposed →
       0 with a `warn`, pending/waived/inspected → 0 with `info`.
 
@@ -585,6 +592,20 @@ the renderers in Phase 6, which is where they are listed.
       prints the line to add. **`doctor` makes no containment claim** — asserted by a wording test.
 - [ ] **P6.6** Re-running `generate` syncs the core to the packaged inventory and reports the core
       version; there is no separate upgrade command.
+- [ ] **P6.7** **THE WRITE-SEAM INVARIANT — inherited from P3.7, and load-bearing because the
+      promotion AST audit was deleted rather than narrowed** (owner decision 2026-08-14,
+      `DECISION-2026-08-14-audit-shape.md`). `generate` is the **sole persister** (ADR-11), so this is
+      the one seam at which "the tool never writes `confirmed`" is **decidable and total**, as against
+      a syntactic audit which is neither. Assert over the **bytes `generate` emits**: every
+      pre-existing record's `state` is preserved **exactly**, and **no record acquires `confirmed`**
+      that did not already carry it. Prove it non-vacuously by planting a promotion at the seam and
+      watching it redden — an audit over clean code reports nothing whether it works or not.
+- [ ] **P6.8** `generate`'s half of P3.7's behavioural check: a run with **stdin closed** and a run
+      with the pty installed as the **controlling terminal** (`setsid` + `TIOCSCTTY`, not merely fd 0
+      — that distinction is what made the Phase-3 fixture blind) give **byte-identical** output *and*
+      manifest. Both arrangements run in their own session, the pty carries a distinguishing window
+      size so the oracle can say *which* terminal was reached, and the master is drained: a child that
+      writes to `/dev/tty` and is not drained wedges where `SIGKILL` does not reap it.
 
 **Done when:** greenfield `generate` on a repo with no manifest creates `.steward.json` and every
 absent target, and `check` then passes against them **before any `git add`** and with no hand-edit
@@ -597,9 +618,11 @@ C4's real-artifact fixtures run **through `check`** here — stale detected, cur
 hand-edited `AGENTS.md` and `CLAUDE.md` each an `error` naming the remedy, `git status` unchanged in
 all; every artifact survives a **render → render byte-compare** and the **renderer-purity lint**
 (clock / random / cwd / absolute path — ADR-8, the assertion the retired Phase 5 used to carry); the
-cap boundary fixture reports `warn` and exit 0; and a test asserts **no file under `.claude/` or
+cap boundary fixture reports `warn` and exit 0; a test asserts **no file under `.claude/` or
 `.codex/` is written by any code path** — the standing guard that the deferred harness work has not
-leaked in.
+leaked in; **P6.7's write-seam invariant holds and reddens against a planted promotion**; and
+**P6.8's closed-stdin vs controlling-terminal comparison is byte-identical for `generate`'s output
+and its manifest**.
 
 ## Phase 7 — Doctor
 

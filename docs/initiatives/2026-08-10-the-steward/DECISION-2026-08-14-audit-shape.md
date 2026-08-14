@@ -75,12 +75,65 @@ Restored byte-identical (SHA-256 match), suite green again.
 
 ### 1. Delete the promotion AST audit — the behavioural invariant replaces it
 
-The guarantee now rests on three things, none of which enumerate syntax:
+The guarantee now rests on three things:
 
-1. the **input-non-mutation snapshot**, proven load-bearing against the shape that evaded the audit;
-2. the state machine having **no write capability at all** — `core/records.py` contains no `open(`,
-   no `os.`, no `atomic`, no `jsonio`;
-3. the **Phase-6 write-seam invariant** (below).
+1. the **input-non-mutation snapshot**, proven load-bearing against the shape that evaded the audit —
+   behavioural, and the only one of the three that enumerates no syntax;
+2. a **bounded lint** that `core/records.py` names no obvious way to reach the filesystem —
+   `BoundedWriteCapabilityLintTest` / `bounded_write_capability_names`, named so the bound is in the
+   name, and **not** a guarantee (see the correction below);
+3. the **Phase-6 write-seam invariant** (`execution-plan.md` P6.7).
+
+#### CORRECTION, 2026-08-14 — point 2 was overclaimed, by this document, in the act of arguing against overclaiming
+
+Point 2 originally read "the state machine having **no write capability at all**", and the instruction
+that produced it called it "**a complete, decidable fact**, unlike the audit you are deleting."
+
+**Both statements are false**, and the error is precisely the one this document exists to name: an
+evadable syntactic oracle was deleted and a differently-evadable syntactic oracle was put in its
+place, then described as complete. Found by `codex-gate` on the very next round:
+
+```python
+from manifest import os as filesystem     # import set is still ['findings','manifest','text']
+filesystem.remove(path)                   # no capability name appears anywhere
+```
+
+`manifest` re-exports its own imported `os`, so the asserted import set is preserved and the lint sees
+nothing. "This module imports only pure modules" is **not** decidable from its import list, because
+purity is not transitive through a re-export.
+
+**What this changes.** The lint stays, as a *lint*, with its claim narrowed to what it inspects — the
+names appearing in `records.py`'s own source — and it is **not** a no-write guarantee. The
+load-bearing assertion is behavioural: the input-non-mutation snapshot today, and the write-seam
+invariant plus per-caller tree snapshots as real callers arrive. The alias-through-`manifest` shape is
+kept as a **false-green regression fixture**, so the lint can never again be mistaken for proof.
+
+**Resolved 2026-08-14.** `TheStateMachineCannotWriteAnythingTest` → **`BoundedWriteCapabilityLintTest`**
+and `write_capable_names` → **`bounded_write_capability_names`**: the bound is now in the name, not
+only in a docstring a reader may skip. The regression fixture asserts the plant's import set is
+preserved **and** that the lint returns `[]` — *the green is the finding* — with the docstring saying
+outright "do not 'fix' this by adding a detector branch". It is paired with an assertion that the
+alias is a **real** capability (`manifest` imports `os` in source, and `assertIs(os, manifest.os)` at
+runtime), so the fixture cannot decay into a strawman.
+
+The contrast that justifies the relabel, measured against one planted in-place promotion:
+
+```
+test_records.py         -> FAILED (failures=1)   "the machine edited a record"
+test_no_confirmation.py -> Ran 24 tests  OK
+```
+
+The behavioural test catches it; the lint does not. That is the correct division of labour, now
+recorded in the file's own trap list rather than inferred.
+
+**No tree-snapshot assertion was added, deliberately.** `records.py` has no production caller yet —
+`cli.VERBS["check"]` is still `_stub` — so any snapshot today would assert over a test-injected verb
+and prove nothing about the product. That is exactly the vacuous pass ADR-30 forbids, and it waits
+for P6.7.
+
+**The generalisable lesson, since this is now the third instance in one phase:** a syntactic audit can
+raise an alarm, but it can never be the guarantee. Whenever one is written, the question is not "which
+forms does it catch" but "what behavioural assertion is the actual guarantee, and does it exist yet".
 
 Accepted cost, recorded plainly: the behavioural invariant covers `record_findings`' inputs, so a
 *future* module writing `confirmed` is not caught until Phase 6. Nothing in Phases 4–5 can persist a

@@ -37,7 +37,18 @@ persistence, this boundary can still be replaced before any final record is gene
 
 ## The decision
 
-### 1. Scope — repository root only; nested projects are diagnosed, never guessed
+### 1. Scope of the COMMAND RECORD — repository root only; nested projects are diagnosed, never guessed
+
+> **Correction, 2026-08-14.** This heading originally read "Scope — repository root only", with no
+> noun. A literal reader applies that to *everything the scanner infers*, and one did: **nested
+> projects stopped producing stack findings altogether**, so a repository whose only manifest was
+> `packages/web/package.json` reported no stack at all. That is a straight contradiction of P3.1
+> ("project-root and stack detection, **per project**"), caused by this heading rather than by the
+> body below it, which was always scoped to command values.
+>
+> **The boundary is about the COMMAND RECORD and nothing else**, because the thing the frozen schema
+> cannot express is a *command's* working directory. Stack and project detection have no such
+> problem and are per-project, at any depth.
 
 `scan` proposes a command record **only** for a declaration at the **repository root**. A declaration
 found in a **nested** project produces **no record**; it produces an **ADR-28 diagnostic** naming the

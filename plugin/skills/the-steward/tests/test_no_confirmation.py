@@ -23,23 +23,34 @@ the real `record_findings` loop — a genuine ADR-11 violation in production cod
 shape, made by this tool's own suite about itself, and the set of syntactic
 forms that write a string into a dict key is unbounded: more detector branches
 would only have made a wrong claim feel complete. It was deleted rather than
-extended. The guarantee now rests on three things, none of which enumerate
-syntax:
+extended. The guarantee now rests on three things, and **only the first of them
+is a guarantee**:
 
 1. **the input-non-mutation snapshot** in `test_records.py`
    (`ConfirmedRecordIsNeverDeletedTest.test_the_record_set_is_read_and_never_edited`)
    — it renders the caller's own records to text before and after and compares,
-   so a promotion is caught however it is spelled. Verified against the exact
-   shape that evaded the audit: planted, it reddens that test;
-2. **`core/records.py` has no write capability at all** — pinned below by
-   `TheStateMachineCannotWriteAnythingTest`, which is a complete, decidable
-   reading of one module's own source rather than a hunt for shapes;
+   so a promotion is caught however it is spelled. It enumerates no syntax, and
+   it is the only one of the three that does not. Verified against the exact
+   shape that evaded the audit: planted in a **copy** of `core/records.py` it
+   reddens with *"the machine edited a record"*, `"proposed"` -> `"confirmed"`
+   — while this entire file stayed green, which is the measure of pillar 2;
+2. a **bounded lint** that `core/records.py`'s own source names no obvious way
+   to reach the filesystem — `BoundedWriteCapabilityLintTest`. **It is not a
+   no-write guarantee and cannot be one**, and the first version of this
+   paragraph claimed it was: `from manifest import os as filesystem` preserves
+   the asserted import set and names nothing the lint knows, because purity is
+   not transitive through a re-export (T7). That shape is kept below as a
+   false-green regression fixture, so the lint can never again be mistaken for
+   proof (DECISION-2026-08-14-audit-shape, CORRECTION);
 3. the **Phase-6 write-seam invariant**, carried as an obligation in the
-   decision document, because deleting the oracle is what makes it load-bearing.
+   decision document (P6.7), because deleting the oracle is what makes it
+   load-bearing.
 
-**What is left is one lint and one behavioural fixture, and the difference
-between them is the point.** `BoundedPromptLintTest` names the four costumes it
-can see and claims nothing about the rest. `StandardInputChangesNothingTest`
+**Two lints and one behavioural fixture, and the difference between them is the
+point.** `BoundedPromptLintTest` names the four costumes it can see and claims
+nothing about the rest. `BoundedWriteCapabilityLintTest` names four capability
+words in one module's own source and claims nothing about what that module can
+reach *through* the modules it imports. `StandardInputChangesNothingTest`
 looks at no syntax at all: it runs the real verbs twice — once with nothing on
 standard input and no terminal reachable, once with a pty that is both fd 0 and
 the child's **controlling terminal** — and compares the bytes, which is what
@@ -52,7 +63,7 @@ fixture repository, under those two arrangements*. It says nothing about
 `generate`, nothing about a repository shaped differently, and nothing about a
 prompt on a channel that is neither fd 0 nor the controlling terminal.
 
-**Six traps this file is written against.**
+**Seven traps this file is written against.**
 
 **T1 — an audit over clean code reports nothing whether it works or not.** Two
 guards shipped in this project that could not be told apart from broken ones
@@ -107,6 +118,23 @@ second independent oracle asserts the two arrangements genuinely differ about
 `/dev/tty` — unavailable in one, and *the fixture's own pty* (by a window size
 no default has) in the other.
 
+**T7 — purity is not transitive through a re-export, and this file shipped a
+lint that assumed it was.** The audit deleted above was replaced by a reading of
+`records.py`'s import list plus a search for four capability words, and that was
+called *complete and decidable* because the vocabulary is finite and the module
+is one. Both halves are true and the conclusion still does not follow: a module
+whose name is on the allowed list can hand over a capability the list forbids.
+`from manifest import os as filesystem` leaves the asserted import set exactly
+`('findings', 'manifest', 'text')`, names nothing in `WRITE_CAPABILITIES`, and
+`filesystem.remove` is the real `os.remove` — `manifest` imports `os` at module
+scope. Verified: with that alias planted, the lint returns `[]`; with the
+promotion `_key = "state"; record[_key] = CONFIRMED` planted in a copy of the
+live `record_findings` loop, **all 20 tests in this file pass** and the
+behavioural snapshot in `test_records.py` is what goes red. The lint is kept as
+a lint, its claim narrowed to the names it inspects, and the evading shape is
+pinned below as a false-green regression fixture — **not** closed by another
+branch, which would be the third syntactic enumeration in one phase.
+
 **Deliberately out of scope, and disclosed rather than faked:** the same
 byte-identity fixture for `generate`. Its subject is still a Phase-1 stub
 (`cli.VERBS`), so the fixture would assert that two runs of a stub agree. It is
@@ -131,6 +159,7 @@ import _support as S
 S.import_core()
 
 import inventory  # noqa: E402
+import manifest  # noqa: E402
 import records  # noqa: E402
 
 # The costumes an interactive core would wear. `input()` needs no import, and
@@ -164,17 +193,43 @@ LEGITIMATE_STDIN_PLUMBING = (
     "    return child.wait(timeout=30)\n"
 )
 
-# The ADR-11 state machine, and the three modules it is allowed to import.
-# Checked as an equality, so a fourth import — which is how a write capability
-# would arrive — fails here.
+# The ADR-11 state machine, and the three modules it imports today. Checked as
+# an equality because a fourth import is a change worth seeing — **not because
+# these three are pure.** `manifest` itself imports `os`, `jsonio` and `paths`,
+# so this is a tripwire on one file's own import statements and never a
+# statement about what the state machine can reach through them (T7).
 STATE_MACHINE = "records.py"
 STATE_MACHINE_IMPORTS = ("findings", "manifest", "text")
 
 # The names that reach the filesystem: the builtin that opens a file, the
-# stdlib module that moves and removes them, and the core's two writers. This
-# list is the whole of pillar 2 in the decision document, quoted there as "no
-# `open(`, no `os.`, no `atomic`, no `jsonio`".
+# stdlib module that moves and removes them, and the core's two writers. A
+# finite vocabulary, applied to one module's own source — which is the whole of
+# what the lint below inspects, and less than the decision document originally
+# claimed for it (CORRECTION, 2026-08-14).
 WRITE_CAPABILITIES = ("atomic", "jsonio", "open", "os")
+
+# Where the guarantee actually lives, named here so the pointer is an object a
+# test can check rather than a sentence in a comment. The test named below
+# parses that file and asserts this really is a test in it, so a rename over
+# there cannot quietly leave this file pointing at nothing.
+BEHAVIOURAL_GUARANTEE = (
+    "test_records.py",
+    "ConfirmedRecordIsNeverDeletedTest",
+    "test_the_record_set_is_read_and_never_edited",
+)
+
+# The shape that defeats the lint below, kept as a **false-green regression
+# fixture** rather than closed by another detector branch (T7). Every import
+# the state machine is asserted to have is here, and `os` arrives as an alias
+# of `manifest`'s own — so the import set is preserved, no capability word
+# appears, and `filesystem.remove` is nonetheless the real `os.remove`.
+ALIAS_THROUGH_A_PURE_LOOKING_IMPORT = (
+    "import findings\n"
+    "import text\n"
+    "from manifest import os as filesystem\n"
+    "def promote(record, path):\n"
+    "    filesystem.remove(path)\n"
+)
 
 # A module that only reads a record, planted as the false-positive control for
 # the capability reading. The state machine does exactly this on every call, so
@@ -424,16 +479,41 @@ def imported_modules(source):
     return sorted(found)
 
 
-def write_capable_names(source):
-    """Sorted `WRITE_CAPABILITIES` names appearing anywhere in `source`.
+def bounded_write_capability_names(source):
+    """Sorted `WRITE_CAPABILITIES` names appearing **in `source` itself**.
 
-    Three shapes, and over a module whose import set is closed they are the
-    whole reading: an identifier used bare (`open(...)`, `os`), an attribute of
-    that name (`os.rename`, `jsonio.dumps`), and an import of one. This is what
-    makes it different in kind from the audit it replaces — the claim is over a
-    finite vocabulary named here, applied to one module's own source, and both
-    halves are decidable. It says nothing about what a module it imports can
-    do, and the test below states that bound rather than leaving it implied.
+    Read this as a lint. **It is not a no-write guarantee, and it cannot be
+    one.** What it inspects is exactly the names written in one module's own
+    source, in three shapes: an identifier used bare (`open(...)`, `os`), an
+    attribute of one of those names (`os.rename`, `jsonio.dumps`), and an
+    import of one.
+
+    **Why the stronger claim does not follow.** Purity is not transitive
+    through a re-export, so a module whose name is on the allowed import list
+    can hand over a capability this vocabulary forbids:
+
+        from manifest import os as filesystem   # import set unchanged
+        filesystem.remove(path)                 # no capability name appears
+
+    `manifest` imports `os` at module scope, so that alias is the real `os`
+    module and `remove` is the real `remove`. The import set stays
+    `('findings', 'manifest', 'text')` and every branch above sees nothing.
+    That is verified, not supposed —
+    `test_the_alias_through_manifest_is_invisible_and_that_is_expected` plants
+    it and asserts this function returns `[]`.
+
+    **That is not a gap to be closed by adding branches.** The reach of a
+    module is not bounded by the words in its source, so an enumeration of
+    re-export paths would end *feeling* complete — which is the defect that
+    already cost this file one audit and then its replacement's claim
+    (DECISION-2026-08-14-audit-shape). The guarantee is behavioural and lives
+    in `test_records.py`, in
+    `ConfirmedRecordIsNeverDeletedTest.test_the_record_set_is_read_and_never_edited`:
+    it snapshots the caller's own records and compares, so a promotion is
+    caught however it is spelled.
+
+    The one aggregation this lint calls, so pointing it at a planted module
+    exercises the same code path as pointing it at the core.
     """
     found = set()
     for node in ast.walk(ast.parse(source)):
@@ -604,21 +684,30 @@ class TheEnumerationIsAuditedTooTest(unittest.TestCase):
             core_sources(self.directory, ("absent.py",))
 
 
-class TheStateMachineCannotWriteAnythingTest(unittest.TestCase):
-    """Pillar 2 of the guarantee the deleted promotion audit used to carry.
+class BoundedWriteCapabilityLintTest(unittest.TestCase):
+    """A lint over `records.py`'s own source. **Not a no-write guarantee.**
 
-    **Why this is a different kind of claim.** "No core module can write a
-    `confirmed` record" quantified over an unbounded set of syntactic forms in
-    an open-ended set of modules, and could only ever have been a search. This
-    quantifies over a finite vocabulary of four names in **one** module, whose
-    import set is asserted here to be exactly three pure modules — so reading
-    its source is reading the whole of it.
+    **The name is the fix.** This class used to be called
+    `TheStateMachineCannotWriteAnythingTest`, and the decision document called
+    its reading "a complete, decidable fact, unlike the audit you are
+    deleting". The vocabulary is finite and the module is one — both true — and
+    the conclusion still does not follow, because purity is not transitive
+    through a re-export (T7). So the deleted audit's defect was reproduced *in
+    the fix for it*, one refactor along:
+    `test_the_alias_through_manifest_is_invisible_and_that_is_expected` is the
+    plant that shows it, and it is kept green on purpose.
 
-    **The bound, stated rather than implied (ADR-28).** This is a statement
-    about `records.py`'s own source. `manifest` opens `.steward.json` and
-    nothing here says otherwise; what is asserted is that no line of the state
-    machine names a way to open, move or write a file, so there is no write for
-    a promotion to ride out on.
+    **The bound, stated rather than implied (ADR-28).** Every assertion here is
+    a statement about the names appearing in `records.py`'s own source. None of
+    them is a statement that the state machine cannot write, or cannot promote
+    a record: that claim would be ADR-28's banned shape, and it is not
+    establishable from this file at all.
+
+    **Where the guarantee is instead.** `BEHAVIOURAL_GUARANTEE` — the
+    input-non-mutation snapshot, which enumerates no syntax and was verified to
+    redden against `_key = "state"; record[_key] = CONFIRMED`, the shape that
+    evaded the deleted audit, while every test in *this* file stayed green.
+    Raising an alarm early is this lint's whole job.
     """
 
     def source(self):
@@ -630,23 +719,32 @@ class TheStateMachineCannotWriteAnythingTest(unittest.TestCase):
         )
         return core_sources(names=(STATE_MACHINE,))[STATE_MACHINE]
 
-    def test_the_state_machine_imports_exactly_three_pure_modules(self):
-        """Equality in both directions: a fourth import is how the capability
-        would arrive, and this is the line it would have to cross."""
+    def test_the_state_machine_imports_exactly_the_three_named_modules(self):
+        """Equality in both directions, as a tripwire and **not** as evidence
+        of purity. A fourth import is a change worth a human's eye; the three
+        already here are not thereby pure — `manifest` imports `os` — and the
+        regression fixture below is what keeps that from being forgotten."""
         self.assertEqual(
             list(STATE_MACHINE_IMPORTS),
             imported_modules(self.source()),
-            "the state machine's import set changed — a module that can write "
-            "is one import away from a module that could promote a record",
+            "the state machine's import set changed — worth reading, though "
+            "an unchanged set establishes nothing on its own (T7)",
         )
 
     def test_the_state_machine_names_no_way_to_reach_the_filesystem(self):
+        """The lint's own assertion, and it says *names*, deliberately.
+
+        A clean result here means no line of `records.py` writes one of the
+        four words. It does not mean the module cannot reach a writer, and the
+        message says so rather than letting a green tick be read as proof.
+        """
         self.assertEqual(
             [],
-            write_capable_names(self.source()),
+            bounded_write_capability_names(self.source()),
             "the state machine names a writer; ADR-11 leaves `confirmed` to a "
             "human editing the tracked manifest, and a record it could persist "
-            "is a record it could promote",
+            "is a record it could promote. (A clean run of this assertion is "
+            "not the converse: see BEHAVIOURAL_GUARANTEE.)",
         )
 
     def test_the_detector_sees_every_capability_it_names(self):
@@ -663,13 +761,15 @@ class TheStateMachineCannotWriteAnythingTest(unittest.TestCase):
             "    os.rename(path, path + '.bak')\n"
             "    atomic.write(path, b'')\n"
         )
-        self.assertEqual(sorted(WRITE_CAPABILITIES), write_capable_names(planted))
+        self.assertEqual(
+            sorted(WRITE_CAPABILITIES), bounded_write_capability_names(planted)
+        )
 
     def test_a_module_that_only_reads_a_record_is_not_flagged(self):
         """The counter-weight: a detector that flagged everything would satisfy
         the assertions above just as well, and the state machine compares a
         record's state against `confirmed` on every call."""
-        self.assertEqual([], write_capable_names(LEGITIMATE_STATE_READ))
+        self.assertEqual([], bounded_write_capability_names(LEGITIMATE_STATE_READ))
         self.assertEqual(
             list(STATE_MACHINE_IMPORTS), imported_modules(LEGITIMATE_STATE_READ)
         )
@@ -678,6 +778,112 @@ class TheStateMachineCannotWriteAnythingTest(unittest.TestCase):
         """Positive accounting for the control above: the shape that must not
         be flagged is one the module actually contains."""
         self.assertIn(records.CONFIRMED, self.source())
+
+    def test_the_alias_through_manifest_is_invisible_and_that_is_expected(self):
+        """**A false-green regression fixture. The green is the finding.**
+
+        This plants a module that removes a file through an alias of
+        `manifest`'s own `os`, and asserts the lint reports **nothing** — which
+        is what a lint over one file's own words can do, and the reason this
+        class is named for a bound instead of a guarantee (T7).
+
+        **Do not "fix" this by adding a detector branch.** Two syntactic
+        oracles have already been written here, each claiming an absence a
+        partial look cannot establish, and the second was written *as the fix
+        for the first* — a third enumeration would make the same wrong claim
+        feel complete, which ADR-28 bans and
+        DECISION-2026-08-14-audit-shape settles. If a future change genuinely
+        widens the lint, this assertion is where that decision has to be
+        argued: change it deliberately, and restate the bound in
+        `bounded_write_capability_names` at the same time. What catches the
+        promotion this alias could carry is `BEHAVIOURAL_GUARANTEE`, which
+        looks at values rather than words.
+        """
+        self.assertEqual(
+            list(STATE_MACHINE_IMPORTS),
+            imported_modules(ALIAS_THROUGH_A_PURE_LOOKING_IMPORT),
+            "the plant no longer preserves the asserted import set, so it no "
+            "longer demonstrates anything about that assertion",
+        )
+        self.assertEqual(
+            [],
+            bounded_write_capability_names(ALIAS_THROUGH_A_PURE_LOOKING_IMPORT),
+            "the lint now flags the alias-through-`manifest` shape. That is a "
+            "widening of a bound this file states in prose and in ADR-28 "
+            "terms; if it was deliberate, restate the bound. If it was an "
+            "arms-race branch, it is the third one and the decision document "
+            "rejected it twice.",
+        )
+
+    def test_the_alias_the_lint_cannot_see_is_a_real_capability(self):
+        """Positive accounting for the fixture above, and the load-bearing
+        half of it: a plant the lint misses proves nothing unless the plant
+        would actually work.
+
+        Asked of the imported module itself rather than of its source, because
+        the question is what the alias *binds to* — `manifest.os` is the real
+        `os` module, so `from manifest import os as filesystem` hands over the
+        real `os.remove`. This is also why the import-set equality above is a
+        tripwire and not a purity reading.
+        """
+        self.assertIn(
+            "os",
+            imported_modules(core_sources(names=("manifest.py",))["manifest.py"]),
+            "`manifest` no longer imports `os`, so the plant above may no "
+            "longer describe a reachable capability — re-derive the bound",
+        )
+        self.assertIs(
+            os,
+            manifest.os,
+            "`manifest.os` is not the stdlib `os` module, so the alias in the "
+            "plant would not reach the filesystem after all",
+        )
+
+    def test_the_named_behavioural_guarantee_exists(self):
+        """The pointer this class hands off to, checked rather than trusted.
+
+        Every docstring above answers "then what *is* the guarantee?" with one
+        name. A name in prose rots silently, and a lint left pointing at a
+        deleted test is exactly the state this whole file exists to prevent —
+        so the test is located by parsing `test_records.py` and looking for the
+        class and method by name.
+        """
+        module, class_name, method = BEHAVIOURAL_GUARANTEE
+        tree = ast.parse(S.read_text(os.path.join(S.TESTS_DIR, module)))
+        classes = [
+            node
+            for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == class_name
+        ]
+        self.assertEqual(
+            1, len(classes), "%s does not define %s" % (module, class_name)
+        )
+        methods = [
+            node.name
+            for node in classes[0].body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]
+        self.assertIn(
+            method,
+            methods,
+            "%s.%s is gone. It is the behavioural assertion this lint defers "
+            "to; without it the guarantee is a sentence in a docstring."
+            % (class_name, method),
+        )
+
+    def test_the_lint_states_that_it_is_not_a_no_write_guarantee(self):
+        """ADR-28 applied to this lint's own wording, exactly as
+        `test_the_lint_states_the_forms_it_cannot_see` does for the other one.
+
+        The bound is not a comment somebody may drop while editing: the
+        disclaimer, the evading shape and the name of the real guarantee are
+        asserted to still be in the docstring a reader would consult.
+        """
+        stated = bounded_write_capability_names.__doc__
+        self.assertIn("not a no-write guarantee", stated)
+        self.assertIn("Purity is not transitive", stated)
+        self.assertIn("from manifest import os as filesystem", stated)
+        self.assertIn(BEHAVIOURAL_GUARANTEE[2], stated)
 
 
 class TheStateMachineReturnsNoRecordTest(unittest.TestCase):

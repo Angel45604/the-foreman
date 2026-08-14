@@ -22,6 +22,12 @@ before its grammar exists. Two rules, both interim:
    file and why (ADR-28), and the cardinality line states it. A tracked
    executable is not in that class: it is **self-locating**, so its path names
    one file from the root and nothing else, and it is proposed at any depth.
+
+   **This bounds command records and nothing else, and reading it wider was
+   defect B1.** It was applied to *stack detection* too, so a repository whose
+   only manifest was `packages/web/package.json` reported no stack at all. P3.1
+   asks what the repository contains and answers per project, naming the
+   directory — see `stacks_and_projects`.
 2. **The invocation form, not the declared body.** `{"scripts": {"test":
    "jest"}}` becomes `npm run test`, never `jest`, which is frequently not
    runnable as written because it leans on `node_modules/.bin` being on `PATH`.
@@ -56,7 +62,20 @@ has to be the exact inverse of the synthesis here.
   one a tool would read as an option.** See `_shell_word` and
   `OPTION_LIKE_NAME`: a command finding claims a human can type the value at
   the repository root, and the only way to keep that sentence true is to make
-  it true or not make it.
+  it true or not make it. **Quoting is what makes it true where it can be**
+  (the decision's "quote the word, or refuse the name"), so a name carrying a
+  space is proposed quoted and only the option-like one is refused —
+  `_name_fault` carries the reason the older, wider refusal was defect B5.
+* **It never proposes a target out of a makefile `make` would not read.**
+  `make` loads the first of `MAKEFILE_PRECEDENCE` that exists and no other, so
+  a target declared only in a shadowed file is not typable at the root; the
+  shadowed file is diagnosed instead (`_active_makefile`, defect B3). For the
+  same reason it refuses a makefile that assigns `.RECIPEPREFIX` rather than
+  guessing at a directive whose semantics nobody here has verified (ADR-23).
+* **It never renders a repository path into a report verbatim.** git permits a
+  newline, an ESC and bytes that are not UTF-8 in a filename, and a report is
+  read by a human in a terminal — see `_shown`, which is the one place a
+  path, a name or a value becomes text (defect B4).
 * **It never reads a declaration through a symlink**, whether git records the
   link or the working tree holds one where git records a regular file. A
   declaration file's path arrives from git's index, which is untrusted input,
@@ -92,7 +111,18 @@ import text
 # a repository may declare commands in is detected and **diagnosed**, never
 # guessed at — see `UNPARSEABLE_DECLARATIONS`.
 PACKAGE_MANIFEST = "package.json"
-MAKEFILE_NAMES = ("GNUmakefile", "Makefile", "makefile")
+
+# **GNU make's documented lookup order for the default makefile, and the order
+# is the whole point (defect B3).** `make` reads the *first* of these it finds
+# in the directory it is run from and never looks at the others, so a target
+# declared only in a shadowed file is not a command a human can type: bare
+# `make <target>` answers `No rule to make target`. The list this replaced was
+# alphabetical — `GNUmakefile`, `Makefile`, `makefile` — which reads like a
+# precedence order and is not one, and every tracked name was parsed and every
+# target of every one of them proposed. See `_active_makefile`, and
+# `ShadowedMakefileTest.test_gnu_make_really_ignores_the_shadowed_file`, which
+# asks a real `make` rather than asserting this from memory (ADR-23).
+MAKEFILE_PRECEDENCE = ("GNUmakefile", "makefile", "Makefile")
 
 # Declaration file -> the stack it establishes. A fixed table, matched on the
 # basename: nothing here is a heuristic over file contents, and a stack is
@@ -180,6 +210,42 @@ EXECUTABLE_PREFIX = "./"
 # target: in neither case does the tool receive the name as the thing it names.
 OPTION_PREFIX = "-"
 
+# What the report calls the repository root when it has to name a directory.
+# The root's repository-relative directory is the **empty string**, and `''`
+# in a report names nothing a reader can go and look at. A constant of this
+# module rather than repository input, so it is the one location string that
+# does not go through `_shown`.
+ROOT_PROJECT = "."
+
+
+def _shown(value):
+    """One repository-derived string, as one printable item on one line.
+
+    **Defect B4, and it is ADR-32's argument applied where the report is
+    written rather than where a record is validated.** git permits a newline
+    in a filename and stores path *bytes*, so `git ls-files` is untrusted
+    input: a path holding a newline printed verbatim into a finding's `where`
+    ends one line of the report and starts another that looks like a finding
+    of its own; a path holding **ESC** injects a terminal control sequence
+    into the terminal of the human reading it; and a path whose bytes are not
+    valid UTF-8 arrives carrying lone surrogates, which **cannot be written to
+    a UTF-8 stream at all** — so naming one raises `UnicodeEncodeError` and
+    the human gets a crash where a finding should be.
+
+    `repr` is the whole implementation, and deliberately: it escapes by
+    `str.isprintable`, so it covers the three cases above and every other
+    unprintable code point without this module keeping a list of them — the
+    hand-written-predicate trap `_shell_word` already paid for once. It is
+    applied **unconditionally**, so the rule has no branch to get wrong and a
+    reader of the report can always tell where a value starts and ends; a
+    quoted `'package.json'` is the whole price.
+
+    Every repository-derived string this module renders goes through it —
+    paths, script and target names, and proposed command values — because a
+    rule with one exception is a rule nobody can audit.
+    """
+    return repr(value)
+
 
 def _shell_word(value):
     """`value` as one word a POSIX shell reads exactly as written.
@@ -191,9 +257,10 @@ def _shell_word(value):
     command substitution and then failed, `npm run a;id` ran `id` through the
     statement separator and exited **0**, and a space, a single quote and a
     backslash each turned one value into a different command or a syntax
-    error. `_proposable` rejected only non-str / empty / unstripped / ASCII
-    control, so `;`, `$`, `'`, `\\` and a space all flowed into a value the
-    report said a human could type.
+    error. The only filter in the way was `_representability_fault`, which
+    rejects non-str / empty / unstripped / ASCII-control, so `;`, `$`, `'`,
+    `\\` and a space all flowed into a value the report said a human could
+    type.
 
     Single quotes, because a POSIX shell reads **every** character inside them
     literally — there is no character to enumerate and no escape to get wrong.
@@ -253,6 +320,8 @@ UNMERGED_ENTRY = "index-entry-is-unmerged"
 UNREPRESENTABLE = "value-not-representable"
 OPTION_LIKE_NAME = "name-reads-as-an-option"
 MALFORMED_SCRIPT = "declaration-entry-is-not-a-command"
+SHADOWED_MAKEFILE = "makefile-is-not-the-one-make-reads"
+RECIPE_PREFIX = "makefile-sets-a-custom-recipe-prefix"
 
 STACK_CHECK = "stacks"
 COMMAND_CHECK = "commands"
@@ -264,7 +333,7 @@ CHECKS = (STACK_CHECK, COMMAND_CHECK, PATH_CHECK, DOCS_SCOPE_CHECK, HARNESS_CHEC
 
 NOT_A_REPOSITORY = "this directory is not inside a git repository"
 
-NO_STACK = "no declaration file this core can recognise is tracked at the root"
+NO_STACK = "no declaration file this core can recognise is tracked anywhere"
 NO_COMMAND = "no declaration this core can read proposes one"
 NO_PATH = "no agent document or root README is tracked"
 NO_DOCUMENT = "no tracked document satisfies ADR-10's predicate"
@@ -426,7 +495,7 @@ def _unmerged_note(relpath, stages):
             "whichever stage git printed last. Nothing was proposed from it."
             % _describe_stages(stages)
         ),
-        where=relpath,
+        where=_shown(relpath),
     )
 
 
@@ -442,28 +511,51 @@ def _basename(relpath):
 
 
 def stacks_and_projects(entries):
-    """`(root_stacks, nested)` from the index alone.
+    """`(stacks, nested)` from the index alone.
 
-    `root_stacks` is `(stack, declaration)` pairs for the declarations tracked
-    **at the repository root**, sorted. `nested` is `(stack, declaration)` for
-    the same declarations anywhere else — detected so they can be diagnosed
-    (ADR-28), never proposed from (the interim boundary above).
+    `stacks` is one entry per **(project directory, stack)** pair —
+    `(directory, stack, declarations)`, sorted, with `directory` the empty
+    string at the repository root. `nested` is `(stack, declaration)` for
+    every declaration outside the root, which is the **command** boundary's
+    input and nothing else.
+
+    **Defect B1 was these two being one list.** `Survey.stacks` held root
+    declarations only, so a repository whose sole manifest is
+    `packages/web/package.json` emitted no `stack-inferred` finding at all —
+    a scan reporting nothing about a repository that plainly declares
+    something. The cause was a conflation: DECISION-2026-08-14 §1 bounds
+    **command records**, whose value (`npm run test`) names whichever project
+    the shell stands in and which the frozen schema cannot qualify with a
+    directory. P3.1 asks a different question — *what does this repository
+    contain* — and a stack finding names its project directory, so the
+    ambiguity that boundary exists for cannot arise. The boundary itself is
+    untouched and lives where it belongs, in `survey`'s command pass.
+
+    **Keying by the pair is also what stops one project being three.** The old
+    `(stack, declaration)` list reported the python stack once per
+    declaration, so `pyproject.toml` + `setup.py` + `requirements.txt` made
+    three findings and an ADR-30 cardinality of 3 for one project. The
+    declarations are the *evidence* for a pair, not pairs of their own.
 
     P3.1's rule is a prohibition: *never emit one ecosystem's assumptions into
     another's repo*. It holds structurally, because everything downstream is
     driven by the declaration file actually tracked here — there is no default
     stack and no fallback.
     """
-    root_stacks, nested = [], []
+    projects, nested = {}, []
     for relpath in sorted(entries):
         stack = DECLARATIONS.get(_basename(relpath))
         if stack is None:
             continue
-        if _directory_of(relpath):
+        directory = _directory_of(relpath)
+        projects.setdefault((directory, stack), []).append(relpath)
+        if directory:
             nested.append((stack, relpath))
-        else:
-            root_stacks.append((stack, relpath))
-    return tuple(sorted(root_stacks)), tuple(sorted(nested))
+    stacks = tuple(
+        (directory, stack, tuple(sorted(projects[(directory, stack)])))
+        for directory, stack in sorted(projects)
+    )
+    return stacks, tuple(sorted(nested))
 
 
 # ------------------------------------------------------------------
@@ -545,33 +637,44 @@ def _representability_fault(value):
     return None
 
 
-def _proposable(value):
-    """Is `value` something a record could hold, and a report render (ADR-32)?"""
-    return _representability_fault(value) is None
+def _name_fault(name, value):
+    """Why `name` cannot become the command `value`, or None.
 
+    **The subject of this predicate is defect B5.** The old one validated the
+    **raw name** and refused every one carrying ASCII whitespace — a rule that
+    predates POSIX quoting and that
+    `DECISION-2026-08-14-command-grammar.md` §"Correction 2" then
+    contradicted: it adds `shlex` quoting and states the rule as *quote the
+    word, or refuse the name*, quoting **where quoting makes the claim true**.
+    `build all` is exactly that case — `npm run 'build all'` is one word to a
+    shell and reaches npm as the name the repository declares — so refusing it
+    dropped a command this repository really has, and the refusal outlived its
+    reason. A previous pass kept it on the grounds that widening what a
+    scanner proposes was unasked for; the owner's decision asks for it.
 
-def _name_fault(name):
-    """Why `name` is not a script or target name the grammar may use, or None.
+    The raw name is not what a human types and not what the record holds, so
+    the **final quoted value** is what is validated (ADR-32's rule, applied to
+    the thing the rule is about). What survives is what quoting cannot fix:
 
-    Representability first, then one rule of this module's own: the proposed
-    value is `npm run <name>` / `make <name>`, and although `_shell_word` now
-    makes a name carrying whitespace typable (`npm run 'build all'`), this core
-    keeps refusing it. A refusal with a diagnostic is never a false claim,
-    whereas widening what a scanner proposes is a behaviour change nobody
-    asked for — and `UnnameableScriptTest` pins the refusal, having been
-    written after a mutation run found the check live and completely
-    unasserted.
+    * an **empty** name, because `npm run ''` names no script and `make ''` is
+      an error rather than a command (*empty string invalid as file name*);
+    * an **ASCII control character** or a non-UTF-8 byte sequence, which no
+      record value may hold — see `_representability_fault`;
+    * an **option-like** name, which `_declaration_commands` refuses on its
+      own and `OPTION_LIKE_NAME` explains.
+
+    A leading or trailing space is the case the two predicates disagree about
+    most sharply: the raw name ` build` "carries leading whitespace" and the
+    value `npm run ' build'` is a perfectly ordinary, stripped, typable
+    record.
     """
-    fault = _representability_fault(name)
-    if fault is not None:
-        return fault
-    for character in text.ASCII_WHITESPACE:
-        if character in name:
-            return (
-                "it carries ASCII whitespace, and this core does not propose a "
-                "name it would have to quote to keep whole"
-            )
-    return None
+    if name == "":
+        return (
+            "it is empty, so %s names no script or target — `make ''` is an "
+            "error rather than a command, and quoting cannot supply a name "
+            "that was never declared" % _shown(value)
+        )
+    return _representability_fault(value)
 
 
 def _command(value, confidence, evidence):
@@ -634,8 +737,18 @@ def _package_scripts(payload):
     return names, malformed, None
 
 
-# Words that begin a Makefile *directive*, never a rule. `ifeq ($(A):,$(B))`
-# holds a colon and would otherwise split into two "targets".
+# Words that begin a Makefile *directive*, never a rule. A directive line is
+# refused **whole**, before a rule separator is looked for, and that placement
+# is defect B2's fix: this tuple already existed and was consulted only by
+# `_is_make_target`, which sees the tokens of a rule head *after* the line has
+# been split at a colon. So the directive **word** was filtered and its
+# **argument** was not —
+#
+#     include config:prod.mk   ->  ['config', 'real']
+#     vpath %.c src:lib        ->  ['src', 'real']
+#
+# — proposing `make config`, a target `make` does not have, from a line that
+# declares no rule at all. That is A1 manufactured by us.
 MAKE_DIRECTIVES = (
     "-include",
     "define",
@@ -667,6 +780,15 @@ MAKE_TARGET_CHARACTERS = (
 
 
 def _is_make_target(token):
+    """Is this token of a rule head a target a human could invoke?
+
+    The `MAKE_DIRECTIVES` check here is **not** what stops a directive line
+    being read as a rule — `_makefile_targets` refuses the whole line first,
+    which is where B2's fix had to go, because this function only ever saw the
+    directive *word* and never its arguments. It is kept for the one case that
+    reaches it: a directive word appearing among the targets of a genuine rule
+    head, where refusing is the conservative answer.
+    """
     if not token or token.startswith("."):
         return False
     if token in MAKE_DIRECTIVES:
@@ -684,6 +806,94 @@ def _is_make_target(token):
 MAKE_ASSIGNMENT_OPERATORS = (":::=", "::=", ":=", "?=", "+=", "!=", "=")
 
 MAKE_COMMENT = "#"
+
+# The words GNU make documents as preceding `define` (and an assignment):
+# `override define helper` opens a macro body exactly as `define helper` does.
+# Skipping them is what lets one predicate answer for every spelling.
+MAKE_BLOCK_MODIFIERS = ("export", "override", "private", "unexport")
+
+MAKE_DEFINE = "define"
+MAKE_ENDEF = "endef"
+
+# The special variable that replaces the TAB marking a recipe line. This
+# reader recognises the TAB and nothing else, so a file that assigns this is
+# refused whole — see `_makefile_targets`.
+MAKE_RECIPE_PREFIX_VARIABLE = ".RECIPEPREFIX"
+
+
+def _ascii_words(line):
+    """`line`'s words, split on **ASCII** whitespace and nothing else.
+
+    `str.split()` with no argument splits on *Unicode* whitespace, which is
+    the same defect `text.ascii_strip` exists for (FROZEN-DEBT item 9): under
+    make's grammar a NO-BREAK SPACE is an ordinary character of a word, so the
+    stdlib default would read `define\\u00a0helper` as the `define` directive
+    where make reads it as a variable name.
+
+    **And splitting on the whole set is B2's other half.** The block detector
+    it replaces compared `stripped.split(" ")[0]`, so a TAB-separated
+    `define\\thelper` was not the word `define`, the macro body was never
+    entered, and every `label: text` line inside it leaked out as a target.
+    """
+    for character in text.ASCII_WHITESPACE:
+        line = line.replace(character, " ")
+    return [word for word in line.split(" ") if word]
+
+
+def _skip_modifiers(words):
+    """`words` past any leading `override` / `export` / `private` modifier."""
+    index = 0
+    while index < len(words) and words[index] in MAKE_BLOCK_MODIFIERS:
+        index += 1
+    return words[index:]
+
+
+def _opens_define(words):
+    """Does this line open a `define` block, in any documented spelling?
+
+    Checked **before** the directive refusal, because `override` is itself a
+    directive word: refusing the line for that would leave the block unopened
+    and its body read as rules, which is the defect in a new costume.
+    """
+    rest = _skip_modifiers(words)
+    return bool(rest) and rest[0] == MAKE_DEFINE
+
+
+def _sets_recipe_prefix(words):
+    """Does this line assign `.RECIPEPREFIX`?
+
+    Both spellings, because they are one statement: `.RECIPEPREFIX = >` puts
+    the operator in its own word and `.RECIPEPREFIX:=>` does not. Matching the
+    bare name alone would miss the second; matching the *substring* anywhere
+    would refuse a Makefile that merely mentions it in a comment or names a
+    variable `MY_RECIPEPREFIX`.
+    """
+    rest = _skip_modifiers(words)
+    if not rest:
+        return False
+    word = rest[0]
+    if word == MAKE_RECIPE_PREFIX_VARIABLE:
+        return True
+    if not word.startswith(MAKE_RECIPE_PREFIX_VARIABLE):
+        return False
+    tail = word[len(MAKE_RECIPE_PREFIX_VARIABLE):]
+    for operator in MAKE_ASSIGNMENT_OPERATORS:
+        if tail.startswith(operator):
+            return True
+    return False
+
+
+CUSTOM_RECIPE_PREFIX_REFUSAL = (
+    "it assigns %s, which replaces the TAB that marks a recipe line. This "
+    "reader recognises the TAB and nothing else, so from that assignment "
+    "onward it cannot tell a recipe from a rule: a recipe holding a URL reads "
+    "as a rule and yields a target named `https`, which `make` does not have. "
+    "Reading it properly means encoding this directive's semantics — which "
+    "character of the value counts, what an empty value restores, from where "
+    "it applies — none of which this project has verified against the tool "
+    "(ADR-23). Nothing was proposed from this file, and nothing was guessed "
+    "at." % MAKE_RECIPE_PREFIX_VARIABLE
+)
 
 
 def _strip_comment(line):
@@ -736,54 +946,79 @@ def _rule_head(line):
 
 
 def _makefile_targets(body):
-    """Every explicit, invocable target a Makefile declares.
+    """`(targets, refusal)` — every explicit, invocable target, or why none.
 
     Hand-rolled and deliberately narrow: there is no stdlib Makefile parser and
     none may be vendored (ADR-1), so the reader recognises the one shape it can
-    be sure of — an unindented line whose first colon is not part of an
-    assignment — and refuses everything else. Each refusal is a target `make`
-    does not have, and proposing one would be A1 manufactured by us:
+    be sure of — an unindented, non-directive line whose first colon is not
+    part of an assignment — and refuses everything else. Each refusal is a
+    target `make` does not have, and proposing one would be A1 manufactured by
+    us:
 
     * **recipe lines** are TAB-indented and belong to the rule above them;
+    * **directive lines** declare no rule, and their *arguments* may hold a
+      colon: `include config:prod.mk` and `vpath %.c src:lib` are what defect
+      B2 fabricated `config` and `src` out of (`MAKE_DIRECTIVES`);
     * **assignments** in every form GNU make has — `=`, `:=`, `::=`, `:::=`,
       `?=`, `+=`, `!=` — declare a variable, not a rule (`_rule_head`);
     * **comments** are removed *before* a colon is looked for, so a colon
       inside one is never a rule separator (`_strip_comment`);
     * **continuation lines** are part of the logical line above, so
       `FILES := a \\` / `b.c:extra` would otherwise yield a target `b.c`;
-    * **`define` blocks** are macro bodies and their colons are text;
+    * **`define` blocks** are macro bodies and their colons are text — in
+      every spelling (`define`, `define\\thelper`, `override define`) and
+      **counted**, because a flat flag lets an inner `endef` reopen the file
+      and read the rest of the outer body as rules;
     * **special targets** (`.PHONY`), **pattern rules** (`%.o`) and any target
       naming a variable (`$(GENERATED)`) are not names a human can invoke.
 
-    The comment strip and the assignment scan are both **B2's fix**, and both
-    have to run before the colon is read rather than after — see `_rule_head`.
+    **`.RECIPEPREFIX` is refused rather than supported**, and the refusal is
+    the whole file: once the character marking a recipe is something this
+    reader does not track, it cannot tell a recipe from a rule anywhere below
+    the assignment, so proposing the targets it *did* recognise would be
+    proposing over an input it could not read. `refusal` carries the reason
+    out for the caller to diagnose (ADR-28 — named, never dropped silently).
     """
     targets = []
     continued = False
-    defining = False
+    depth = 0
     for line in body.split("\n"):
         carried = continued
         continued = line.endswith("\\")
         if carried:
             continue
-        stripped = line.strip()
-        first = stripped.split(" ")[0] if stripped else ""
-        if defining:
-            if first == "endef":
-                defining = False
+        if line.startswith("\t"):
             continue
-        if first == "define":
-            defining = True
+        text_of_line = _strip_comment(line)
+        words = _ascii_words(text_of_line)
+        if depth:
+            if words and words[0] == MAKE_ENDEF:
+                depth -= 1
+            elif _opens_define(words):
+                depth += 1
             continue
-        if not stripped or stripped.startswith(MAKE_COMMENT) or line.startswith("\t"):
+        if not words:
             continue
-        head = _rule_head(_strip_comment(line))
+        if _opens_define(words):
+            depth += 1
+            continue
+        # Both of these run **before** the directive refusal, and for the same
+        # reason: `override` is itself a directive word, so `override define
+        # helper` and `override .RECIPEPREFIX = >` would be skipped as
+        # directive lines — leaving the macro body read as rules and the
+        # custom recipe prefix unnoticed, which is the defect in a new
+        # costume. Asked in this order, the modifier is a modifier.
+        if _sets_recipe_prefix(words):
+            return [], CUSTOM_RECIPE_PREFIX_REFUSAL
+        if words[0] in MAKE_DIRECTIVES:
+            continue
+        head = _rule_head(text_of_line)
         if head is None:
             continue
-        for token in head.split():
+        for token in _ascii_words(head):
             if _is_make_target(token):
                 targets.append(token)
-    return targets
+    return targets, None
 
 
 def _declaration_commands(root, relpath, entries, notes):
@@ -812,7 +1047,7 @@ def _declaration_commands(root, relpath, entries, notes):
                     "commands read out of a file this repository does not "
                     "declare. It was not read."
                 ),
-                where=relpath,
+                where=_shown(relpath),
             )
         )
         return []
@@ -822,10 +1057,10 @@ def _declaration_commands(root, relpath, entries, notes):
                 id=UNREADABLE_DECLARATION,
                 claim="a declaration file is a regular file git records once",
                 observed=(
-                    "git records it with mode %r, which is not a regular file "
-                    "this core reads" % (mode,)
+                    "git records it with mode %s, which is not a regular file "
+                    "this core reads" % _shown(mode)
                 ),
-                where=relpath,
+                where=_shown(relpath),
             )
         )
         return []
@@ -844,7 +1079,7 @@ def _declaration_commands(root, relpath, entries, notes):
                     "commands out of a file this repository does not declare. "
                     "It was not read." % mode
                 ),
-                where=relpath,
+                where=_shown(relpath),
             )
         )
         return []
@@ -856,26 +1091,39 @@ def _declaration_commands(root, relpath, entries, notes):
                 id=UNREADABLE_DECLARATION,
                 claim="a declaration file is read before anything is proposed from it",
                 observed=reason + ", so nothing was proposed from it",
-                where=relpath,
+                where=_shown(relpath),
             )
         )
         return []
 
+    source = _shown(relpath)
     if basename == PACKAGE_MANIFEST:
         names, malformed, reason = _package_scripts(payload)
         template, confidence, kind = "npm run %s", HIGH, "script"
-        evidence = "%s declares the script %%r at the repository root" % relpath
     else:
-        names, malformed, reason = _makefile_targets(_decode(payload)), [], None
+        names, refusal = _makefile_targets(_decode(payload))
+        malformed, reason = [], None
         template, confidence, kind = "make %s", HIGH, "target"
-        evidence = "%s declares the target %%r at the repository root" % relpath
+        if refusal is not None:
+            notes.append(
+                Note(
+                    id=RECIPE_PREFIX,
+                    claim=(
+                        "every proposed target was read out of a file this "
+                        "core can tell a rule from a recipe in"
+                    ),
+                    observed=refusal,
+                    where=source,
+                )
+            )
+            return []
     if reason is not None:
         notes.append(
             Note(
                 id=UNREADABLE_DECLARATION,
                 claim="a declaration file is read before anything is proposed from it",
                 observed=reason,
-                where=relpath,
+                where=source,
             )
         )
         return []
@@ -886,32 +1134,17 @@ def _declaration_commands(root, relpath, entries, notes):
                 id=MALFORMED_SCRIPT,
                 claim="every proposed command was read out of a declared command",
                 observed=(
-                    "the %s %r has a body of type %s and not a string, so no "
+                    "the %s %s has a body of type %s and not a string, so no "
                     "command body was ever read for it. Proposing it anyway "
                     "would be a high-confidence claim about something nobody "
-                    "could read (ADR-28)." % (kind, name, observed_type)
+                    "could read (ADR-28)." % (kind, _shown(name), observed_type)
                 ),
-                where=relpath,
+                where=source,
             )
         )
 
     records = []
     for name in names:
-        fault = _name_fault(name)
-        if fault is not None:
-            notes.append(
-                Note(
-                    id=UNREPRESENTABLE,
-                    claim="every proposed command renders as one item on one line",
-                    observed=(
-                        "the %s %r cannot become an invocation without changing "
-                        "what it names — %s — so no record was proposed for it "
-                        "(ADR-32)" % (kind, name, fault)
-                    ),
-                    where=relpath,
-                )
-            )
-            continue
         if name.startswith(OPTION_PREFIX):
             notes.append(
                 Note(
@@ -921,24 +1154,95 @@ def _declaration_commands(root, relpath, entries, notes):
                         "never an option to the tool that runs it"
                     ),
                     observed=(
-                        "the %s %r begins with %r, so %r would reach the tool "
+                        "the %s %s begins with %s, so %s would reach the tool "
                         "as an option rather than as the thing it names — `npm "
                         "run --help` prints npm's help, and `make -j4` asks for "
                         "four parallel jobs and builds the default target. "
                         "Quoting cannot change that, and this core does not "
                         "assert an end-of-options form it has not verified "
                         "(ADR-23), so no record was proposed for it."
-                        % (kind, name, OPTION_PREFIX, template % name)
+                        % (
+                            kind,
+                            _shown(name),
+                            _shown(OPTION_PREFIX),
+                            _shown(template % name),
+                        )
                     ),
-                    where=relpath,
+                    where=source,
                 )
             )
             continue
         value = template % _shell_word(name)
-        if not _proposable(value):
+        fault = _name_fault(name, value)
+        if fault is not None:
+            notes.append(
+                Note(
+                    id=UNREPRESENTABLE,
+                    claim="every proposed command renders as one item on one line",
+                    observed=(
+                        "the %s %s cannot become an invocation this core would "
+                        "propose — %s — so no record was proposed for it "
+                        "(ADR-32)" % (kind, _shown(name), fault)
+                    ),
+                    where=source,
+                )
+            )
             continue
-        records.append(_command(value, confidence, evidence % (name,)))
+        records.append(
+            _command(
+                value,
+                confidence,
+                "%s declares the %s %s at the repository root"
+                % (source, kind, _shown(name)),
+            )
+        )
     return records
+
+
+def _active_makefile(entries, notes):
+    """The one root makefile `make` would read, or None — plus a diagnostic
+    for every tracked name it shadows.
+
+    **Defect B3.** Every tracked root makefile name was parsed and every
+    target of every one of them proposed, but bare `make <target>` loads only
+    the **first** name in `MAKEFILE_PRECEDENCE` that exists: with a
+    `GNUmakefile` present, a target declared only in `Makefile` produced
+    `make test` against a finding claiming a human can type it at the
+    repository root, and `make test` answers `No rule to make target`. A
+    documented command that does not resolve is acceptance case A1 — the
+    failure this tool exists to detect, emitted by it.
+
+    The shadowed file is a real declaration deliberately not proposed from, so
+    it owes a diagnostic naming it and the file that displaced it (ADR-28); a
+    note that said only "not proposed" would leave the human with nothing to
+    act on. **Root only**: `make` resolves this per directory, and a nested
+    makefile is not proposed from at all — it is diagnosed as nested, which is
+    a different fact and a different note.
+    """
+    tracked = [name for name in MAKEFILE_PRECEDENCE if name in entries]
+    if not tracked:
+        return None
+    active = tracked[0]
+    for shadowed in tracked[1:]:
+        notes.append(
+            Note(
+                id=SHADOWED_MAKEFILE,
+                claim=(
+                    "every proposed `make` target is a target of the makefile "
+                    "`make` reads at the repository root"
+                ),
+                observed=(
+                    "%s is tracked at the root and comes earlier in GNU make's "
+                    "lookup order (%s), so `make <target>` loads that file and "
+                    "never this one. The targets declared here were not "
+                    "proposed: typed at the repository root they would answer "
+                    "`No rule to make target`."
+                    % (_shown(active), ", ".join(MAKEFILE_PRECEDENCE))
+                ),
+                where=_shown(shadowed),
+            )
+        )
+    return active
 
 
 def _executable_commands(root, entries, notes):
@@ -950,11 +1254,17 @@ def _executable_commands(root, entries, notes):
     inference, and it is the weaker one.
 
     The proposed value is the path under `EXECUTABLE_PREFIX`, quoted as one
-    shell word (`_shell_word`). The representability filter is applied to the
-    **path**, because the path is what the diagnostic has to name and what
-    could carry a control character or a byte sequence that is not UTF-8; the
-    prefix cannot introduce one, and cannot make a stripped value unstripped or
-    an unempty one empty.
+    shell word (`_shell_word`), and **the value is what the representability
+    filter is applied to — applying it to the raw path was half of defect
+    B5.** A path is not what a human types: `./ lead.sh` is an ordinary,
+    stripped, typable command whose path ` lead.sh` "carries leading ASCII
+    whitespace", so the old order refused a real tracked executable before the
+    prefix and the quoting could make it whole. Nothing is lost by moving the
+    check: the prefix cannot introduce a control character or a lone
+    surrogate, and quoting cannot remove one, so every value the filter refuses
+    is refused for something the path really carries — which is why the
+    diagnostic still names the **path**, the thing the human has to go and
+    look at.
     """
     records = []
     for relpath in sorted(entries):
@@ -964,14 +1274,15 @@ def _executable_commands(root, entries, notes):
             continue
         if mode != MODE_EXECUTABLE:
             continue
-        fault = _representability_fault(relpath)
+        value = _shell_word(EXECUTABLE_PREFIX + relpath)
+        fault = _representability_fault(value)
         if fault is not None:
             notes.append(_unrepresentable_note(relpath, "proposed commands", fault))
             continue
         paths.contain(root, relpath.replace("/", os.sep))
         records.append(
             _command(
-                _shell_word(EXECUTABLE_PREFIX + relpath),
+                value,
                 LOW,
                 "git's index records it with mode %s, the executable bit"
                 % MODE_EXECUTABLE,
@@ -1033,20 +1344,26 @@ def _conventional(relpath):
 def _unrepresentable_note(relpath, subject, fault):
     """The one diagnostic shape for a path no record can hold.
 
-    `where` and the quoted path are both `%r`, which is what keeps this note
-    printable at all: the value may carry a raw newline (which would split one
-    item over two lines of a one-item-per-line section) or a lone surrogate
-    (which cannot be written to a UTF-8 stream at all). `repr` escapes both.
+    Both the quoted path and `where` go through `_shown`, which is what keeps
+    this note printable at all: the value may carry a raw newline (which would
+    split one item over two lines of a one-item-per-line section) or a lone
+    surrogate (which cannot be written to a UTF-8 stream at all).
+
+    **This note was the only one that escaped its path**, and it called `repr`
+    inline. That is why B4 was a defect in five other notes and not in this
+    one, and why the fix was to give the rule a name every site can call
+    rather than to copy the call — a rule spelled out once per site is a rule
+    the next site forgets.
     """
     return Note(
         id=UNREPRESENTABLE,
         claim="every value the-steward proposes renders as one item on one line",
         observed=(
-            "the path %r cannot be a record value — %s — so it was left out of "
+            "the path %s cannot be a record value — %s — so it was left out of "
             "the %s and v0 makes no claim about it (ADR-32)"
-            % (relpath, fault, subject)
+            % (_shown(relpath), fault, subject)
         ),
-        where=repr(relpath),
+        where=_shown(relpath),
     )
 
 
@@ -1182,13 +1499,22 @@ def survey(root, document=None):
                             else "",
                         )
                     ),
-                    where=relpath,
+                    where=_shown(relpath),
                 )
             )
         if nested:
             continue
-        if basename == PACKAGE_MANIFEST or basename in MAKEFILE_NAMES:
+        if basename == PACKAGE_MANIFEST:
             commands.extend(_declaration_commands(root, relpath, entries, notes))
+    # The makefiles are resolved once, outside the per-entry pass, because the
+    # question is not *is this a makefile* but *which one does `make` read* —
+    # and that cannot be answered from one entry at a time (`_active_makefile`,
+    # defect B3).
+    active_makefile = _active_makefile(entries, notes)
+    if active_makefile is not None:
+        commands.extend(
+            _declaration_commands(root, active_makefile, entries, notes)
+        )
     commands.extend(_executable_commands(root, entries, notes))
     for _stack, relpath in found.nested:
         notes.append(
@@ -1205,7 +1531,7 @@ def survey(root, document=None):
                     "working directory, so no record was proposed from it. "
                     "This is an interim boundary, not a settled answer."
                 ),
-                where=relpath,
+                where=_shown(relpath),
             )
         )
     # One record per command string. ADR-32 makes the cardinality the record
@@ -1230,6 +1556,26 @@ def survey(root, document=None):
     return found
 
 
+def _project_location(directory):
+    """What the report calls a project directory. See `ROOT_PROJECT`."""
+    return _shown(directory) if directory else ROOT_PROJECT
+
+
+def _stack_claim(directory, stack):
+    """One project's stack, said of the directory it is actually in.
+
+    Two sentences rather than one, because "at its root" is false of
+    `packages/web` and a sentence naming no directory is unusable in a
+    repository with several projects (defect B1).
+    """
+    if directory:
+        return "this repository declares a %s project in %s" % (
+            stack,
+            _shown(directory),
+        )
+    return "this repository declares a %s project at its root" % stack
+
+
 def _stack_findings(survey):
     return [
         findings.finding(
@@ -1237,14 +1583,15 @@ def _stack_findings(survey):
             severity="info",
             tier="inferred",
             confidence=HIGH,
-            claim="this repository declares a %s project at its root" % stack,
+            claim=_stack_claim(directory, stack),
             observed=(
-                "%s is tracked at the repository root, which is how the %s "
-                "ecosystem declares a project" % (declaration, stack)
+                "git tracks %s there, which is how the %s ecosystem declares "
+                "a project"
+                % (", ".join(_shown(name) for name in declarations), stack)
             ),
-            where=declaration,
+            where=_project_location(directory),
         )
-        for stack, declaration in survey.stacks
+        for directory, stack, declarations in survey.stacks
     ]
 
 
@@ -1256,8 +1603,8 @@ def _command_findings(survey):
             tier="inferred",
             confidence=record["confidence"],
             claim=(
-                "%r is a command this repository declares, and a human can "
-                "type it at the repository root" % record["value"]
+                "%s is a command this repository declares, and a human can "
+                "type it at the repository root" % _shown(record["value"])
             ),
             observed=(
                 "%s. It was derived structurally, and nothing was executed to "
@@ -1293,7 +1640,7 @@ def _path_evidence(relpath):
             "standard for what a nested agent document means, and the "
             "implementers disagree (ADR-16), so it is reported and which of "
             "them a tool reads first is not something the-steward has "
-            "established" % _basename(relpath)
+            "established" % _shown(_basename(relpath))
         )
     if _basename(relpath) in AGENT_DOCUMENTS:
         return (
@@ -1315,8 +1662,8 @@ def _path_findings(survey):
             tier="inferred",
             confidence=record["confidence"],
             claim=(
-                "%r is one of this repository's sources of truth"
-                % record["value"]
+                "%s is one of this repository's sources of truth"
+                % _shown(record["value"])
             ),
             observed=(
                 "%s. It is proposed for a human to confirm, and nothing about "
