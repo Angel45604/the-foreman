@@ -374,10 +374,20 @@ path prompts.
       resolves against the script named `build all`, and (b) resolution **strips the `./` prefix** of a
       tracked executable before matching the index. A round-trip fixture asserts that every value
       `scan` proposes for a fixture repo is resolved by C1 over that same repo — if the two ends ever
-      disagree, this is where it surfaces. **No Makefile resolver is to be written here**: v0 proposes
-      no `make` targets, and a confirmed `make <target>` record carries `resolution: "external"` (the
-      *tool* is the system's), so it is reported `info`/*inspected* and never resolved. A future pass
-      tempted to add one should first ask which construct changes the set of targets — the answer is
+      disagree, this is where it surfaces.
+      **OWNER CHECKPOINT — do not start P4.2 without it.** Two questions are **open**, both recorded in
+      `DECISION-2026-08-14-command-grammar.md`, and both must be answered by the owner *before* this
+      task is implemented, not discovered inside it:
+      (i) **The repository-root command boundary is explicitly INTERIM.** It must be revisited here,
+      and this plan must not make it permanent by silently prescribing the current synthesis as C1's
+      inverse. If it stands, it stands because the owner said so at this checkpoint.
+      (ii) **How C1 treats a confirmed `make <target>` record is UNRESOLVED.** An earlier answer —
+      classify it `external` — was **withdrawn as wrong**: the rationale proves too much (`npm` is a
+      system tool too, yet `npm run test` is the canonical `repo-declared` case), and it bypasses C1
+      even for a target that does not exist. v0 has no Makefile parser, so C1 cannot structurally
+      resolve such a record; the candidate answers and their costs are written out in the decision doc.
+      **No Makefile resolver is to be written here as a side effect of answering it** — a future pass
+      tempted to add one should first ask which construct changes the set of targets, and the answer is
       unbounded, which is why the parser was deleted.
       **Three fixtures for the distinction the schema now carries:** a repo-declared command that
       resolves; a **confirmed** `external` record whose tool is absent from the machine → `info`,
@@ -443,12 +453,42 @@ path prompts.
       (`AGENTS.md` in P6.1, `CLAUDE.md` in P6.2, the indexes in P6.3) and are re-asserted **through
       `doctor`** in P7.2, because a check that exists only under `doctor` is a check `check` silently
       does not do.
+- [ ] **P4.7** **THE PER-CALLER READ-ONLY OBLIGATION — inherited from P3.7, and the phase that first
+      creates the exposure** (owner decision 2026-08-14, `DECISION-2026-08-14-audit-shape.md`, which
+      records it as "a Phase-4 obligation ... rather than assumed"). **Phase 4 introduces the first
+      real callers of `record_findings`** — C1 and C2 — and the Phase-3 guarantee that survived the
+      deleted promotion audit is *behavioural*: the input-non-mutation snapshot. It covered
+      `record_findings`' own inputs under a test-injected verb, because `cli.VERBS["check"]` was
+      `_stub` and no production caller existed. Here they do. So **each real caller gets, in one
+      fixture, all three of:** (a) a **whole-tree snapshot** across the call — `_support.tree_snapshot`,
+      i.e. porcelain **plus** an `lstat` walk with a digest per file, **not `git status --porcelain`
+      alone**: porcelain cannot see an ignored write and prints the same line for an untracked file
+      whatever its bytes now are, so a rewrite that restores the same status shape passes it; (b) an
+      **input-non-mutation snapshot** — the caller's own record dicts rendered to text before and
+      after and compared, which is the only check that catches a promotion however it is spelled and
+      the one shape that defeated the deleted audit; and (c) an assertion that the caller **actually
+      produced findings**, because a snapshot pair over a call that examined nothing is the vacuous
+      pass ADR-30 forbids — two identical readings of a tree nothing touched agree whether the check
+      ran or not. **Prove each non-vacuously** by planting an in-place promotion
+      (`_key = "state"; record[_key] = CONFIRMED`) and a byte-restoring rewrite at the caller and
+      watching (b) and (a) redden respectively. **Note the bounded lint is not a substitute** and
+      explicitly permits capabilities it cannot see: a module may reach the filesystem through a
+      re-exported name (`from manifest import os as filesystem`), which is why (a) is required at
+      every real caller and not inferred from `records.py`'s import list.
+      **Plus the contract note this decision carries (§3):** every caller of `record_findings` passes
+      a `reason`, because only the caller can distinguish an absent manifest from an empty declaration
+      (ADR-30 rules those differently) — `FindingError` is deliberately not a reported fault, so
+      omitting it is a traceback at exit 2.
 
 **Done when:** `check` against the A1/A2 fixtures exits 1 and names both; an accidentally-empty
 scope fails **per key**, while a repo with no manifest reports 0 claims as `info` and **exits 0**;
 C4 detects a stale **test-renderer** artifact **from `check`** and writes nothing; a hand-edit to a
 rendered claim section changes no claim and surfaces as a modified file; every unresolvable
-reference produces a diagnostic; `git status --porcelain` is unchanged.
+reference produces a diagnostic; and **P4.7 holds at every real `record_findings` caller — a
+whole-tree snapshot *and* an input-non-mutation snapshot across each call, paired in the same fixture
+with a live finding, each proven to redden against a planted promotion and a planted byte-restoring
+rewrite**. `git status --porcelain` alone is **not** the criterion and never was sufficient: it
+misses ignored writes and rewrites that restore the same status shape.
 
 ## Phase 5 — retired
 
@@ -618,16 +658,31 @@ the renderers in Phase 6, which is where they are listed.
       audit over clean code reports nothing whether it works or not.
 - [ ] **P6.8** `generate`'s half of P3.7's behavioural check: a run with **stdin closed** and a run
       with the pty installed as the **controlling terminal** (`setsid` + `TIOCSCTTY`, not merely fd 0
-      — that distinction is what made the Phase-3 fixture blind) give **byte-identical** output *and*
-      manifest **and every generated artifact** (`AGENTS.md`, `CLAUDE.md`, both indexes) — comparing
-      only stdout and the manifest would miss a TTY branch that changes a rendered file. Both
-      arrangements run in their own session, the pty carries a distinguishing window size so the
-      oracle can say *which* terminal was reached, and the master is drained: a child that writes to
-      `/dev/tty` and is not drained wedges where `SIGKILL` does not reap it. **The drained pty
-      transcript must additionally be asserted EMPTY.** Draining alone only prevents the hang: a
-      *write-only* prompt — one that prints a question to `/dev/tty` and never reads — leaves stdout,
-      the manifest and the artifacts all identical and passes a comparison-only check. The bytes that
-      reached the terminal are the evidence, so they are asserted, not merely consumed.
+      — that distinction is what made the Phase-3 fixture blind) give **byte-identical stdout, stderr,
+      exit status and repository state**, **and** leave the drained pty transcript **EMPTY**. Those
+      four comparisons plus the transcript are the whole task, and the **done criterion below states
+      exactly the same set** — the first draft of this pair did not, and the narrower half is what
+      would have shipped.
+      **The oracle for "repository state" is a whole-tree snapshot, not a list of artifact names**
+      (`_support.tree_snapshot`: porcelain plus an `lstat` walk recording type, mode, size, content
+      digest and symlink target for every entry, taken after each arrangement and compared).
+      Enumerating `AGENTS.md`, `CLAUDE.md` and the two indexes was the first wording of this task and
+      it is narrower than its own phrase "every generated artifact": it omits **`.gitattributes`**,
+      **every file of the vendored core** under `tools/steward/` (P6.5a), the **presence, type and
+      mode** of each target, and any **unexpected path** a TTY branch might create. A name-list oracle
+      cannot see the artifact nobody thought to list, which is the only kind this check needs to
+      catch.
+      **The empty transcript is required in both halves, and for its own reason.** Draining alone only
+      prevents the hang: a *write-only* prompt — one that prints a question to `/dev/tty` and never
+      reads — leaves stdout, the manifest and every artifact identical and passes a comparison-only
+      check. The bytes that reached the terminal are the evidence, so they are asserted, not merely
+      consumed. Both arrangements run in their own session, the pty carries a distinguishing window
+      size so the oracle can say *which* terminal was reached, and the master is drained on a thread
+      started after the fork: a child that writes to `/dev/tty` and is not drained wedges where
+      `SIGKILL` does not reap it.
+      **Paired, in the same fixture, with an assertion that `generate` actually wrote something** —
+      two runs that both produced nothing agree byte for byte, and a snapshot comparison over a verb
+      that did nothing is the vacuous pass ADR-30 forbids (P3.7's T4, one phase on).
 
 **Done when:** greenfield `generate` on a repo with no manifest creates `.steward.json` and every
 absent target, and `check` then passes against them **before any `git add`** and with no hand-edit
@@ -643,8 +698,10 @@ all; every artifact survives a **render → render byte-compare** and the **rend
 cap boundary fixture reports `warn` and exit 0; a test asserts **no file under `.claude/` or
 `.codex/` is written by any code path** — the standing guard that the deferred harness work has not
 leaked in; **P6.7's write-seam invariant holds and reddens against a planted promotion**; and
-**P6.8's closed-stdin vs controlling-terminal comparison is byte-identical for `generate`'s output
-and its manifest**.
+**P6.8's closed-stdin vs controlling-terminal comparison is byte-identical for `generate`'s stdout,
+stderr, exit status and the whole-tree snapshot — with the drained pty transcript asserted EMPTY and
+the run asserted to have written something**, which is the same set P6.8's task states and not a
+subset of it.
 
 ## Phase 7 — Doctor
 

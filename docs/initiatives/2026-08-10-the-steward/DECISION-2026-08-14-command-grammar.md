@@ -69,7 +69,7 @@ declaration kind:
 | Declaration | Proposed `value` |
 |---|---|
 | package script `test: jest` | `npm run test` |
-| Makefile target `test` | `make test` |
+| ~~Makefile target `test`~~ | ~~`make test`~~ — **SUPERSEDED**, see the scope amendment below: v0 proposes no `make` target at all |
 | tracked executable | its repository-relative path, **always prefixed `./`** |
 
 ### Correction, 2026-08-14 (after implementation) — the `./` prefix
@@ -178,26 +178,42 @@ parsed path produced three crops.** Consistency alone argues for it.
 **Cost, stated plainly:** a Makefile-driven repository gets no proposed build/test commands from `scan`.
 A human writes them into `.steward.json` and confirms them — which is what confirmation is for.
 
-### The C1 half, decided at the same time so the amendment is complete
+### The C1 half — OPEN. A first answer was attempted, refuted, and withdrawn
 
-Codex's sharpest point: deleting the scan-side parser could merely **move** the problem, because
-Phase 4's C1 must resolve a human-confirmed `make test` record — which needs to know whether `test` is
-a real target. Same parser, different phase.
+Codex's sharpest point when this amendment was taken: deleting the scan-side parser could merely
+**move** the problem, because Phase 4's C1 must resolve a human-confirmed `make test` record — which
+needs to know whether `test` is a real target. Same parser, different phase.
 
-**It does not move, because `make` is an external tool.** A confirmed `make <target>` record carries
-**`resolution: "external"`**: ADR-18 defines `external` as a command naming "a tool the repository does
-not declare and is not expected to", and `make` is precisely that — the repository declares the
-*target*, but the *tool* is the system's. C1 therefore reports it **`info`, tier *inspected*, counted
-separately in the cardinality line and never as coverage** (ADR-13, ADR-30). No parser is required in
-C1, and no schema change is required anywhere.
+**An answer was attempted here and is WITHDRAWN as wrong.** It claimed a confirmed `make <target>`
+carries `resolution: "external"`, on the grounds that `make` is a system tool the repository does not
+declare. The refutation, from the next gate round:
 
-The pieces already fit without new machinery: the manifest **already** enforces that `external` is
-valid only on a `confirmed` record, and only a human can confirm — so `scan` structurally cannot emit
-it. That is the same boundary this amendment draws, enforced by the schema rather than by a rule.
+- **The rationale proves too much.** By it, `npm run test` is also `external`, because `npm` is equally
+  a system tool — and that is the canonical `repo-declared` case. The line was drawn on the wrong axis:
+  ADR-18's `repo-declared` turns on whether **the repository declares the thing being invoked**, not on
+  who ships the invoking binary. ADR-18 lists "Makefile targets" among the repository's own
+  declarations explicitly.
+- **It also bypasses C1 entirely**, including for a target that does not exist — so a confirmed claim
+  would never be checked at all, which is the opposite of what C1 is for.
 
-**P4.2 must therefore NOT grow a Makefile resolver.** If a future pass is tempted, the question to ask
-first is which construct changes the set of targets — and the answer is unbounded, which is why this
-amendment exists.
+**Status: OPEN, owner decision, at Phase 4.** Nothing in Phase 3 depends on it — `scan` proposes no
+`make` command, and C1 does not exist yet. Recording it as open is deliberate: replacing one wrong
+answer with a hastier one is how this initiative's documented failure mode works.
+
+**The shape of the problem, for whoever takes it.** v0 has no Makefile parser, so C1 cannot
+structurally resolve a `repo-declared` `make <target>`. Each way out has a real cost, and none is
+obviously right:
+
+- treat an unresolvable `make` record as a violation → a **false `error` at exit 1** for a target that
+  genuinely exists, which is A1 inverted;
+- treat it as `external` → **withdrawn above**, and it never checks a nonexistent target;
+- add a narrow literal `^target:` existence probe for C1 only → the deleted parser returning in check
+  form, with false negatives on generated targets and false positives on `$(info a: b)`;
+- a third `resolution` kind → a change to the **frozen** P1.5 schema.
+
+**P4.2 must NOT grow a Makefile resolver as a side effect of resolving this.** If a pass is tempted,
+the question to ask first is which construct changes the set of targets — the answer is unbounded,
+which is why the parser was deleted.
 
 ### Clarification, 2026-08-14 — "repository root only" does not exclude a nested *executable*
 

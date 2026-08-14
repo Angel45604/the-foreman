@@ -95,6 +95,14 @@ and a correction that added quoting left the rule it obsoleted standing. Each
 class from `NestedProjectStackTest` down therefore carries the counter-weight
 for the concern its fix might swallow — nested commands still refused, the
 rule after a directive line still read, the option-like name still diagnosed.
+
+**The defect letters, because there are now three rounds of them and two of the
+sequences overlap.** `B1`-`B9` are the round the typed-command fixtures found;
+`D1`-`D3` are the round after it (`NonRegularDeclarationTest`,
+`DocsScopeReportSafetyTest`, `DocsScopeEvidenceTest`); **`E1`-`E4` are the
+closing gate's, which numbered them `D1`-`D4` in its own report** — the letter
+was moved here rather than there so a search for `D1` in this repository lands
+on one defect and not two. The last four classes in this file are `E1`-`E4`.
 """
 
 import contextlib
@@ -102,6 +110,7 @@ import io
 import json
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -3122,6 +3131,475 @@ class DocsScopeEvidenceTest(ScanFixture):
         self.write("docs/b.md", "# b\n")
         self.commit()
         self.assertIn("3 tracked document(s)", self.scope_finding()["observed"])
+
+
+class NonRegularWorkingTreeEntryTest(ScanFixture):
+    """**E1** — `scan` had no bounded outcome: a FIFO hung it forever.
+
+    A tracked regular `package.json` **replaced in the working tree by a
+    FIFO** keeps index mode `100644` at stage 0, and a FIFO is not a symlink,
+    so both guards `_package_commands` already had — the index mode and
+    `paths.crosses_symlink` — pass it straight through to
+    `open(location, "rb")`. Opening a FIFO for reading **blocks until
+    something else opens the write end**, and nothing ever does. Measured
+    before the fix: `python3 -B <core> scan` was still running at 20s and had
+    to be killed.
+
+    **A read-only tool that can hang on repository content has no bounded
+    outcome at all**, which is worse than a wrong answer: exit 2 says *no
+    finding set can be trusted* and a human reads it, while a process that
+    never returns says nothing to anybody and takes the CI job with it.
+
+    **This class runs the core as a child with a timeout, deliberately.** An
+    in-process `scan.survey` would hang the test runner itself with no bound
+    and no failure message — the defect would take the suite hostage rather
+    than redden it. Every assertion below is therefore made over the child's
+    own stdout.
+    """
+
+    # Long enough that a slow machine is not the reason this fails, short
+    # enough that the failing path is not the whole suite's cost. Spent only
+    # when the defect is back.
+    TIMEOUT_SECONDS = 30
+
+    HONEST_PACKAGE = '{"scripts": {"build": "x", "test": "y"}}\n'
+
+    def replace_with_a_fifo(self):
+        self.write(PACKAGE_JSON, self.HONEST_PACKAGE)
+        self.commit()
+        full = os.path.join(self.root, PACKAGE_JSON)
+        os.remove(full)
+        os.mkfifo(full)
+
+    def replace_with_a_directory(self):
+        """The second entry in the class, and the one the first fix broke.
+
+        `open(path, "rb")` reported a directory as `EISDIR` — a diagnostic. The
+        first spelling of E1's fix handed the descriptor to `os.fdopen`, whose
+        constructor raises `IsADirectoryError` **before** any handler in
+        `_read_bytes` — trading a hostile-entry diagnostic for a traceback,
+        which is T8 in this file's list: a fix reaching further than the defect
+        it repairs.
+        """
+        self.write(PACKAGE_JSON, self.HONEST_PACKAGE)
+        self.commit()
+        full = os.path.join(self.root, PACKAGE_JSON)
+        os.remove(full)
+        os.mkdir(full)
+
+    def scan_within_the_bound(self):
+        """`(returncode, stdout, stderr)`, or an assertion naming the hang."""
+        command = [S.MODERN_PYTHON, "-B", S.CORE_DIR, "scan"]
+        try:
+            done = subprocess.run(
+                command,
+                cwd=self.root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=self.TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            raise AssertionError(
+                "`scan` did not terminate within %ds against a tracked "
+                "declaration the working tree holds as a FIFO. A read-only "
+                "tool that blocks on repository content has no bounded "
+                "outcome — this is the defect, not a slow machine."
+                % self.TIMEOUT_SECONDS
+            )
+        return (
+            done.returncode,
+            done.stdout.decode("utf-8", "replace"),
+            done.stderr.decode("utf-8", "replace"),
+        )
+
+    def test_the_fixture_really_tracks_a_regular_file_held_as_a_fifo(self):
+        """Non-vacuity, and it is the defect in two assertions: git still
+        records a regular file, so the index-mode guard cannot fire, and the
+        working tree really does hold a FIFO, so the open really would block.
+        """
+        self.replace_with_a_fifo()
+        listed = S.git_read(self.root, "ls-files", "--stage").decode("utf-8")
+        line = [l for l in listed.splitlines() if l.endswith("\t" + PACKAGE_JSON)]
+        self.assertEqual(1, len(line), PACKAGE_JSON)
+        self.assertTrue(
+            line[0].startswith("100644 "),
+            "git no longer records the replaced file as regular — the fixture "
+            "is inert: %s" % line[0],
+        )
+        info = os.lstat(os.path.join(self.root, PACKAGE_JSON))
+        self.assertTrue(
+            stat.S_ISFIFO(info.st_mode),
+            "the working tree does not hold a FIFO — the fixture is inert",
+        )
+
+    def test_the_scan_terminates_and_exits_zero(self):
+        self.replace_with_a_fifo()
+        code, out, err = self.scan_within_the_bound()
+        self.assertEqual(0, code, err)
+        self.assertNotIn("Traceback", err, "a predicted case printed a crash")
+        self.assertIn("the-steward scan", out, "no report was printed")
+
+    def test_the_non_regular_entry_is_diagnosed_and_never_silently_skipped(self):
+        """ADR-28: a candidate silently dropped both hides a real edge and
+        manufactures a false orphan. The diagnostic has to name the path and
+        say what the working tree actually holds."""
+        self.replace_with_a_fifo()
+        _code, out, _err = self.scan_within_the_bound()
+        self.assertIn(scan.UNREADABLE_DECLARATION, out)
+        self.assertIn(repr(PACKAGE_JSON), out)
+        self.assertIn(
+            "regular file",
+            out,
+            "the diagnostic does not say what was wrong with the entry",
+        )
+
+    def test_nothing_is_proposed_out_of_it(self):
+        self.replace_with_a_fifo()
+        _code, out, _err = self.scan_within_the_bound()
+        self.assertNotIn(
+            "npm run",
+            out,
+            "a command was proposed out of an entry nothing was read from",
+        )
+
+    def test_a_directory_in_its_place_is_diagnosed_and_not_a_crash(self):
+        """T8 — the fix must not reach past the defect.
+
+        A directory was already handled, as `EISDIR`, by the `open()` this
+        replaced. It is asserted here because the obvious spelling of the fix
+        loses it: an unhandled `IsADirectoryError` is exit 2 **with a
+        traceback**, which is what an *unpredicted* fault should look like, and
+        this one is predicted.
+        """
+        self.replace_with_a_directory()
+        code, out, err = self.scan_within_the_bound()
+        self.assertEqual(0, code, err)
+        self.assertNotIn("Traceback", err, "a predicted case printed a crash")
+        self.assertIn(scan.UNREADABLE_DECLARATION, out)
+        self.assertIn(repr(PACKAGE_JSON), out)
+        self.assertNotIn("npm run", out)
+
+    def test_the_fixture_really_tracks_a_regular_file_held_as_a_directory(self):
+        self.replace_with_a_directory()
+        self.assertTrue(
+            stat.S_ISDIR(os.lstat(os.path.join(self.root, PACKAGE_JSON)).st_mode),
+            "the working tree does not hold a directory — the fixture is inert",
+        )
+
+    def test_the_same_declaration_is_read_when_it_is_a_regular_file(self):
+        """The control that makes the exclusions above mean something: the
+        identical manifest, held as an ordinary file, is still read."""
+        self.write(PACKAGE_JSON, self.HONEST_PACKAGE)
+        self.commit()
+        self.assertEqual(
+            ["npm run build", "npm run test"],
+            self.values(self.survey().commands),
+        )
+
+
+class UnmergedDocumentTest(IndexFixture):
+    """**E2** — the report contradicted itself about an unmerged document.
+
+    `survey`'s pass over the index emits one `UNMERGED_ENTRY` diagnostic per
+    unmerged path, whose whole message is *the index does not say one thing
+    about it ... Nothing was proposed from it.* The document corpus then
+    admitted the same path independently, because `corpus.tracked_documents`
+    is `git ls-files -- '*.md'` and that lists an unmerged path once per
+    stage. So an unmerged `AGENTS.md` produced a **`high`-confidence declared
+    path record** and a docs-scope entry, in the same report that said nothing
+    had been proposed from it.
+
+    One entry, one answer. The corpus path takes the same merged/stage
+    validation every other consumer of the index takes, and the diagnostic
+    already emitted is the one explanation — a second note over the same fact
+    would inflate the finding count, which is the shape `_unmerged_note`
+    exists to prevent.
+    """
+
+    def plant_unmerged(self, relpath, payload=b"# agents\n"):
+        """Replace a committed entry with the three stages of a conflict.
+
+        The stage-0 entry is removed **from the index only** first: planting
+        stages 1-3 over it leaves git holding four entries for the path, which
+        is a state no merge produces. `--force-remove` leaves the working-tree
+        file exactly where it is, which is what the corpus needs — a document
+        git does not hold on disk is out of the corpus for a different reason
+        and would make this fixture vacuous.
+        """
+        S.git_read(self.root, "update-index", "--force-remove", relpath)
+        sha = self.blob(payload)
+        self.plant(
+            tuple(
+                ("100644", sha, stage, relpath.encode("utf-8"))
+                for stage in (1, 2, 3)
+            )
+        )
+
+    def test_the_fixture_really_plants_an_unmerged_document(self):
+        """Non-vacuity: if git collapsed the three stages, every assertion
+        below would pass over an index that was never unmerged."""
+        self.write("AGENTS.md", "# agents\n")
+        self.commit()
+        self.plant_unmerged("AGENTS.md")
+        staged = [line for line in self.staged() if line.endswith("\tAGENTS.md")]
+        self.assertEqual(3, len(staged), staged)
+
+    def test_an_unmerged_agent_document_is_not_a_declared_path(self):
+        self.write("AGENTS.md", "# agents\n")
+        self.commit()
+        self.plant_unmerged("AGENTS.md")
+        self.assertEqual(["README.md"], self.values(self.survey().paths))
+
+    def test_an_unmerged_document_is_not_in_the_inferred_docs_scope(self):
+        self.write("AGENTS.md", "# agents\n")
+        self.commit()
+        self.plant_unmerged("AGENTS.md")
+        self.assertEqual(["README.md"], self.survey().docs_scope["include"])
+
+    def test_it_is_not_counted_as_a_document_the_scan_examined(self):
+        """ADR-30: the cardinality is what was examined, and an entry the
+        report says nothing was proposed from was not examined."""
+        self.write("AGENTS.md", "# agents\n")
+        self.commit()
+        self.plant_unmerged("AGENTS.md")
+        self.assertEqual(("README.md",), self.survey().documents)
+
+    def test_the_one_explanation_is_the_unmerged_diagnostic(self):
+        """The other half: excluding it silently would be ADR-28's S4 failure,
+        so the entry still owes exactly one diagnostic naming it."""
+        self.write("AGENTS.md", "# agents\n")
+        self.commit()
+        self.plant_unmerged("AGENTS.md")
+        notes = [
+            n for n in self.survey().notes if n.where == repr("AGENTS.md")
+        ]
+        self.assertEqual([scan.UNMERGED_ENTRY], [n.id for n in notes])
+
+    def test_the_zero_document_reason_does_not_deny_the_predicate(self):
+        """**The state E2's own fix makes reachable, which is E4's shape.**
+
+        ADR-30 requires a zero to state its reason and ADR-28 requires the
+        reason to be true of the computation. An unmerged `AGENTS.md` **does**
+        satisfy ADR-10's predicate — it is a tracked `*.md` git marks neither
+        vendored nor generated — so the `docsScope` zero-reason as it stood
+        before this filter, *no tracked document satisfies ADR-10's
+        predicate*, becomes false the instant the filter removes the last
+        document. Landing E2 without this would have committed E4 again inside
+        the fix for something else, which is this phase's recorded habit: three
+        of its defects were created by its own earlier fixes.
+        """
+        self.write("AGENTS.md", "# agents\n")
+        self.commit()
+        S.git_read(self.root, "rm", "-q", "README.md")
+        self.commit()
+        self.plant_unmerged("AGENTS.md")
+        self.assertEqual((), self.survey().documents)
+        _found, cardinalities = scan.survey_findings(self.survey())
+        row = [c for c in cardinalities if c["check"] == scan.DOCS_SCOPE_CHECK][0]
+        self.assertEqual(0, row["examined"])
+        self.assertIn(
+            "AGENTS.md",
+            S.git_read(self.root, "ls-files").decode("utf-8"),
+            "git no longer lists the document — the fixture is inert",
+        )
+        self.assertNotIn(
+            "no tracked document satisfies",
+            row["reason"],
+            "the reason denies that any tracked document satisfies ADR-10's "
+            "predicate, and the one this scan excluded does: %r" % row["reason"],
+        )
+        self.assertIn("merged index entry", row["reason"], row["reason"])
+
+    def test_a_merged_agent_document_is_still_a_declared_path(self):
+        """The counter-weight: a fix that dropped every document would satisfy
+        the exclusions above just as well."""
+        self.write("AGENTS.md", "# agents\n")
+        self.write("docs/guide.md", "# guide\n")
+        self.commit()
+        survey = self.survey()
+        self.assertEqual(["AGENTS.md", "README.md"], self.values(survey.paths))
+        self.assertEqual(["AGENTS.md", "README.md", "docs"],
+                         survey.docs_scope["include"])
+
+
+class OneExplanationPerEntryTest(IndexFixture):
+    """**E3** — two contradictory diagnostics about one file.
+
+    `UNPARSEABLE_DECLARATIONS` was consulted on the **basename alone**, with
+    none of the merged/readable-mode validation `declaration_entries` applies
+    to everything else. So a symlinked `pyproject.toml` was told about twice
+    and the two notes disagreed: *git records a symlink there, so it is not
+    the declaration this repository makes at that path*, and, of the same
+    file, *it is a python packaging declaration and the core cannot parse it*.
+    An unmerged one got the same pair.
+
+    The mirror case is worse and is asserted too: `Justfile`, `Rakefile` and
+    `Taskfile.*` are **not** in `DECLARATIONS`, so a symlinked one reached no
+    validation at all — its only note claimed it was a task declaration this
+    core cannot read, when what git records there is a link.
+
+    One file, one explanation, decided by the index the way every other
+    consumer decides it.
+    """
+
+    def note_ids_for(self, relpath):
+        return sorted(
+            n.id for n in self.survey().notes if n.where == repr(relpath)
+        )
+
+    def plant_symlink(self, relpath):
+        self.plant(
+            (
+                (
+                    "120000",
+                    self.blob(b"elsewhere/" + relpath.encode("utf-8")),
+                    0,
+                    relpath.encode("utf-8"),
+                ),
+            )
+        )
+
+    def plant_unmerged(self, relpath, payload=b"[project]\n"):
+        sha = self.blob(payload)
+        self.plant(
+            tuple(
+                ("100644", sha, stage, relpath.encode("utf-8"))
+                for stage in (1, 2, 3)
+            )
+        )
+
+    def test_a_symlinked_pyproject_is_explained_once_as_a_symlink(self):
+        self.plant_symlink("pyproject.toml")
+        self.assertEqual(
+            [scan.SYMLINKED_DECLARATION], self.note_ids_for("pyproject.toml")
+        )
+
+    def test_an_unmerged_pyproject_is_explained_once_as_unmerged(self):
+        self.plant_unmerged("pyproject.toml")
+        self.assertEqual(
+            [scan.UNMERGED_ENTRY], self.note_ids_for("pyproject.toml")
+        )
+
+    def test_a_symlinked_task_runner_is_explained_as_a_symlink(self):
+        """The basename `Taskfile.yml` is in no stack table, so before the fix
+        the only validation that could have seen the mode never ran for it."""
+        self.plant_symlink("Taskfile.yml")
+        self.assertEqual(
+            [scan.SYMLINKED_DECLARATION], self.note_ids_for("Taskfile.yml")
+        )
+
+    def test_an_unmerged_task_runner_is_explained_once_as_unmerged(self):
+        self.plant_unmerged("Justfile", b"test:\n  pytest\n")
+        self.assertEqual([scan.UNMERGED_ENTRY], self.note_ids_for("Justfile"))
+
+    def test_a_gitlinked_declaration_is_explained_once(self):
+        head = S.git_read(self.root, "rev-parse", "HEAD").decode("utf-8").strip()
+        self.plant((("160000", head, 0, b"pyproject.toml"),))
+        self.assertEqual(
+            [scan.UNREADABLE_DECLARATION], self.note_ids_for("pyproject.toml")
+        )
+
+    def test_a_regular_pyproject_is_still_a_python_stack_and_still_diagnosed(self):
+        """The counter-weight, and it is the one that keeps the fix from
+        reaching further than the defect: an ordinary `pyproject.toml` says
+        two true things at once — it declares a python project, and its
+        commands are unreadable at the 3.9 floor — and both must survive."""
+        self.write("pyproject.toml", '[project]\nname = "app"\n')
+        self.commit()
+        survey = self.survey()
+        self.assertEqual(
+            [("", "python", ("pyproject.toml",))], list(survey.stacks)
+        )
+        self.assertEqual(
+            [scan.UNPARSEABLE_DECLARATION], self.note_ids_for("pyproject.toml")
+        )
+
+    def test_a_regular_task_runner_is_still_diagnosed_as_unparseable(self):
+        self.write("Taskfile.yml", "tasks:\n  test:\n    cmds:\n      - pytest\n")
+        self.commit()
+        self.assertEqual(
+            [scan.UNPARSEABLE_DECLARATION], self.note_ids_for("Taskfile.yml")
+        )
+
+
+class ZeroPathReasonTest(ScanFixture):
+    """**E4** — the zero-path reason stated something that was not true.
+
+    ADR-30 requires a zero cardinality to state its reason, and ADR-28 is why
+    the reason has to be *accurate* rather than merely present: a report that
+    explains a zero with a false fact is worse than one that explains nothing,
+    because a human acts on it.
+
+    `survey.paths` is computed over the **present, unmarked ADR-10 corpus**,
+    so a tracked `AGENTS.md` that the working tree does not hold, or one git
+    marks `linguist-generated`, yields zero paths — and the reason said *no
+    agent document or root README is tracked*, of a repository whose
+    `git ls-files` lists exactly that file. The reason now states what is
+    actually true of the computation.
+    """
+
+    def paths_cardinality(self):
+        _found, cardinalities = scan.survey_findings(self.survey())
+        rows = [c for c in cardinalities if c["check"] == scan.PATH_CHECK]
+        self.assertEqual(1, len(rows))
+        return rows[0]
+
+    def tracked(self):
+        return S.git_read(self.root, "ls-files").decode("utf-8").split()
+
+    def test_the_reason_does_not_deny_what_git_tracks(self):
+        self.write("AGENTS.md", "# agents\n")
+        self.commit()
+        os.remove(os.path.join(self.root, "AGENTS.md"))
+        os.remove(os.path.join(self.root, "README.md"))
+        row = self.paths_cardinality()
+        self.assertEqual(0, row["examined"])
+        self.assertIn(
+            "AGENTS.md",
+            self.tracked(),
+            "git no longer tracks the deleted document — the fixture is inert",
+        )
+        self.assertNotIn(
+            "is tracked",
+            row["reason"],
+            "the reason denies that an agent document is tracked, and git "
+            "lists one: %r" % row["reason"],
+        )
+
+    def test_the_reason_holds_for_a_document_git_marks_generated(self):
+        """The second way a tracked agent document leaves the corpus, and it
+        needs no working-tree accident at all."""
+        self.write("AGENTS.md", "# agents\n")
+        self.write(
+            ".gitattributes",
+            "AGENTS.md linguist-generated=true\n"
+            "README.md linguist-generated=true\n",
+        )
+        self.commit()
+        row = self.paths_cardinality()
+        self.assertEqual(0, row["examined"])
+        self.assertIn("AGENTS.md", self.tracked())
+        self.assertNotIn("is tracked", row["reason"], row["reason"])
+
+    def test_the_reason_names_the_computation_it_is_about(self):
+        """Accurate is not the same as vague: the reason has to say which set
+        came back with nothing in it, or a human cannot act on it."""
+        self.write("docs/design.md", "# design\n")
+        self.commit()
+        os.remove(os.path.join(self.root, "README.md"))
+        row = self.paths_cardinality()
+        self.assertEqual(0, row["examined"])
+        self.assertIn("corpus", row["reason"], row["reason"])
+
+    def test_a_repository_that_really_has_one_reports_no_reason_at_all(self):
+        """The counter-weight: a reason that is always printed would satisfy
+        every assertion above without the cardinality meaning anything."""
+        self.write("AGENTS.md", "# agents\n")
+        self.commit()
+        _found, cardinalities = scan.survey_findings(self.survey())
+        row = [c for c in cardinalities if c["check"] == scan.PATH_CHECK][0]
+        self.assertEqual(2, row["examined"])
+        self.assertIsNone(row["reason"])
 
 
 if __name__ == "__main__":

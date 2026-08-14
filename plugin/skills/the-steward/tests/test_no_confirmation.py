@@ -58,12 +58,26 @@ reaches `os.read(0, 16)` and `open("/dev/tty").readline()`, neither of which any
 AST branch will ever enumerate.
 
 **And its bound, stated because the first version of this paragraph did not
-have one and was false (T6).** The fixture covers *the three live verbs, on one
-fixture repository, under those two arrangements*. It says nothing about
+have one and was false (T6).** The fixture covers *the three verbs it runs, on
+one fixture repository, under those two arrangements*. It says nothing about
 `generate`, nothing about a repository shaped differently, and nothing about a
 prompt on a channel that is neither fd 0 nor the controlling terminal.
 
-**Seven traps this file is written against.**
+**And a sharper bound on two of the three, because "three live verbs" — this
+file's own former wording — overstated it (T8).** Only **`scan`** is a fully
+implemented verb today: `cli.VERBS["check"]` is still `_stub`, and `doctor`
+carries the trackedness inspection plus a placeholder cardinality for
+everything else. For those two the comparison runs over placeholder report
+paths, and the liveness assertion this file pairs every comparison with — *the
+verb produced a report* — is satisfied by the placeholder, which is ADR-30's
+vacuity one level up from where it is usually looked for. All three are still
+compared: it costs nothing and it starts biting the moment those verbs become
+real. But **only `scan`'s result is evidence about a real verb today**;
+`check`'s becomes evidence at Phase 4 and `doctor`'s at Phase 7, and each phase
+re-runs this as part of its own done-criteria rather than inheriting a green
+from here (DECISION-2026-08-14-audit-shape §2, final correction).
+
+**Eight traps this file is written against.**
 
 **T1 — an audit over clean code reports nothing whether it works or not.** Two
 guards shipped in this project that could not be told apart from broken ones
@@ -135,6 +149,18 @@ a lint, its claim narrowed to the names it inspects, and the evading shape is
 pinned below as a false-green regression fixture — **not** closed by another
 branch, which would be the third syntactic enumeration in one phase.
 
+**T8 — "a live verb" is not the same as "a verb that exists", and this file
+shipped the first word meaning the second.** Three verbs are dispatched by
+`cli.VERBS` and all three print a report, so calling them *three live verbs*
+read as three subjects. Two of them are placeholders: `check` **is** `_stub`,
+and `doctor` is one inspection plus a placeholder cardinality. A comparison
+over a placeholder is a real comparison of an unreal subject, and the liveness
+pairing that guards T4 cannot tell the difference — the placeholder prints a
+cardinality line too. The bound is now stated per verb, and
+`test_the_bound_on_which_verbs_are_evidence_is_checked_not_asserted` checks it
+against `cli` rather than leaving it in prose, so the day either verb becomes
+real this file's wording is what goes red.
+
 **Deliberately out of scope, and disclosed rather than faked:** the same
 byte-identity fixture for `generate`. Its subject is still a Phase-1 stub
 (`cli.VERBS`), so the fixture would assert that two runs of a stub agree. It is
@@ -158,6 +184,7 @@ import _support as S
 
 S.import_core()
 
+import cli  # noqa: E402
 import inventory  # noqa: E402
 import manifest  # noqa: E402
 import records  # noqa: E402
@@ -244,9 +271,29 @@ LEGITIMATE_STATE_READ = (
     "    return 'error' if record['state'] == 'confirmed' else 'warn'\n"
 )
 
-# The verbs that exist today. `generate` is a Phase-1 stub, so it is left out
-# rather than fixtured — see the header.
-LIVE_VERBS = ("scan", "check", "doctor")
+# The verbs the byte comparison is run over. `generate` is left out rather
+# than fixtured: it is a Phase-1 stub that prints a placeholder report, so the
+# fixture would assert that two runs of a stub agree (see the header).
+#
+# **They are not "three live verbs", which is what this file used to call
+# them** (T8, DECISION-2026-08-14-audit-shape §2, final correction). All three
+# are compared, because it costs nothing and starts biting the moment they
+# become real. Only one of them is a subject the result is evidence about.
+COMPARED_VERBS = ("scan", "check", "doctor")
+
+# The one fully implemented verb today, and therefore the only one whose
+# comparison is evidence about a real verb.
+IMPLEMENTED_VERB = "scan"
+
+# The two whose report is still a placeholder: `cli.VERBS["check"]` is `_stub`,
+# and `doctor` is the trackedness inspection plus the cardinality below. Their
+# comparisons become evidence at Phase 4 and Phase 7 respectively, and each
+# phase re-runs this rather than inheriting a green from here.
+PLACEHOLDER_VERBS = ("check", "doctor")
+
+# What `doctor` prints for the checks Phase 7 has not built. Asserted rather
+# than assumed, so `doctor` becoming real reddens the wording above.
+PLACEHOLDER_CARDINALITY = "phase-1"
 
 # What the interpreter is asked about fd 0, as the independent oracle for T5.
 ISATTY_PROBE = "import sys; print(sys.stdin.isatty())"
@@ -453,8 +500,9 @@ def bounded_prompt_sites(sources):
     and a file descriptor can be opened by number, so the set is unbounded and
     an enumeration of it would end *feeling* complete. It is covered instead by
     `StandardInputChangesNothingTest`, which never looks at syntax at all —
-    **for the three live verbs it runs, and only there**, which is that
-    fixture's own stated bound and not a second unbounded claim in its place.
+    **for the three verbs it runs, and only there, and as evidence about a real
+    verb only for `scan`** (T8), which is that fixture's own stated bound and
+    not a second unbounded claim in its place.
 
     The one aggregation the lint calls, so pointing it at a planted module
     exercises the same code path as pointing it at the core.
@@ -916,11 +964,50 @@ class TheStateMachineReturnsNoRecordTest(unittest.TestCase):
             self.assertTrue(set(item) <= self.FINDING_KEYS, sorted(item))
         self.assertEqual(self.CARDINALITY_KEYS, set(examined))
 
-    def test_no_derived_reading_could_be_stored_as_a_state(self):
-        """The two halves meet here: the machine cannot write, and what it
-        derives could not be written even by hand."""
+    def test_a_derived_reading_equals_neither_stored_state(self):
+        """ADR-11 admits exactly two stored states, and a derived reading is
+        neither of them — so there is nothing here a hand could write down.
+
+        **Both halves of what used to be here were wrong, and the wording was
+        the worse half.** The docstring said *"the machine cannot write"*,
+        which is the claim `DECISION-2026-08-14-audit-shape` rejects as
+        unestablishable: it is ADR-28's banned shape — an absence asserted from
+        a partial look — and this suite has already deleted one audit and
+        narrowed one lint for making it. Nothing in this file establishes that
+        `records.py` cannot reach the filesystem; `BoundedWriteCapabilityLintTest`
+        says so in its own name, and the alias-through-`manifest` fixture (T7)
+        is a worked example of a capability it cannot see.
+
+        **And the assertion compared against `confirmed` alone**, which is
+        half the property. `proposed` is a stored state too
+        (`manifest.STATES`), so a derived reading that came to equal it would
+        be just as storable — a `scan.pending[]` delta or a waiver reading
+        spelled `proposed` would collide with the state machine's own
+        vocabulary and stay green. The comparison is now against **both**, read
+        off `manifest.STATES` rather than re-listed here.
+
+        What is claimed is exactly what is checked: a value-level disjointness
+        between two enumerations this module owns. No capability is inferred
+        from it.
+        """
+        self.assertEqual(
+            sorted(manifest.STATES),
+            sorted((records.PROPOSED, records.CONFIRMED)),
+            "the stored-state vocabulary changed; this comparison is only "
+            "total if it is made against all of it",
+        )
+        self.assertTrue(
+            records.DERIVED_STATES, "there are no derived readings to compare"
+        )
         for state in records.DERIVED_STATES:
-            self.assertNotEqual(records.CONFIRMED, state)
+            for stored in manifest.STATES:
+                self.assertNotEqual(
+                    stored,
+                    state,
+                    "the derived reading %r is spelled the same as the stored "
+                    "state %r, so a caller could write it into a manifest and "
+                    "the validator would accept it (ADR-11)" % (state, stored),
+                )
 
 
 class StandardInputChangesNothingTest(unittest.TestCase):
@@ -930,9 +1017,18 @@ class StandardInputChangesNothingTest(unittest.TestCase):
     "`generate` behaves identically with or without a TTY" (ADR-11) is a claim
     about behavior, and the lint above cannot reach it: a name can be rebound,
     and `/dev/tty` and `os.read(0, ...)` reach the terminal without naming
-    anything the lint knows. This runs the real verbs, as a child process, with
-    `-B`, under each of the two arrangements, and compares stdout, stderr and
-    the exit status.
+    anything the lint knows. This runs the three verbs `cli.VERBS` dispatches,
+    as a child process, with `-B`, under each of the two arrangements, and
+    compares stdout, stderr and the exit status.
+
+    **Which of the three is a real subject, stated per verb (T8).** Only
+    `scan` is fully implemented. `cli.VERBS["check"]` is `_stub` and `doctor`
+    is one inspection plus a placeholder cardinality, so for those two the
+    comparison runs over placeholder report paths and the liveness pairing
+    below is satisfied by the placeholder — ADR-30's vacuity one level up. All
+    three are compared anyway, because it costs nothing and starts biting the
+    moment they become real; **as evidence about a real verb, this class speaks
+    for `scan` only** (DECISION-2026-08-14-audit-shape §2, final correction).
 
     **The two arrangements, precisely, because the difference between them is
     the whole instrument (T6).** Both children run in their **own session**, so
@@ -953,8 +1049,9 @@ class StandardInputChangesNothingTest(unittest.TestCase):
 
     **What this does not cover, stated rather than implied (ADR-28):**
     `generate` — a Phase-1 stub, so a fixture over it would assert that two runs
-    of nothing agree; any repository shaped unlike the one built in `setUp`; and
-    any channel to a human that is neither fd 0 nor the controlling terminal.
+    of nothing agree; any repository shaped unlike the one built in `setUp`;
+    any channel to a human that is neither fd 0 nor the controlling terminal;
+    and **a real `check` or a real `doctor`**, neither of which exists yet.
     """
 
     # Generous, because it is only ever spent on the failing path: the whole
@@ -1124,9 +1221,53 @@ class StandardInputChangesNothingTest(unittest.TestCase):
             "empty reports proves nothing (ADR-30)" % verb,
         )
 
-    def test_every_live_verb_gives_the_same_bytes_closed_and_on_a_terminal(self):
-        for verb in LIVE_VERBS:
-            with self.subTest(verb=verb):
+    def test_the_bound_on_which_verbs_are_evidence_is_checked_not_asserted(self):
+        """T8 — the per-verb bound, made falsifiable instead of stated.
+
+        The header, the class docstring and `COMPARED_VERBS`' comment all say
+        the same thing: only `scan` is a real subject today. A sentence in a
+        docstring rots the moment Phase 4 lands, and a stale bound that
+        *understates* what a fixture proves is exactly the kind of quiet wrong
+        claim this file exists to refuse. So the two placeholders are checked
+        against `cli` itself: when either becomes real, this reddens and the
+        wording is what has to change — which is the decision document's
+        instruction that each phase re-run this rather than inherit a green.
+        """
+        self.assertEqual(
+            sorted(COMPARED_VERBS),
+            sorted((IMPLEMENTED_VERB,) + PLACEHOLDER_VERBS),
+            "a compared verb is in neither category, so the bound this file "
+            "states does not account for it",
+        )
+        self.assertIsNot(
+            cli._stub,
+            cli.VERBS[IMPLEMENTED_VERB],
+            "`%s` is a stub, so nothing in this class is evidence about a "
+            "real verb at all" % IMPLEMENTED_VERB,
+        )
+        self.assertIs(
+            cli._stub,
+            cli.VERBS["check"],
+            "`check` is no longer a stub. Its comparison is now evidence "
+            "about a real verb, and this file still says it is not — re-run "
+            "this fixture as part of Phase 4's done-criteria and restate the "
+            "bound (DECISION-2026-08-14-audit-shape §2).",
+        )
+        report = self.run_closed("doctor").stdout.decode("utf-8", "replace")
+        self.assertIn(
+            PLACEHOLDER_CARDINALITY,
+            report,
+            "`doctor` no longer reports a placeholder cardinality. Its "
+            "comparison is now evidence about a real verb, and this file "
+            "still says it is not — Phase 7 owns restating the bound.",
+        )
+
+    def test_every_compared_verb_gives_the_same_bytes_closed_and_on_a_terminal(self):
+        for verb in COMPARED_VERBS:
+            # `evidence` is in the subTest id rather than in a comment: a
+            # failure names whether it is about a real verb or a placeholder,
+            # which is the distinction T8 is for.
+            with self.subTest(verb=verb, evidence=verb == IMPLEMENTED_VERB):
                 closed = self.run_closed(verb)
                 on_a_terminal, printed_to_the_terminal = self.run_on_a_terminal(verb)
                 self.assert_produced_a_report(verb, closed)

@@ -118,6 +118,7 @@ has to be the exact inverse of the synthesis here.
 import errno
 import os
 import shlex
+import stat
 
 import corpus
 import findings
@@ -178,6 +179,26 @@ UNPARSEABLE_DECLARATIONS = {
     "justfile": "just",
     "pyproject.toml": "python packaging",
 }
+
+# Every basename this module recognises as a declaration of any kind, and the
+# one input `declaration_entries` matches on. **Defect E3 was these two tables
+# being consulted separately.** `UNPARSEABLE_DECLARATIONS` was matched on the
+# basename alone, with none of the merged/readable-mode validation
+# `DECLARATIONS` already went through — so a symlinked `pyproject.toml` was
+# explained twice, and the two explanations contradicted each other: *git
+# records a symlink there, so this is not the declaration the repository makes
+# at that path*, and, of the same file, *this is a python packaging
+# declaration*. A symlinked `Taskfile.yml` was worse, because its basename is
+# in no stack table: nothing validated it at all, and its only note called a
+# link a task declaration.
+#
+# The union is what the index is asked about, so one entry gets one answer.
+# Which basenames go on to establish a **stack** is `DECLARATIONS`' business
+# and `stacks_and_projects` keeps that separate — the two tables overlap
+# (`pyproject.toml` is in both) and neither contains the other.
+RECOGNISED_DECLARATIONS = tuple(
+    sorted(set(DECLARATIONS) | set(UNPARSEABLE_DECLARATIONS))
+)
 
 # Agent-doc names, at any depth. ADR-16: the-steward reports that these exist
 # and never encodes which one wins — there is no standard, the implementers
@@ -326,6 +347,19 @@ def _shell_word(value):
 # after instance of this project's one defect.
 GENUINE_ABSENCE = (errno.ENOENT, errno.ENOTDIR)
 
+# How a declaration file is opened, and it is the whole of defect E1's fix.
+# **`O_NONBLOCK` is what makes the open itself bounded**: opening a FIFO for
+# reading blocks until something opens the write end, and the working tree can
+# hold one where git records a regular file. The flag is POSIX; where a
+# platform does not have it the open is an ordinary blocking one, because the
+# bound this module can offer is the one the platform has.
+NONBLOCKING_READ = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+
+# How much of a declaration is read per call. A declaration file is small and
+# this is not a cap: the loop reads to end of file, exactly as the `open(...)`
+# it replaced did.
+READ_CHUNK_BYTES = 1 << 16
+
 HIGH = "high"
 LOW = "low"
 
@@ -365,8 +399,31 @@ NOT_A_REPOSITORY = "this directory is not inside a git repository"
 
 NO_STACK = "no declaration file this core can recognise is tracked anywhere"
 NO_COMMAND = "no declaration this core can read proposes one"
-NO_PATH = "no agent document or root README is tracked"
-NO_DOCUMENT = "no tracked document satisfies ADR-10's predicate"
+# **Defect E4 — this reason used to say "no agent document or root README is
+# tracked", and that was a fact about the repository the computation never
+# established.** `survey.paths` is derived from the **present, unmarked ADR-10
+# corpus**, so a tracked `AGENTS.md` the working tree does not hold, or one git
+# marks `linguist-generated`, yields zero paths while `git ls-files` lists it —
+# and the report denied it was tracked. ADR-30 requires the reason for a zero,
+# and ADR-28 is why it has to be one the computation supports: an inaccurate
+# explanation of a zero is worse than none, because a human acts on it. This
+# names the set that came back empty and the two ways a tracked document is not
+# in it.
+NO_PATH = (
+    "no document in the ADR-10 corpus this scan examined is an agent document "
+    "or a root README — and a tracked document the working tree does not hold, "
+    "or one git marks vendored or generated, is not in that corpus"
+)
+# **Both ways the examined set comes back empty, and naming only the first was
+# E4's mistake committed inside E2's fix.** An unmerged `AGENTS.md` *does*
+# satisfy ADR-10's predicate — it is a tracked `*.md` git marks neither
+# vendored nor generated — so once `_merged_documents` removes it, "no tracked
+# document satisfies ADR-10's predicate" is a denial of something true.
+NO_DOCUMENT = (
+    "no tracked document both satisfies ADR-10's predicate and sits at a "
+    "merged index entry — an unmerged one is diagnosed instead, and examined "
+    "by nothing"
+)
 NO_HARNESS = "no harness directory from the fixed list is tracked"
 
 
@@ -518,11 +575,13 @@ def _unmerged_note(relpath, stages):
         claim="git's index records one merged entry for a tracked path",
         observed=(
             "it is unmerged and records %s, so the index does not say one "
-            "thing about it — neither whether it is a tracked executable nor "
-            "which bytes this repository declares at that path. Reading the "
+            "thing about it — not whether it is a tracked executable, not "
+            "which bytes this repository declares at that path, and not "
+            "whether it is a document this scan examined. Reading the "
             "working-tree file would answer out of a file holding both sides "
             "of a merge, and reading the last entry would answer out of "
-            "whichever stage git printed last. Nothing was proposed from it."
+            "whichever stage git printed last. Nothing was proposed from it, "
+            "and it is in no cardinality this report states."
             % _describe_stages(stages)
         ),
         where=_shown(relpath),
@@ -542,7 +601,17 @@ def _basename(relpath):
 
 def declaration_entries(entries, notes):
     """`{path: mode}` for every tracked declaration git records **once, as a
-    regular file** — the one input both P3.1 and the command pass take.
+    regular file** — the one input P3.1, the command pass and every
+    format diagnostic take.
+
+    **The basenames it matches are `RECOGNISED_DECLARATIONS`, the union of the
+    two tables, and narrowing it to `DECLARATIONS` was defect E3.** A file this
+    module recognises at all owes exactly one explanation, and the index is
+    where that explanation comes from; consulting `UNPARSEABLE_DECLARATIONS`
+    separately, on the basename alone, produced two notes that contradicted
+    each other for `pyproject.toml` and no mode check whatsoever for
+    `Taskfile.yml`. Returning the union does not make a `Justfile` a stack:
+    `stacks_and_projects` reads `DECLARATIONS` and skips what is not in it.
 
     **Defect D1, and its shape is an asymmetry rather than an oversight.**
     `stacks_and_projects` matched a *basename* against `DECLARATIONS` and
@@ -571,7 +640,7 @@ def declaration_entries(entries, notes):
     """
     kept = {}
     for relpath in sorted(entries):
-        if _basename(relpath) not in DECLARATIONS:
+        if _basename(relpath) not in RECOGNISED_DECLARATIONS:
             continue
         mode = _merged_mode(entries[relpath])
         if mode is None:
@@ -666,6 +735,13 @@ def stacks_and_projects(declarations):
     projects, nested = {}, []
     for relpath in sorted(declarations):
         basename = _basename(relpath)
+        # `declarations` carries every basename this module recognises
+        # (`RECOGNISED_DECLARATIONS`, defect E3), and a `Justfile` declares a
+        # task runner rather than a project. The stack table is the only thing
+        # that says a repository *contains* something, so it is asked here and
+        # nowhere else.
+        if basename not in DECLARATIONS:
+            continue
         stack = DECLARATIONS[basename]
         directory = _directory_of(relpath)
         projects.setdefault((directory, stack), []).append(relpath)
@@ -686,12 +762,61 @@ def stacks_and_projects(declarations):
 # defect this project keeps re-contracting.
 
 
+def _read_all(descriptor):
+    """Every byte of an open regular file, through the descriptor itself.
+
+    `os.fdopen` is shorter and is deliberately not used: it **takes ownership**
+    of the descriptor, so closing it moves onto a path that only some branches
+    take — and the branch that refuses a non-regular entry, which is the whole
+    point of the caller, would then leak one. It also re-`fstat`s and raises
+    `IsADirectoryError` **from its own constructor**, outside any handler the
+    caller wrote, which is how a directory in place of a tracked file turned a
+    diagnostic into a traceback in the first draft of E1's fix. One reader, one
+    `finally`, one close, and every failure inside a handler that names it.
+    """
+    chunks = []
+    while True:
+        chunk = os.read(descriptor, READ_CHUNK_BYTES)
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+
+
 def _read_bytes(root, relpath):
-    """`(payload, None)` or `(None, reason)`. Never a manufactured negative."""
+    """`(payload, None)` or `(None, reason)`. Never a manufactured negative,
+    and — defect E1 — **never an open that may not return.**
+
+    A tracked regular `package.json` replaced in the working tree by a **FIFO**
+    keeps index mode `100644` at stage 0 and is not a symlink, so both guards
+    this reader's caller already had passed it straight through to
+    `open(location, "rb")` — which blocks until something opens the write end,
+    and nothing ever does. Measured: `scan` was still running at 20s.
+
+    **That is worse than a wrong answer.** Every other refusal in this module
+    ends in a diagnostic a human reads; a scan that never returns says nothing
+    to anybody, and exit 2 — the status that means *no finding set can be
+    trusted* — is unreachable from inside a blocked syscall. ADR-13
+    distinguishes three exit codes on the premise that the tool has an outcome.
+
+    **The check is after the open, not before it, and that is the point.**
+    `os.lstat` then `open` is the shorter spelling and leaves a window: between
+    the two calls the entry can become a FIFO, and the open blocks anyway. It
+    would make the hang unlikely rather than unreachable, which is the shape of
+    fix this project keeps having to undo. Opening with `O_NONBLOCK` cannot
+    block on any file type, so by the time the kind is known the unbounded step
+    is already behind us — and `os.fstat` then answers about **this
+    descriptor**, not about a path something may have swapped.
+
+    `stat.filemode` names the kind so the diagnostic does not need a table of
+    file types this module would have to keep in step with the kernel's — the
+    same argument `_shown` makes for `repr`. A **directory** at the path is the
+    second entry in that class and is answered by the same sentence: the old
+    `open()` reported it as `EISDIR`, and losing that would have traded one
+    hostile-entry defect for another.
+    """
     location = paths.contain(root, relpath.replace("/", os.sep))
     try:
-        with open(location, "rb") as handle:
-            return handle.read(), None
+        descriptor = os.open(location, NONBLOCKING_READ)
     except OSError as exc:
         if exc.errno in GENUINE_ABSENCE:
             return None, (
@@ -702,6 +827,24 @@ def _read_bytes(root, relpath):
             "it could not be opened (%s), so nothing was read out of it"
             % errno.errorcode.get(exc.errno, exc.errno)
         )
+    try:
+        mode = os.fstat(descriptor).st_mode
+        if not stat.S_ISREG(mode):
+            return None, (
+                "git records a regular file there, but the working tree holds "
+                "%s. Only a regular file is read: a FIFO or a device yields no "
+                "bytes until something else opens the other end, and a "
+                "read-only scan that never returns reports nothing to anybody"
+                % _shown(stat.filemode(mode))
+            )
+        return _read_all(descriptor), None
+    except OSError as exc:
+        return None, (
+            "it could not be read (%s), so nothing was read out of it"
+            % errno.errorcode.get(exc.errno, exc.errno)
+        )
+    finally:
+        os.close(descriptor)
 
 
 def _utf8_encodable(value):
@@ -1125,6 +1268,39 @@ def _documents(root, document):
     return corpus.enumerate_documents(root, document).documents
 
 
+def _merged_documents(documents, entries):
+    """The corpus, minus every document the index does not say one thing about.
+
+    **Defect E2 — the report contradicted itself.** `survey`'s pass over the
+    index already emits one `UNMERGED_ENTRY` diagnostic per unmerged path,
+    whose message is *the index does not say one thing about it ... Nothing was
+    proposed from it.* The corpus then admitted the same path independently,
+    because `git ls-files -- '*.md'` lists an unmerged path once per stage and
+    the enumerator has no reason to care — so an unmerged `AGENTS.md` became a
+    **`high`-confidence declared path record** and a docs-scope entry in the
+    very report that said nothing had been proposed from it. Reading the
+    working-tree file to reach that conclusion is the same defect
+    `_unmerged_note` describes for commands: the bytes there hold both sides of
+    a merge.
+
+    **The predicate is the index's, and only for a path the index holds.** A
+    document the manifest records as `rendered` is in the corpus and not in
+    `git ls-files` at all — `generate`'s output is untracked until a human
+    stages it (ADR-10) — so *absent from the index* must pass, and only *present
+    and unmerged* is refused. Requiring index membership instead would delete
+    the greenfield corpus.
+
+    **No diagnostic is emitted here, deliberately.** One fact, one finding
+    (`_unmerged_note`): the entry has been named already, and a second note
+    over it would inflate the count ADR-30 makes the report turn on.
+    """
+    return tuple(
+        relpath
+        for relpath in documents
+        if relpath not in entries or _merged_mode(entries[relpath]) is not None
+    )
+
+
 def _docs_scope(documents, notes):
     """The inferred `docsScope` record, or None where the corpus is empty.
 
@@ -1262,7 +1438,16 @@ def survey(root, document=None):
         # not in that table, so nothing named them anywhere. The basename is
         # matched at any depth, and the nesting becomes a clause of the note
         # rather than a reason to skip it.
-        if basename in UNPARSEABLE_DECLARATIONS:
+        #
+        # **Only for an entry that *is* a declaration, and gating this on the
+        # basename alone was defect E3.** The index is what says whether this
+        # repository declares anything at that path; where it records a
+        # symlink, a gitlink or an unmerged entry, that fact has been named
+        # once already and "this core cannot parse the format" would be a
+        # second, contradicting explanation for one file — it asserts the
+        # entry is a declaration of a format, which is precisely what the
+        # first note says it is not.
+        if basename in UNPARSEABLE_DECLARATIONS and relpath in declarations:
             notes.append(
                 Note(
                     id=UNPARSEABLE_DECLARATION,
@@ -1335,7 +1520,10 @@ def survey(root, document=None):
         (value, unique[value][1]) for value in unique
     )
 
-    found.documents = _documents(root, document)
+    # The same merged/stage question the command and stack passes ask, asked of
+    # the corpus too (defect E2). The diagnostic for what it removes was
+    # emitted by the pass above.
+    found.documents = _merged_documents(_documents(root, document), entries)
     found.docs_scope = _docs_scope(found.documents, notes)
     found.paths = _declared_paths(found.documents, notes)
     found.harness = _harness(entries)
