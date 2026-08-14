@@ -34,6 +34,11 @@ ALLOWED_STDLIB = {
     "os",
     "re",
     "shutil",
+    # ADR-18's timeout has to bound the **call**, and git's descendants
+    # inherit our pipes: `SIGKILL` to the child's process group is what
+    # releases a reader a hook's daemon is holding open. `child.kill()` alone
+    # signals git and leaves the pipe — and the join on it — open forever.
+    "signal",
     "stat",
     "subprocess",
     "sys",
@@ -44,8 +49,18 @@ ALLOWED_STDLIB = {
     # stays the single bound on the run. `selectors` was the alternative and is
     # narrower: it cannot pump stdin and both outputs on Windows at all.
     "threading",
+    # **`time.monotonic` only** — a duration, never a date. ADR-2 bans
+    # observation timestamps and ADR-8 bans a clock in a renderer; a deadline
+    # is neither. It is here because the timeout has to bound the whole call,
+    # cleanup included, and one monotonic deadline is how the remaining budget
+    # is known at each step. `test_the_only_clock_is_monotonic` is the guard.
+    "time",
     "traceback",
 }
+
+# The one attribute of `time` the core may use. A wall clock would be an
+# observation timestamp in all but name (ADR-2).
+ALLOWED_CLOCK_ATTRIBUTES = {"monotonic"}
 
 SIBLING_SKILLS = ("the-foreman", "codex-gate", "handoff", "keep-it-simple",
                   "the-cartographer")
@@ -98,6 +113,28 @@ class ImportAuditTest(unittest.TestCase):
                     "%s imports %r, which is neither allowed stdlib nor a core "
                     "module" % (module, name),
                 )
+
+    def test_the_only_clock_is_monotonic(self):
+        """A deadline is a duration; anything else is an observation timestamp.
+
+        `time` is on the allowlist for `monotonic` alone. `time.time()`,
+        `strftime` or a `datetime` would put *when the tool ran* within reach
+        of a rendered artifact, which ADR-2 bans outright because it destroys
+        render-and-diff.
+        """
+        for module, source in sorted(core_sources().items()):
+            for node in ast.walk(ast.parse(source)):
+                if (
+                    isinstance(node, ast.Attribute)
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id == "time"
+                ):
+                    self.assertIn(
+                        node.attr,
+                        ALLOWED_CLOCK_ATTRIBUTES,
+                        "%s reads time.%s — the core's only clock is a "
+                        "monotonic deadline" % (module, node.attr),
+                    )
 
     def test_no_import_is_third_party(self):
         """The named hazards, by name, so a regression fails loudly."""
@@ -217,6 +254,70 @@ class SubprocessDisciplineTest(unittest.TestCase):
                 "the same function" % function,
             )
 
+    def blocking_calls(self, source):
+        """Every `<name>.wait(…)` / `<name>.join(…)` and whether it is bounded.
+
+        Receiver-typed on purpose: `" ".join(args)` and `os.path.join(a, b)`
+        are not blocking calls, and both are all over this module. A plain
+        `ast.Name` receiver is what a process handle and a thread are.
+        """
+        found = []
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not isinstance(func, ast.Attribute) or func.attr not in ("wait", "join"):
+                continue
+            if not isinstance(func.value, ast.Name):
+                continue
+            bounded = False
+            for keyword in node.keywords:
+                if keyword.arg != "timeout":
+                    continue
+                value = keyword.value
+                if not (isinstance(value, ast.Constant) and value.value is None):
+                    bounded = True
+            found.append(("%s.%s" % (func.value.id, func.attr), bounded))
+        return found
+
+    def test_every_blocking_wait_and_join_is_bounded(self):
+        """ADR-18's bound is on the **call**, not on the first `wait`.
+
+        `test_every_spawn_is_git_with_an_argument_vector` is satisfied by
+        *one* bounded wait somewhere in the spawning function, and that is
+        exactly how `_run` shipped an unbounded `child.wait()` and an
+        unbounded `worker.join()` in its cleanup: the audit saw the bounded
+        wait above them and stopped looking. A pipe held open by something git
+        spawned then blocked a reader, the join waited on it forever, and a
+        30-second command hung indefinitely. Every one of them, or the bound
+        is decorative.
+        """
+        source = S.read_text(os.path.join(S.CORE_DIR, "paths.py"))
+        calls = self.blocking_calls(source)
+        self.assertTrue(calls, "no blocking call found — the audit is vacuous")
+        unbounded = [name for name, bounded in calls if not bounded]
+        self.assertEqual(
+            [],
+            unbounded,
+            "paths.py blocks with no timeout: %s. Every wait and join must "
+            "carry a bound taken from the run's deadline (ADR-18)." % unbounded,
+        )
+
+    def test_the_blocking_call_audit_detects_an_unbounded_join(self):
+        """Its own non-vacuity, and its own false positives, planted."""
+        planted = (
+            "import os\n"
+            "def _run(args):\n"
+            "    child.wait(timeout=5)\n"
+            "    worker.join()\n"
+            "    return ' '.join(args) + os.path.join('a', 'b')\n"
+        )
+        self.assertEqual(
+            [("child.wait", True), ("worker.join", False)],
+            self.blocking_calls(planted),
+            "the audit must see both blocking calls and neither string join",
+        )
+
     def test_the_timeout_audit_detects_an_unbounded_wait(self):
         """The audit's own non-vacuity, planted in a string: a `Popen` whose
         only wait is bare must not satisfy it."""
@@ -249,28 +350,44 @@ class SubprocessDisciplineTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# ONE disease, and now both of its forms under one allowlist.
+# ONE disease, and now three of its forms under one allowlist.
 #
 # The shape is "a failed or unsafe probe reported as a confident answer". It
-# has arrived seven times in five layers, and it wears exactly two costumes:
+# has arrived eleven times in six layers, and it wears exactly three costumes:
 #
-#   RAW_STATUS  — `if code != 0: return <an answer>`, which reads a git
-#                 invocation that failed as one of the caller's own answers;
-#   SWALLOWED   — `except OSError: return <a falsy literal>`, which reads a
-#                 filesystem call that failed the same way. `_entries`
-#                 returned `[]` for an unreadable hooks directory and
-#                 `os.path.isdir` returned False for it, so A3 reported *no
-#                 directory at that path* about a clone nobody managed to look
-#                 at.
+#   RAW_STATUS    — `if code != 0: return <an answer>`, which reads a git
+#                   invocation that failed as one of the caller's own answers;
+#   SWALLOWED     — `except OSError: return <a falsy literal>`, which reads a
+#                   filesystem call that failed the same way. `_entries`
+#                   returned `[]` for an unreadable hooks directory and
+#                   `os.path.isdir` returned False for it, so A3 reported *no
+#                   directory at that path* about a clone nobody managed to
+#                   look at.
+#   THREAD_SWALLOW— `except OSError: return` **inside a pump thread**, which
+#                   is the same fabrication with the return value moved. This
+#                   one arrived last, and it arrived in the *fix* for the
+#                   memory bug: `_BoundedReader.run` caught every pipe error
+#                   and ended the thread, `_feed` did the same with `pass`,
+#                   and `_run` then handed back a successful result carrying
+#                   whatever bytes had arrived first. **The guard above could
+#                   not see it** — it exempts a bare `return` and a `pass`
+#                   precisely because a thread ending is not an answer to
+#                   anybody. That exemption is true of the *statement* and
+#                   false of the *situation*: a thread cannot raise into its
+#                   caller, so a handler that records nothing leaves the
+#                   caller reading a partial accumulation as a whole one.
+#                   Hence the third detector, and hence its rule: in a thread
+#                   body a probe-failure handler must **re-raise or record**.
 #
-# A second guard for the second costume would be a second thing to remember.
-# One allowlist, keyed the same way, audited by the same meta-tests: a new site
-# in either form fails, and so does an entry whose site is gone — an allowlist
+# A separate guard per costume would be three things to remember. One
+# allowlist, keyed the same way, audited by the same meta-tests: a new site in
+# any form fails, and so does an entry whose site is gone — an allowlist
 # nobody prunes is how an exception becomes a habit.
 # ---------------------------------------------------------------------------
 
 RAW_STATUS = "raw-git-status"
 SWALLOWED = "swallowed-os-error"
+THREAD_SWALLOW = "unrecorded-thread-failure"
 
 FAILED_PROBE_ALLOWLIST = {
     ("paths.py", "repo_root"): (
@@ -292,6 +409,44 @@ FAILED_PROBE_ALLOWLIST = {
 }
 
 DOCUMENTED_AMBIGUITY_MARKER = "DOCUMENTED AMBIGUITY"
+
+# What every allowlisted exception's reason must name, per costume — a status
+# for a git one, the error it cannot tell apart for a filesystem one, and for
+# a pump, why nobody downstream needs the failure it is discarding.
+REASON_MUST_NAME = {
+    RAW_STATUS: "exits",
+    SWALLOWED: "errno",
+    THREAD_SWALLOW: "thread",
+}
+
+# `paths.py` as it shipped, and as the previous guard could not see it. Kept
+# as a fixture rather than a paraphrase: the point of the widening is that
+# **this exact code** now fails the audit.
+SHIPPED_BOUNDED_READER = (
+    "import threading\n"
+    "class _BoundedReader(threading.Thread):\n"
+    "    def run(self):\n"
+    "        try:\n"
+    "            while True:\n"
+    "                chunk = self.handle.read(4)\n"
+    "                if not chunk:\n"
+    "                    return\n"
+    "                self._chunks.append(chunk)\n"
+    "        except (OSError, ValueError):\n"
+    "            return\n"
+    "        finally:\n"
+    "            _close(self.handle)\n"
+    "def _feed(handle, payload):\n"
+    "    try:\n"
+    "        handle.write(payload)\n"
+    "        handle.flush()\n"
+    "    except (OSError, ValueError):\n"
+    "        pass\n"
+    "    finally:\n"
+    "        _close(handle)\n"
+    "def start(handle, payload):\n"
+    "    return threading.Thread(target=_feed, args=(handle, payload))\n"
+)
 
 # Handlers that catch these are catching *a probe that did not work*. A
 # narrower `except ValueError` around a parse is a different thing and is not
@@ -317,6 +472,94 @@ def _is_falsy_literal(node):
     return False
 
 
+def catches_a_probe_failure(handler):
+    if handler.type is None:
+        return True
+    names = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+    return any(getattr(name, "id", None) in PROBE_FAILURES for name in names)
+
+
+def consults_errno(handler):
+    for node in ast.walk(handler):
+        if isinstance(node, ast.Attribute) and node.attr == "errno":
+            return True
+        if isinstance(node, ast.Name) and node.id == "errno":
+            return True
+    return False
+
+
+def records_or_reraises(handler):
+    """Did the handler leave evidence a caller can read?
+
+    Three ways, and nothing else counts. **Re-raising** hands the failure up.
+    **Assigning to an attribute** puts it on shared state, which is the only
+    channel a thread has. **Consulting `errno`** means the handler decided
+    which error it was, so `ENOENT` answering *absent* is a fact rather than a
+    fabrication. A bare `return`, a `pass`, and an assignment to a local that
+    dies with the frame are all the same thing: nobody outside can tell the
+    difference between this and success.
+    """
+    for node in ast.walk(handler):
+        if isinstance(node, ast.Raise):
+            return True
+        if isinstance(node, (ast.Assign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(isinstance(target, ast.Attribute) for target in targets):
+                return True
+    return consults_errno(handler)
+
+
+def thread_bodies(tree):
+    """Every function that runs **as** a thread: a `Thread` subclass's methods,
+    and any function handed to one as `target=`."""
+    targets = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if getattr(node.func, "attr", getattr(node.func, "id", None)) != "Thread":
+            continue
+        for keyword in node.keywords:
+            if keyword.arg == "target":
+                named = getattr(
+                    keyword.value, "attr", getattr(keyword.value, "id", None)
+                )
+                if named:
+                    targets.add(named)
+    bodies = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            bases = [
+                getattr(base, "attr", getattr(base, "id", None)) for base in node.bases
+            ]
+            if "Thread" in bases:
+                bodies.extend(
+                    child
+                    for child in node.body
+                    if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                )
+        elif isinstance(node, ast.FunctionDef) and node.name in targets:
+            bodies.append(node)
+    return bodies
+
+
+def thread_swallow_sites(source):
+    """(function, handler) for every probe-failure handler in a thread body
+    that neither re-raises nor records.
+
+    The costume `swallow_sites` is blind to by construction: it exempts a bare
+    `return` and a `pass`, and in a thread that is exactly how the failure
+    disappears.
+    """
+    found = []
+    for body in thread_bodies(ast.parse(source)):
+        for node in ast.walk(body):
+            if not isinstance(node, ast.ExceptHandler):
+                continue
+            if catches_a_probe_failure(node) and not records_or_reraises(node):
+                found.append((body.name, node))
+    return found
+
+
 def swallow_sites(source):
     """(function, handler) for every `except <probe failure>` that returns a
     manufactured negative **without looking at which error it was**.
@@ -327,20 +570,6 @@ def swallow_sites(source):
     done the work; one that does not has not.
     """
     found = []
-
-    def catches_a_probe_failure(handler):
-        if handler.type is None:
-            return True
-        names = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
-        return any(getattr(name, "id", None) in PROBE_FAILURES for name in names)
-
-    def consults_errno(handler):
-        for node in ast.walk(handler):
-            if isinstance(node, ast.Attribute) and node.attr == "errno":
-                return True
-            if isinstance(node, ast.Name) and node.id == "errno":
-                return True
-        return False
 
     def visit(parent, enclosing):
         for child in ast.iter_child_nodes(parent):
@@ -403,7 +632,7 @@ def function_source(source, name):
 
 
 def failed_probe_sites(sources):
-    """{(module, function): costume} across `sources` — **both** detectors.
+    """{(module, function): costume} across `sources` — **all three** detectors.
 
     The one aggregation the audit calls, so pointing it at a planted module
     exercises the same code path as pointing it at the core.
@@ -415,6 +644,8 @@ def failed_probe_sites(sources):
             sites[(module, function)] = RAW_STATUS
         for function, _handler in swallow_sites(source):
             sites[(module, function)] = SWALLOWED
+        for function, _handler in thread_swallow_sites(source):
+            sites[(module, function)] = THREAD_SWALLOW
     return sites
 
 
@@ -447,14 +678,14 @@ class FailedProbeDisciplineTest(unittest.TestCase):
     def observed_sites(self):
         return failed_probe_sites(core_sources())
 
-    def test_the_aggregate_audit_reports_BOTH_costumes(self):
+    def test_the_aggregate_audit_reports_ALL_THREE_costumes(self):
         """The counter-weight the first mutation run found missing.
 
         Every other test here either checks one detector in isolation or
         checks the aggregate against a core that currently has no violations —
         so deleting the swallow branch from `failed_probe_sites` left the whole
         class green. This runs the **aggregate**, the one the audit above
-        calls, over a planted module wearing each costume, and fails if either
+        calls, over a planted module wearing each costume, and fails if any
         stops being collected.
         """
         planted = {
@@ -474,13 +705,84 @@ class FailedProbeDisciplineTest(unittest.TestCase):
                 "    except OSError:\n"
                 "        return []\n"
             ),
+            "pump.py": SHIPPED_BOUNDED_READER,
         }
         self.assertEqual(
             {
                 ("raw.py", "is_tracked"): RAW_STATUS,
                 ("swallowed.py", "_entries"): SWALLOWED,
+                ("pump.py", "run"): THREAD_SWALLOW,
+                ("pump.py", "_feed"): THREAD_SWALLOW,
             },
             failed_probe_sites(planted),
+        )
+
+    def test_the_thread_detector_catches_the_instance_that_shipped(self):
+        """Instance eleven, planted verbatim.
+
+        This is the test that says the widening was worth doing: the code
+        below is what `paths.py` actually contained, `swallow_sites` returns
+        nothing for it, and `thread_swallow_sites` returns both pumps.
+        """
+        self.assertEqual([], swallow_sites(SHIPPED_BOUNDED_READER))
+        self.assertEqual(
+            ["run", "_feed"],
+            [name for name, _handler in thread_swallow_sites(SHIPPED_BOUNDED_READER)],
+        )
+
+    def test_the_thread_detector_accepts_a_handler_that_records(self):
+        """The distinction the rule turns on: a thread cannot raise, so it
+        must leave the failure somewhere the caller reads."""
+        recording = (
+            "import threading\n"
+            "class _BoundedReader(threading.Thread):\n"
+            "    def run(self):\n"
+            "        try:\n"
+            "            self.pump()\n"
+            "        except (OSError, ValueError) as exc:\n"
+            "            self.failure = exc\n"
+        )
+        self.assertEqual([], thread_swallow_sites(recording))
+
+    def test_the_thread_detector_accepts_a_handler_that_reraises(self):
+        reraising = (
+            "import threading\n"
+            "class _Feeder(threading.Thread):\n"
+            "    def run(self):\n"
+            "        try:\n"
+            "            self.pump()\n"
+            "        except OSError:\n"
+            "            raise\n"
+        )
+        self.assertEqual([], thread_swallow_sites(reraising))
+
+    def test_the_thread_detector_ignores_a_handler_outside_a_thread(self):
+        """`_close` closing a pipe is not a probe, and the rule is about what
+        a **pump** does with a failure it is the only witness to."""
+        ordinary = (
+            "def _close(handle):\n"
+            "    try:\n"
+            "        handle.close()\n"
+            "    except (OSError, ValueError):\n"
+            "        pass\n"
+        )
+        self.assertEqual([], thread_swallow_sites(ordinary))
+
+    def test_a_local_assignment_is_not_recording(self):
+        """The near-miss: assigning to a local dies with the frame, so the
+        caller still cannot tell the pump from a clean run."""
+        local_only = (
+            "import threading\n"
+            "class _BoundedReader(threading.Thread):\n"
+            "    def run(self):\n"
+            "        try:\n"
+            "            self.pump()\n"
+            "        except OSError as exc:\n"
+            "            problem = exc\n"
+            "            return\n"
+        )
+        self.assertEqual(
+            ["run"], [name for name, _h in thread_swallow_sites(local_only)]
         )
 
     def test_every_failed_probe_site_is_a_documented_exception(self):
@@ -581,21 +883,16 @@ class FailedProbeDisciplineTest(unittest.TestCase):
         for (module, function), (form, reason) in sorted(
             FAILED_PROBE_ALLOWLIST.items()
         ):
-            self.assertIn(form, (RAW_STATUS, SWALLOWED), (module, function))
+            self.assertIn(form, REASON_MUST_NAME, (module, function))
             self.assertGreater(
                 len(reason), 80, "%s:%s has a token reason" % (module, function)
             )
-            if form == RAW_STATUS:
-                self.assertIn(
-                    "exits", reason, "%s:%s does not name a status" % (module, function)
-                )
-            else:
-                self.assertIn(
-                    "errno",
-                    reason,
-                    "%s:%s does not name the error it cannot tell apart"
-                    % (module, function),
-                )
+            self.assertIn(
+                REASON_MUST_NAME[form],
+                reason,
+                "%s:%s does not say what makes its costume unavoidable here"
+                % (module, function),
+            )
             source = S.read_text(os.path.join(S.CORE_DIR, module))
             body = function_source(source, function)
             self.assertIsNotNone(body, "%s:%s not found" % (module, function))

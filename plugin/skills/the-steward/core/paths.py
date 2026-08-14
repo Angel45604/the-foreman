@@ -6,13 +6,23 @@ target (ADR-1, bootstrap form).
 """
 
 import os
+import signal
 import subprocess
 import threading
+import time
 
 # ADR-18: the only child process is git, with an argument vector (never a
 # shell string), an explicit timeout, and an explicit output cap.
 GIT_TIMEOUT_SECONDS = 30
 GIT_OUTPUT_CAP_BYTES = 8 * 1024 * 1024
+
+# What **cleanup** gets after the child's own bound has run out, so the call
+# is bounded end to end and not only up to the first `wait`. Killing a process
+# group and draining two closed pipes is a millisecond operation; this is the
+# margin, not a budget anything is expected to use. The whole contract is
+# therefore: `_run` returns, or raises, within
+# GIT_TIMEOUT_SECONDS + GIT_CLEANUP_GRACE_SECONDS. Never unbounded.
+GIT_CLEANUP_GRACE_SECONDS = 5
 
 # How much of a pipe is taken per read. Small enough that the cap is crossed
 # within one chunk of where it truly falls, large enough not to syscall a
@@ -96,10 +106,19 @@ class _BoundedReader(threading.Thread):
     the thing ADR-10 refuses to report over. Reading continues to EOF after
     the kill so the child can never block on a full pipe and the thread always
     finishes.
+
+    **A thread cannot raise into the caller, so it must record.** This class
+    used to catch every `OSError`/`ValueError` and simply return, reasoning
+    that the error is the kill it asked for. That reasoning holds *only* when
+    a breach or a timeout was recorded, and nothing checked: with neither set,
+    `_run` handed back a **successful** result carrying however many bytes
+    arrived before the pipe broke. `reached_eof` and `failure` are the two
+    facts that make the difference legible, and `_run` refuses to report
+    unless the read ended at a genuine end of stream.
     """
 
     def __init__(self, label, handle, cap, on_breach):
-        threading.Thread.__init__(self)
+        threading.Thread.__init__(self, name=label)
         self.daemon = True
         self.label = label
         self.handle = handle
@@ -107,6 +126,8 @@ class _BoundedReader(threading.Thread):
         self.on_breach = on_breach
         self.total = 0
         self.over_cap = False
+        self.reached_eof = False
+        self.failure = None
         self._chunks = []
 
     def run(self):
@@ -114,6 +135,7 @@ class _BoundedReader(threading.Thread):
             while True:
                 chunk = self.handle.read(_READ_CHUNK_BYTES)
                 if not chunk:
+                    self.reached_eof = True
                     return
                 self.total += len(chunk)
                 if self.over_cap:
@@ -124,10 +146,8 @@ class _BoundedReader(threading.Thread):
                     self.on_breach()
                     continue
                 self._chunks.append(chunk)
-        except (OSError, ValueError):
-            # The pipe was closed under us by the kill this class asked for.
-            # It is not a fact about git's output; `over_cap` already is.
-            return
+        except (OSError, ValueError) as exc:
+            self.failure = exc
         finally:
             _close(self.handle)
 
@@ -135,24 +155,43 @@ class _BoundedReader(threading.Thread):
         return b"".join(self._chunks)
 
 
+class _Feeder(threading.Thread):
+    """Write the child's stdin on its own thread, so a child that never reads
+    it cannot outlast the timeout by blocking this one.
+
+    **Records, for the same reason `_BoundedReader` does.** `git check-attr -z
+    --stdin` answers about exactly the paths it was fed, with exit 0 and no
+    sign of how many that was, so a half-written corpus comes back as a
+    complete, confident answer about a corpus nobody asked git about — ADR-30's
+    vacuous pass reached through the *input* side. `delivered` is the fact
+    `_run` requires before it will report.
+    """
+
+    def __init__(self, handle, payload):
+        threading.Thread.__init__(self, name="stdin")
+        self.daemon = True
+        self.handle = handle
+        self.payload = payload
+        self.delivered = False
+        self.failure = None
+
+    def run(self):
+        try:
+            if self.payload:
+                self.handle.write(self.payload)
+                self.handle.flush()
+            self.delivered = True
+        except (OSError, ValueError) as exc:
+            self.failure = exc
+        finally:
+            _close(self.handle)
+
+
 def _close(handle):
     try:
         handle.close()
     except (OSError, ValueError):
         pass
-
-
-def _feed(handle, payload):
-    """Write the child's stdin on its own thread, so a child that never reads
-    it cannot outlast the timeout by blocking this one."""
-    try:
-        if payload:
-            handle.write(payload)
-        handle.flush()
-    except (OSError, ValueError):
-        pass
-    finally:
-        _close(handle)
 
 
 def _run(cwd, args, timeout, cap, stdin):
@@ -193,6 +232,7 @@ def _run(cwd, args, timeout, cap, stdin):
         timeout = GIT_TIMEOUT_SECONDS
     if cap is None:
         cap = GIT_OUTPUT_CAP_BYTES
+    grace = GIT_CLEANUP_GRACE_SECONDS
     env = dict(os.environ)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     try:
@@ -203,35 +243,38 @@ def _run(cwd, args, timeout, cap, stdin):
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            # ADR-18, and the reason the timeout can be honoured at all: the
+            # child gets its own session, so everything git spawns is in one
+            # process group we can take down together. See `_kill_tree`.
+            start_new_session=True,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise GitCommandFailed(_could_not_run(args, cwd, exc))
 
+    deadline = time.monotonic() + timeout
+
     def kill():
-        try:
-            child.kill()
-        except OSError:
-            pass
+        _kill_tree(child)
 
     readers = (
         _BoundedReader("stdout", child.stdout, cap, kill),
         _BoundedReader("stderr", child.stderr, cap, kill),
     )
-    writer = threading.Thread(target=_feed, args=(child.stdin, stdin))
-    writer.daemon = True
+    writer = _Feeder(child.stdin, stdin)
     workers = readers + (writer,)
     for worker in workers:
         worker.start()
+
+    fault = None
     try:
-        try:
-            child.wait(timeout=timeout)
-        except (OSError, subprocess.SubprocessError) as exc:
-            kill()
-            child.wait()
-            raise GitCommandFailed(_could_not_run(args, cwd, exc))
-    finally:
-        for worker in workers:
-            worker.join()
+        child.wait(timeout=_remaining(deadline))
+    except (OSError, subprocess.SubprocessError) as exc:
+        kill()
+        fault = exc
+    forced, stuck = _drain(child, workers, deadline, grace)
+
+    if fault is not None:
+        raise GitCommandFailed(_could_not_run(args, cwd, fault))
     for reader in readers:
         if reader.over_cap:
             raise OutputCapExceeded(
@@ -240,7 +283,131 @@ def _run(cwd, args, timeout, cap, stdin):
                 "reported — refusing to report over a corpus that was not "
                 "read whole." % (" ".join(args), reader.total, reader.label, cap)
             )
+    if stuck or forced:
+        raise GitCommandFailed(
+            "the-steward: `git %s` in %r left %s still open after the process "
+            "exited, so the read had to be forced closed%s. Refusing to report "
+            "over a stream that did not end on its own."
+            % (
+                " ".join(args),
+                cwd,
+                ", ".join(worker.name for worker in (stuck or workers)),
+                " and could not be drained even then" if stuck else "",
+            )
+        )
+    for reader in readers:
+        if reader.failure is not None or not reader.reached_eof:
+            raise GitCommandFailed(
+                "the-steward: `git %s` in %r: the %s pipe failed before end of "
+                "stream (%s). Refusing to report over output we did not read "
+                "whole."
+                % (
+                    " ".join(args),
+                    cwd,
+                    reader.label,
+                    reader.failure or "no end-of-stream was reached",
+                )
+            )
+    if not writer.delivered:
+        raise GitCommandFailed(
+            "the-steward: `git %s` in %r: its stdin was not fully delivered "
+            "(%s), so it answered about less than it was asked. Refusing to "
+            "report over an input git never received."
+            % (" ".join(args), cwd, writer.failure or "the write did not finish")
+        )
     return _Completed(child.returncode, readers[0].data(), readers[1].data())
+
+
+def _remaining(deadline):
+    """Seconds left, never negative — `wait(timeout=0)` still polls once."""
+    return max(deadline - time.monotonic(), 0.0)
+
+
+def _kill_tree(child):
+    """Kill git **and whatever it spawned holding our pipes**.
+
+    `child.kill()` signals git alone. A hook, a credential helper, a pager or
+    an `ssh` multiplexer that git started inherits stdout and stderr, and it
+    keeps the write end open after git is gone — so a reader never sees end of
+    stream and a join on it never returns. That is how a 30-second timeout
+    became an indefinite hang: the bound was on `wait`, and the pipes outlived
+    the process it bounded. The child is spawned with `start_new_session=True`
+    precisely so one signal reaches its whole group and nothing outside it.
+
+    **The group is addressed as `child.pid`, never via `os.getpgid`.** The
+    case that matters most is the one where git has already exited and been
+    reaped — a hook backgrounded a daemon and left — and `getpgid` on a reaped
+    pid raises `ProcessLookupError`, so the lookup fails exactly when the
+    orphan is the whole problem. `start_new_session=True` makes the child the
+    leader of its own group, so its pid *is* the group id, and that number
+    stays addressable while any member is alive.
+
+    A failed signal is not swallowed into an assumption: the caller's next act
+    is a bounded join, and a group that did not die shows up there as a stuck
+    pump and a fault.
+    """
+    if hasattr(os, "killpg"):
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except OSError:
+            pass
+    try:
+        child.kill()
+    except OSError:
+        pass
+
+
+def _join_within(workers, budget):
+    """Join each worker against **one** shared budget. Returns those alive."""
+    end = time.monotonic() + max(budget, 0.0)
+    stuck = []
+    for worker in workers:
+        worker.join(timeout=_remaining(end))
+        if worker.is_alive():
+            stuck.append(worker)
+    return tuple(stuck)
+
+
+def _drain(child, workers, deadline, grace):
+    """Finish the pumps inside the deadline. Returns (forced, still stuck).
+
+    The ordinary path costs nothing: the child has exited, both pipes are at
+    end of stream, and every join returns at once. When one does not, the
+    holder is a descendant of the child, so the group is taken down and the
+    joins are retried against the cleanup grace. **Having to force it is
+    itself a fault** — a stream we closed is not a stream that ended — which
+    is why `forced` is reported rather than absorbed.
+
+    **Killing the group is the only lever, and closing the pipe is not one.**
+    Calling `close()` on a buffered pipe another thread is blocked inside
+    `read()` on waits for that thread's lock, so "unblock the reader by
+    closing its handle" is an unbounded wait wearing a cleanup costume — the
+    same defect one layer further in. If the group will not die, the pump is
+    left where it is (it is a daemon thread and holds nothing the process
+    needs) and the call returns a fault instead of waiting.
+    """
+    forced = False
+    stuck = _join_within(workers, _remaining(deadline))
+    if stuck:
+        forced = True
+        _kill_tree(child)
+        stuck = _join_within(stuck, grace)
+    _reap(child, grace)
+    return forced, stuck
+
+
+def _reap(child, budget):
+    """Collect a child we killed, bounded, so no zombie outlives the call.
+
+    On the ordinary path the child has already been waited for and this
+    returns at once. On a kill path the caller is raising regardless, so this
+    is bookkeeping and not a source of answers: nothing downstream reads
+    `returncode` on a run that faulted.
+    """
+    try:
+        child.wait(timeout=budget)
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def _could_not_run(args, cwd, exc):

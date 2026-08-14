@@ -11,13 +11,16 @@ deleted with the record-is-not-a-grant rule) and `--version` (which never
 existed — the core's version is a line in `doctor`'s report).
 """
 
+import errno
 import os
 import traceback
 
 import atomic
 import bootstrap
+import digest
 import findings
 import hooks
+import inventory
 import manifest
 import paths
 
@@ -65,25 +68,97 @@ class Context(object):
         self.manifest = manifest
 
     def core_is_installed(self):
-        """Is there a core at the contract path in *this* repository?
-
-        The report advertises `python3 -B tools/steward …` only when the
-        answer is yes — printing it otherwise names a path we did not install.
-
-        **`os.path.isfile` alone answered yes for a core that is not in this
-        repository.** It follows symlinks, so a `tools/steward` pointing out of
-        the working tree resolved to somebody else's `__main__.py` and the
-        footer advertised it. `paths.contain` proves the path is in the tree
-        first and raises ContainmentError (exit 2) when it is not — ADR-26,
-        and the same symlink hole as the corpus and the manifest.
-        """
+        """Is there a core **we installed** at the contract path here?"""
         if self.repo_root is None:
             return False
-        located = paths.contain(
-            self.repo_root,
-            os.path.join(*(INSTALLED_CORE_DIRECTORY.split("/") + ["__main__.py"])),
+        return installed_core_is_ours(self.repo_root, self.manifest)
+
+
+# ADR-2's kind for bytes we copied rather than rendered. A vendored core is
+# `copied`: there is no renderer for it, so C4 never re-renders it.
+COPIED_KIND = "copied"
+
+
+def _recorded_copies(document):
+    """{path: sha256} for every `copied` record in the manifest."""
+    stored = {}
+    for record in document.get("recorded", []):
+        if record.get("kind") == COPIED_KIND:
+            stored[record.get("path")] = record.get("sha256")
+    return stored
+
+
+def installed_core_is_ours(root, document):
+    """Is the core at `tools/steward` one **this repository's manifest owns**?
+
+    **`os.path.isfile(tools/steward/__main__.py)` is not an answer to that
+    question, and answering it that way was the eleventh instance of this
+    project's one bug.** Any directory somebody else put at the contract path
+    is true of it the moment it holds a file of that name — an unrelated
+    vendored tool, an empty placeholder, an in-tree symlink to a core copied
+    from elsewhere — and the footer then advertises
+    `python3 -B tools/steward doctor` for a core we did not install and do not
+    own. The decided contract is the opposite (P6.5a, P1.9, P9.4): no record,
+    a foreign child, a recorded child whose bytes do not match, or a
+    non-directory at `tools/steward` means the core is **not ours**, and no
+    `tools/steward` string may appear in the report at all.
+
+    So the answer comes from **ownership evidence**, which is five things and
+    every one of them is required:
+
+    1. the path is **contained** — a `tools/steward` resolving out of the tree
+       is ADR-26 escape and still exit 2, not a False;
+    2. its component chain **crosses no symlink**, and neither does any
+       child's: a link resolving back inside passes containment, which is
+       DEBT ITEM 7 exactly;
+    3. a **manifest** exists — it is the only place ownership is recorded, so
+       a byte-perfect copy nobody recorded is somebody else's copy;
+    4. the directory's children are **exactly the declared inventory** — a
+       stray unlisted file is a collision, not something to overlook;
+    5. every member is recorded `copied` and its **digest matches** the bytes
+       on disk.
+
+    A failed *look* is never one of these answers: `ENOENT`/`ENOTDIR` is
+    genuine absence and answers False, and anything else is exit 2 (ADR-13).
+    """
+    directory = paths.contain(root, INSTALLED_CORE_DIRECTORY.replace("/", os.sep))
+    if paths.crosses_symlink(root, INSTALLED_CORE_DIRECTORY):
+        return False
+    try:
+        children = set(os.listdir(directory))
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return False
+        raise StewardError(
+            "the-steward: the installed-core path %r could not be read: %s. "
+            "Refusing to report over a directory we did not manage to look at "
+            "— that is not the same as an empty one." % (directory, exc)
         )
-        return os.path.isfile(located)
+    if children != set(inventory.FILES):
+        return False
+    # An **unmanaged** repository (no manifest, ADR-32) records nothing, so it
+    # owns nothing. It needs no rule of its own: the empty record set is the
+    # answer, and a separate `document is None` branch was redundant with it.
+    stored = _recorded_copies(document or {})
+    for name in inventory.FILES:
+        relpath = "%s/%s" % (INSTALLED_CORE_DIRECTORY, name)
+        if relpath not in stored:
+            return False
+        if paths.crosses_symlink(root, relpath):
+            return False
+        located = os.path.join(directory, name)
+        if not os.path.isfile(located):
+            return False
+        try:
+            if digest.of_file(located) != stored[relpath]:
+                return False
+        except OSError as exc:
+            raise StewardError(
+                "the-steward: %r is recorded as part of the installed core but "
+                "could not be read to compare: %s. Refusing to report over a "
+                "digest we did not compute." % (relpath, exc)
+            )
+    return True
 
 
 def parse_argv(argv):

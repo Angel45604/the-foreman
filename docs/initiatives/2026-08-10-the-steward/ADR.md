@@ -456,6 +456,14 @@ ADR-23 asks.
 
 1. **Every child process the core spawns is `git`**, invoked with an explicit argument vector (never
    `bash -lc`, never a shell string), an explicit `timeout=`, and an explicit output cap.
+   **The bound is on the call, not on the first `wait` (amended 2026-08-13).** Git's descendants
+   inherit its pipes, so a hook or helper that outlives it holds a reader open and an unbounded
+   join on that reader defeats the timeout entirely. The child therefore gets its own session
+   (`start_new_session=True`), a single monotonic deadline covers the wait *and* every join, the
+   process **group** is what gets killed, and a run that had to be forced closed is a fault rather
+   than a shorter answer. Worst case is `GIT_TIMEOUT_SECONDS + GIT_CLEANUP_GRACE_SECONDS`; there is
+   no path that blocks longer. A pump thread likewise **records** every pipe failure, because a
+   thread cannot raise into its caller and a partially read stream is not a result (ADR-13).
 2. **A documented command is verified structurally and never executed.** C1 resolves each record in
    the manifest's **approved command set** (ADR-32 — no document is read) against the repo's own
    declarations: package scripts, Makefile targets, task-runner entries, a tracked executable at

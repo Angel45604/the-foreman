@@ -14,6 +14,7 @@ crosses a symlink** is never writable in place. `TargetIsSymlinkedTest` builds
 the exact attack and shows the digest check alone waving it through.
 """
 
+import errno
 import hashlib
 import io
 import os
@@ -21,6 +22,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 
 import _support as S
@@ -29,6 +32,7 @@ S.import_core()
 
 import atomic  # noqa: E402
 import cli  # noqa: E402
+import corpus  # noqa: E402
 import paths  # noqa: E402
 
 
@@ -347,6 +351,377 @@ class OutputCapTest(unittest.TestCase):
         with self.assertRaises(paths.GitCommandFailed) as caught:
             paths.git_checked(self.root, ["ls-files", "-z", "--", "*.md"])
         self.assertIn("ls-files", str(caught.exception))
+
+
+class _FlakyPipe(object):
+    """A pipe that fails partway through, the way a real one can.
+
+    Wraps the child's real pipe and delegates, so everything up to the
+    injected error is genuine git output — which is the point: the failure
+    mode being reproduced is *truncation*, not absence.
+    """
+
+    def __init__(self, real, reads_before_failing):
+        self.real = real
+        self.left = reads_before_failing
+        self.wrote = 0
+
+    def read(self, size):
+        if self.left <= 0:
+            raise OSError(errno.EIO, "injected read failure")
+        self.left -= 1
+        return self.real.read(size)
+
+    def write(self, payload):
+        if self.left <= 0:
+            raise OSError(errno.EPIPE, "injected write failure")
+        self.left -= 1
+        self.wrote += len(payload)
+        return self.real.write(payload)
+
+    def flush(self):
+        return self.real.flush()
+
+    def close(self):
+        return self.real.close()
+
+
+class _ShimSubprocess(object):
+    """`paths.subprocess`, with the child's pipes wrapped on the way out.
+
+    The module under test is untouched: it spawns the same git, reads the
+    same pipes and takes the same branches. Only the file objects the kernel
+    handed back are replaced, which is the one seam where a pipe failure
+    genuinely originates.
+    """
+
+    def __init__(self, real, wrap):
+        self.real = real
+        self.wrap = wrap
+        self.PIPE = real.PIPE
+        self.SubprocessError = real.SubprocessError
+        self.TimeoutExpired = real.TimeoutExpired
+
+    def Popen(self, *args, **keywords):
+        child = self.real.Popen(*args, **keywords)
+        self.wrap(child)
+        return child
+
+
+class PartialPipeIsNeverAnAnswerTest(unittest.TestCase):
+    """A pipe that failed is a **fault**, never a shorter answer (ADR-13).
+
+    The bounded reader that fixed the 504 MiB buffering bug introduced this
+    one layer down. `_BoundedReader.run` caught **every** `OSError`/
+    `ValueError` and returned, and `_feed` swallowed write failures the same
+    way, both on the honest-looking grounds that the error is usually the
+    kill this class asked for. But that reasoning only holds when a cap
+    breach or a timeout was actually recorded. With neither set, `_run`
+    returned a **successful** `_Completed` carrying truncated stdout, or a
+    successful result over stdin git never received — and `corpus`
+    enumerates over exactly those two calls. That is ADR-13/ADR-30's false
+    answer with our own plumbing as the cause: an `ls-files` cut off after
+    one chunk reads as a repository with four documents in it.
+    """
+
+    def setUp(self):
+        self.root = S.make_git_repo()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        for name in ("a.md", "b.md", "c.md", "d.md"):
+            with open(os.path.join(self.root, name), "w", encoding="utf-8") as handle:
+                handle.write("# %s\n" % name)
+        S.git(self.root, "add", "-A")
+        S.git(self.root, "commit", "-q", "-m", "docs")
+
+    def small_chunks(self, size=4):
+        original = paths._READ_CHUNK_BYTES
+        self.addCleanup(setattr, paths, "_READ_CHUNK_BYTES", original)
+        paths._READ_CHUNK_BYTES = size
+
+    def inject(self, wrap):
+        original = paths.subprocess
+        self.addCleanup(setattr, paths, "subprocess", original)
+        paths.subprocess = _ShimSubprocess(original, wrap)
+
+    def fail_stdout_after(self, reads):
+        def wrap(child):
+            child.stdout = _FlakyPipe(child.stdout, reads)
+
+        self.inject(wrap)
+
+    def fail_stderr_after(self, reads):
+        def wrap(child):
+            child.stderr = _FlakyPipe(child.stderr, reads)
+
+        self.inject(wrap)
+
+    def fail_stdin_after(self, writes):
+        def wrap(child):
+            child.stdin = _FlakyPipe(child.stdin, writes)
+
+        self.inject(wrap)
+
+    # -- the control -----------------------------------------------------
+    def test_the_uninjected_control_reads_the_whole_corpus(self):
+        """Without this the assertions below could pass for any reason."""
+        self.small_chunks()
+        self.assertEqual(
+            ["README.md", "a.md", "b.md", "c.md", "d.md"],
+            sorted(corpus.tracked_documents(self.root)),
+        )
+
+    # -- readers ---------------------------------------------------------
+    def test_a_truncated_stdout_faults_rather_than_answering_short(self):
+        self.small_chunks()
+        self.fail_stdout_after(1)
+        with self.assertRaises(paths.GitCommandFailed) as caught:
+            paths.git_checked(self.root, ["ls-files", "-z", "--", "*.md"])
+        message = str(caught.exception)
+        self.assertIn("ls-files", message)
+        self.assertIn("stdout", message)
+        self.assertIn(
+            "injected read failure",
+            message,
+            "the fault is reported without saying what the pipe did",
+        )
+
+    def test_a_failed_stderr_read_faults_too(self):
+        """stderr is where a *failing* git says why; a short one is still a
+        result nobody read whole."""
+        self.small_chunks()
+        self.fail_stderr_after(0)
+        with self.assertRaises(paths.GitCommandFailed) as caught:
+            paths.git_checked(self.root, ["ls-files", "-z", "--", "*.md"])
+        self.assertIn("stderr", str(caught.exception))
+
+    def test_no_partial_result_reaches_any_of_the_three_primitives(self):
+        for call in (
+            lambda: paths.git_output(self.root, ["ls-files", "-z", "--", "*.md"]),
+            lambda: paths.git_answered(
+                self.root, ["ls-files", "-z", "--", "*.md"], (0,)
+            ),
+            lambda: paths.git_checked(self.root, ["ls-files", "-z", "--", "*.md"]),
+        ):
+            self.small_chunks()
+            self.fail_stdout_after(1)
+            with self.assertRaises(paths.GitCommandFailed):
+                call()
+            self.doCleanups()
+
+    def test_corpus_enumeration_never_reports_over_a_short_ls_files(self):
+        self.small_chunks()
+        self.fail_stdout_after(1)
+        with self.assertRaises(paths.GitCommandFailed):
+            corpus.enumerate_documents(self.root)
+
+    # -- the writer ------------------------------------------------------
+    def test_undelivered_stdin_faults_rather_than_answering_over_nothing(self):
+        """`check-attr --stdin` answers about what it was fed. Fed half a
+        corpus it answers about half a corpus, with exit 0 and no sign."""
+        self.fail_stdin_after(0)
+        with self.assertRaises(paths.GitCommandFailed) as caught:
+            paths.git_checked(
+                self.root,
+                ["check-attr", "-z", "--stdin", "linguist-generated"],
+                stdin=b"a.md\0b.md\0",
+            )
+        message = str(caught.exception)
+        self.assertIn("check-attr", message)
+        self.assertIn("stdin", message)
+        self.assertIn(
+            "injected write failure",
+            message,
+            "the fault is reported without saying what the pipe did",
+        )
+
+    def test_corpus_enumeration_never_reports_over_a_short_check_attr(self):
+        self.fail_stdin_after(0)
+        with self.assertRaises(paths.GitCommandFailed):
+            corpus.enumerate_documents(self.root)
+
+    def test_a_pump_that_died_outright_is_a_fault_too(self):
+        """The failure the recorded-error check cannot see.
+
+        `_BoundedReader` catches `OSError`/`ValueError`, so anything else —
+        a `MemoryError` on a huge chunk, a bug in the loop — kills the thread
+        without recording anything at all. `reached_eof` is what makes that
+        legible: the read did not end at an end of stream, so whatever
+        arrived is not the output.
+        """
+
+        class _Exploding(_FlakyPipe):
+            def read(self, size):
+                if self.left <= 0:
+                    raise MemoryError("injected pump death")
+                self.left -= 1
+                return self.real.read(size)
+
+        def wrap(child):
+            child.stdout = _Exploding(child.stdout, 1)
+
+        self.small_chunks()
+        self.inject(wrap)
+        quiet = threading.excepthook
+        self.addCleanup(setattr, threading, "excepthook", quiet)
+        threading.excepthook = lambda args: None
+        with self.assertRaises(paths.GitCommandFailed) as caught:
+            paths.git_checked(self.root, ["ls-files", "-z", "--", "*.md"])
+        self.assertIn("no end-of-stream was reached", str(caught.exception))
+
+    # -- the two faults that are already recorded ------------------------
+    def test_a_cap_breach_is_still_reported_as_a_cap_breach(self):
+        """The reader's own kill closes the pipes under it, so every breach
+        also produces a pipe error. The breach is the fact; the error it
+        caused must not rename it."""
+        original = paths.GIT_OUTPUT_CAP_BYTES
+        self.addCleanup(setattr, paths, "GIT_OUTPUT_CAP_BYTES", original)
+        paths.GIT_OUTPUT_CAP_BYTES = 4
+        self.small_chunks()
+        with self.assertRaises(paths.OutputCapExceeded):
+            paths.git_checked(self.root, ["ls-files", "-z", "--", "*.md"])
+
+    def test_a_timeout_is_still_reported_as_a_timeout(self):
+        original = paths.GIT_TIMEOUT_SECONDS
+        self.addCleanup(setattr, paths, "GIT_TIMEOUT_SECONDS", original)
+        paths.GIT_TIMEOUT_SECONDS = 0.000001
+        with self.assertRaises(paths.GitCommandFailed) as caught:
+            paths.git_checked(self.root, ["ls-files", "-z", "--", "*.md"])
+        self.assertIn("ls-files", str(caught.exception))
+
+
+# A `git` that leaves a descendant holding stdout and stderr. Nothing exotic:
+# a hook, a credential helper, a pager or an `ssh` control-master does exactly
+# this, and each inherits the pipes it was handed.
+_GIT_LEAVING_A_DESCENDANT = """#!/bin/sh
+sleep %d &
+exit 0
+"""
+
+# The same, but git itself also hangs, so the timeout fires *and* the pipes
+# are held afterwards.
+_GIT_HANGING_WITH_A_DESCENDANT = """#!/bin/sh
+sleep %d &
+sleep %d
+"""
+
+_GIT_BEHAVING = """#!/bin/sh
+printf 'fine\\n'
+exit 0
+"""
+
+# Long enough that "we waited for it" is unmistakable in the elapsed time.
+DESCENDANT_LIFETIME_SECONDS = 30
+
+
+class CleanupIsBoundedTest(unittest.TestCase):
+    """The timeout must bound the **call**, not just the first `wait`.
+
+    ADR-18 says every child is bounded. The bound was on `child.wait(timeout=)`
+    alone: after it — on the timeout path, and on every ordinary path too —
+    `_run` did an unbounded `child.wait()` and an unbounded `join()` on each
+    pump thread. Git closing its own pipes is what made that look safe, and
+    git is not the only holder of them. Anything git spawns inherits stdout
+    and stderr, so a hook that backgrounds a daemon keeps the write end open
+    after git exits or is killed, the reader blocks in `read`, and the join
+    waits for it forever — an explicitly bounded command hanging indefinitely,
+    which is the failure ADR-18 exists to make impossible.
+
+    Driven with a real `git` on PATH, because the defect is about what a real
+    child's descendants do with real pipes.
+    """
+
+    def setUp(self):
+        self.root = S.make_git_repo()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.bin = os.path.join(self.root, os.pardir, "steward-fake-git-%d" % os.getpid())
+        self.bin = os.path.realpath(self.bin)
+        os.makedirs(self.bin, exist_ok=True)
+        self.addCleanup(shutil.rmtree, self.bin, True)
+
+    def fake_git(self, script):
+        path = os.path.join(self.bin, "git")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(script)
+        os.chmod(path, 0o755)
+        original = os.environ.get("PATH", "")
+        self.addCleanup(os.environ.__setitem__, "PATH", original)
+        # **Prepended, not replaced.** Replacing it takes `sleep` off PATH too,
+        # so the descendant dies instantly and the fixture proves nothing —
+        # the first draft of this test passed for exactly that reason.
+        os.environ["PATH"] = self.bin + os.pathsep + original
+
+    def bound(self, timeout=1.0, grace=2.0):
+        for name, value in (
+            ("GIT_TIMEOUT_SECONDS", timeout),
+            ("GIT_CLEANUP_GRACE_SECONDS", grace),
+        ):
+            self.addCleanup(setattr, paths, name, getattr(paths, name))
+            setattr(paths, name, value)
+        return timeout + grace
+
+    def test_the_fake_git_control_still_answers_normally(self):
+        """Without this, every assertion below could be 'the fixture broke'."""
+        self.fake_git(_GIT_BEHAVING)
+        self.bound()
+        self.assertEqual(b"fine\n", paths.git_checked(self.root, ["ls-files"]))
+
+    def test_a_descendant_holding_the_pipes_cannot_outlast_the_bound(self):
+        self.fake_git(_GIT_LEAVING_A_DESCENDANT % DESCENDANT_LIFETIME_SECONDS)
+        budget = self.bound()
+        started = time.monotonic()
+        with self.assertRaises(paths.GitCommandFailed) as caught:
+            paths.git_checked(self.root, ["ls-files"])
+        elapsed = time.monotonic() - started
+        self.assertIn("ls-files", str(caught.exception))
+        self.assertLess(
+            elapsed,
+            budget + 5,
+            "the call took %.1fs under a %.1fs bound — it waited for a "
+            "descendant, not for git" % (elapsed, budget),
+        )
+
+    def test_a_timed_out_git_with_a_descendant_still_returns(self):
+        self.fake_git(
+            _GIT_HANGING_WITH_A_DESCENDANT
+            % (DESCENDANT_LIFETIME_SECONDS, DESCENDANT_LIFETIME_SECONDS)
+        )
+        budget = self.bound()
+        started = time.monotonic()
+        with self.assertRaises(paths.GitCommandFailed):
+            paths.git_checked(self.root, ["ls-files"])
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, budget + 5, "%.1fs under a %.1fs bound" % (elapsed, budget))
+
+    def test_the_descendant_is_gone_afterwards(self):
+        """The pipes are released because the **tree** was taken down, not
+        because we walked away from threads still holding them."""
+        self.fake_git(_GIT_LEAVING_A_DESCENDANT % DESCENDANT_LIFETIME_SECONDS)
+        self.bound()
+        with self.assertRaises(paths.GitCommandFailed):
+            paths.git_checked(self.root, ["ls-files"])
+        survivors = subprocess.run(
+            ["pgrep", "-f", "sleep %d" % DESCENDANT_LIFETIME_SECONDS],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertEqual(
+            b"",
+            survivors.stdout.strip(),
+            "a descendant of the killed git is still running",
+        )
+
+    def test_a_run_that_needed_forcing_is_never_reported_as_an_answer(self):
+        """The other half: closing a stream is not the stream ending. A
+        forced cleanup means nobody can say the output was read whole."""
+        self.fake_git(_GIT_LEAVING_A_DESCENDANT % DESCENDANT_LIFETIME_SECONDS)
+        self.bound()
+        for call in (
+            lambda: paths.git_output(self.root, ["ls-files"]),
+            lambda: paths.git_answered(self.root, ["ls-files"], (0,)),
+            lambda: paths.git_checked(self.root, ["ls-files"]),
+        ):
+            with self.assertRaises(paths.GitCommandFailed):
+                call()
 
 
 class GitOutputDecodingTest(unittest.TestCase):
@@ -673,7 +1048,19 @@ class BootstrapInvocationTest(unittest.TestCase):
         output = (result.stdout + result.stderr).decode("utf-8", "replace")
         self.assertNotIn("tools/steward", output)
 
-    def test_it_advertises_the_installed_form_once_a_core_is_there(self):
+    def test_it_advertises_the_installed_form_once_a_core_is_ours(self):
+        """Owned, end to end: the inventory copied and every file recorded.
+
+        Copying one `__main__.py` in was what this used to do, and it proved
+        only that `os.path.isfile` is true — the same evidence a foreign
+        `tools/steward/` supplies.
+        """
+        S.install_owned_core(self.root)
+        result = S.run_core(S.MODERN_PYTHON, ["scan"], cwd=self.root)
+        output = result.stdout.decode("utf-8", "replace")
+        self.assertIn("python3 -B tools/steward scan", output)
+
+    def test_a_foreign_core_directory_advertises_nothing(self):
         installed = os.path.join(self.root, "tools", "steward")
         os.makedirs(installed)
         shutil.copy(
@@ -681,8 +1068,9 @@ class BootstrapInvocationTest(unittest.TestCase):
             os.path.join(installed, "__main__.py"),
         )
         result = S.run_core(S.MODERN_PYTHON, ["scan"], cwd=self.root)
-        output = result.stdout.decode("utf-8", "replace")
-        self.assertIn("python3 -B tools/steward scan", output)
+        output = (result.stdout + result.stderr).decode("utf-8", "replace")
+        self.assertEqual(0, result.returncode, output)
+        self.assertNotIn("tools/steward", output)
 
     def test_the_bootstrap_run_leaves_the_working_tree_untouched(self):
         before = S.porcelain(self.root)

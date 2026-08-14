@@ -92,6 +92,69 @@ def porcelain(root):
     return git(root, "status", "--porcelain").stdout.decode("utf-8")
 
 
+INSTALLED_CORE_DIRECTORY = "tools/steward"
+
+
+def install_owned_core(root, manifest_extra=None):
+    """Vendor the packaged core into `root` **with its ownership evidence**.
+
+    This is what an installation the-steward actually performed looks like
+    (P6.5a): the complete declared inventory, copied byte for byte, and one
+    `recorded` entry per file — `kind: copied`, with the file's digest — in a
+    tracked `.steward.json`. A directory that merely *contains* a
+    `__main__.py` is not this, which is the distinction the footer's
+    installed-core predicate turns on.
+
+    Written with the test's own `json` and `hashlib` rather than through the
+    core's `jsonio`/`digest`, so the subject under test is never also the
+    oracle. Returns the manifest document.
+    """
+    import json
+
+    directory = os.path.join(root, *INSTALLED_CORE_DIRECTORY.split("/"))
+    if not os.path.isdir(directory):
+        os.makedirs(directory)
+    recorded = []
+    for name in core_inventory():
+        source = os.path.join(CORE_DIR, name)
+        target = os.path.join(directory, name)
+        with open(source, "rb") as handle:
+            payload = handle.read()
+        with open(target, "wb") as handle:
+            handle.write(payload)
+        recorded.append(
+            {
+                "path": "%s/%s" % (INSTALLED_CORE_DIRECTORY, name),
+                "kind": "copied",
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        )
+    document = {"recorded": recorded}
+    if manifest_extra:
+        document.update(manifest_extra)
+    with open(os.path.join(root, ".steward.json"), "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(document, indent=2, sort_keys=True) + "\n")
+    return document
+
+
+def core_inventory():
+    """The packaged core's declared inventory, read as data, not imported.
+
+    `tests/_support` is imported by fixtures that run before `import_core()`,
+    and the list is a plain tuple of string literals, so it is parsed out of
+    the source rather than executed.
+    """
+    import ast
+
+    source = read_text(os.path.join(CORE_DIR, "inventory.py"))
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "FILES":
+                    return tuple(ast.literal_eval(node.value))
+    raise AssertionError("inventory.py no longer declares FILES")
+
+
 GIT_DIRECTORY = ".git"
 _DIGEST_CHUNK = 1 << 16
 

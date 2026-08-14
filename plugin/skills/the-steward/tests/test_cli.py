@@ -323,12 +323,146 @@ class InstalledCoreOutsideTheTreeTest(unittest.TestCase):
         """Non-vacuity, both directions: absence is an answer, not a fault."""
         self.assertFalse(self.context().core_is_installed())
 
-    def test_a_real_in_tree_core_is_still_installed(self):
-        directory = os.path.join(self.root, "tools", "steward")
-        os.makedirs(directory)
-        with open(os.path.join(directory, "__main__.py"), "w", encoding="utf-8") as h:
+
+class InstalledCoreOwnershipTest(unittest.TestCase):
+    """The footer advertises a core only on **ownership evidence**.
+
+    `os.path.isfile(tools/steward/__main__.py)` is not that evidence. It is
+    true of any directory somebody else put there that happens to hold a file
+    of that name — and the previous positive test asserted exactly that, an
+    arbitrary **empty** `__main__.py`, so the test reinforced the bug instead
+    of catching it. The decided contract (P6.5a, P1.9, P9.4) is the opposite:
+    no record, a foreign child, a recorded child whose bytes do not match, or
+    a non-directory at `tools/steward` means the core is **not ours**, and a
+    report that names `tools/steward` then advertises a path we did not
+    install.
+
+    Ownership evidence is the complete declared inventory, every member
+    recorded `copied` in the manifest with a digest that matches the bytes on
+    disk, reached through no symlink, with nothing else in the directory.
+    """
+
+    def setUp(self):
+        self.root = S.make_git_repo()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.directory = os.path.join(self.root, "tools", "steward")
+
+    def context(self, document):
+        return cli.Context(
+            "doctor",
+            self.root,
+            io.StringIO(),
+            io.StringIO(),
+            repo_root=self.root,
+            manifest=document,
+        )
+
+    def installed(self):
+        return self.context(S.install_owned_core(self.root)).core_is_installed()
+
+    def report(self):
+        out, err = io.StringIO(), io.StringIO()
+        code = cli.main(["doctor"], out, err, cwd=self.root)
+        return code, out.getvalue(), err.getvalue()
+
+    def assert_no_command_is_advertised(self):
+        code, out, err = self.report()
+        self.assertIn(code, (0, 1), out + err)
+        self.assertNotIn("tools/steward doctor", out)
+        self.assertNotIn("Traceback", err)
+
+    # -- the positive control -------------------------------------------
+    def test_a_genuinely_owned_installation_is_installed(self):
+        self.assertTrue(self.installed())
+        code, out, _err = self.report()
+        self.assertIn(code, (0, 1))
+        self.assertIn("python3 -B tools/steward doctor", out)
+
+    # -- the three the gate named ---------------------------------------
+    def test_a_foreign_directory_is_not_an_installed_core(self):
+        """Somebody else's `tools/steward/`, with a `__main__.py` in it."""
+        os.makedirs(self.directory)
+        with open(os.path.join(self.directory, "__main__.py"), "w", encoding="utf-8") as h:
+            h.write("print('not ours')\n")
+        self.assertFalse(self.context(None).core_is_installed())
+        self.assert_no_command_is_advertised()
+
+    def test_an_empty_main_with_no_record_is_not_an_installed_core(self):
+        """The exact fixture the old positive test called *installed*."""
+        os.makedirs(self.directory)
+        with open(os.path.join(self.directory, "__main__.py"), "w", encoding="utf-8") as h:
             h.write("")
-        self.assertTrue(self.context().core_is_installed())
+        self.assertTrue(
+            os.path.isfile(os.path.join(self.directory, "__main__.py")),
+            "the fixture is inert",
+        )
+        self.assertFalse(self.context(None).core_is_installed())
+        self.assert_no_command_is_advertised()
+
+    def test_a_foreign_child_in_an_otherwise_ours_core_is_not_installed(self):
+        document = S.install_owned_core(self.root)
+        with open(os.path.join(self.directory, "sneak.py"), "w", encoding="utf-8") as h:
+            h.write("import os\n")
+        self.assertFalse(self.context(document).core_is_installed())
+        self.assert_no_command_is_advertised()
+
+    def test_an_in_tree_symlink_at_the_core_directory_is_not_installed(self):
+        """Contained — so not exit 2 — but still not a directory we created."""
+        document = S.install_owned_core(self.root)
+        real = os.path.join(self.root, "vendor-core")
+        os.rename(self.directory, real)
+        os.symlink(real, self.directory)
+        self.assertTrue(
+            os.path.isfile(os.path.join(self.directory, "__main__.py")),
+            "the fixture is inert — the link does not resolve to the core",
+        )
+        self.assertFalse(self.context(document).core_is_installed())
+        self.assert_no_command_is_advertised()
+
+    def test_an_in_tree_symlinked_child_is_not_installed(self):
+        document = S.install_owned_core(self.root)
+        target = os.path.join(self.directory, "text.py")
+        elsewhere = os.path.join(self.root, "text-copy.py")
+        os.rename(target, elsewhere)
+        os.symlink(os.path.join(os.pardir, os.pardir, "text-copy.py"), target)
+        self.assertTrue(os.path.isfile(target), "the fixture is inert")
+        self.assertFalse(self.context(document).core_is_installed())
+        self.assert_no_command_is_advertised()
+
+    # -- the rest of the ownership contract ------------------------------
+    def test_an_unrecorded_installation_is_not_installed(self):
+        """Every byte right, no manifest: nothing says we put it there."""
+        S.install_owned_core(self.root)
+        os.remove(os.path.join(self.root, ".steward.json"))
+        self.assertFalse(self.context(None).core_is_installed())
+        self.assert_no_command_is_advertised()
+
+    def test_a_recorded_child_whose_bytes_do_not_match_is_not_installed(self):
+        document = S.install_owned_core(self.root)
+        with open(os.path.join(self.directory, "text.py"), "a", encoding="utf-8") as h:
+            h.write("# edited\n")
+        self.assertFalse(self.context(document).core_is_installed())
+        self.assert_no_command_is_advertised()
+
+    def test_a_missing_inventory_member_is_not_installed(self):
+        document = S.install_owned_core(self.root)
+        os.remove(os.path.join(self.directory, "text.py"))
+        self.assertFalse(self.context(document).core_is_installed())
+        self.assert_no_command_is_advertised()
+
+    def test_a_record_of_the_wrong_kind_is_not_installed(self):
+        """`rendered` is C4's re-render contract; a vendored core is `copied`."""
+        document = S.install_owned_core(self.root)
+        for record in document["recorded"]:
+            record["kind"] = "rendered"
+        self.assertFalse(self.context(document).core_is_installed())
+
+    def test_a_non_directory_at_the_core_path_is_not_installed(self):
+        os.makedirs(os.path.join(self.root, "tools"))
+        with open(self.directory, "w", encoding="utf-8") as handle:
+            handle.write("not a directory\n")
+        self.assertFalse(self.context(None).core_is_installed())
+        self.assert_no_command_is_advertised()
 
 
 if __name__ == "__main__":
