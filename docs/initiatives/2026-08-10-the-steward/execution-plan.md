@@ -368,6 +368,17 @@ path prompts.
       and counted on its own line of the cardinality report so it can never inflate coverage
       (ADR-30). **`PATH` is never consulted for either kind**, asserted by a test — an installed vs
       absent external tool must give byte-identical findings.
+      **C1 MUST BE THE EXACT INVERSE OF P3.2's SYNTHESIS, and that is a scheduled task here, not an
+      assumption** (`DECISION-2026-08-14-command-grammar.md`). Two concrete obligations, each with its
+      own fixture: (a) resolution **strips `shlex` quoting** before matching, so `npm run 'build all'`
+      resolves against the script named `build all`, and (b) resolution **strips the `./` prefix** of a
+      tracked executable before matching the index. A round-trip fixture asserts that every value
+      `scan` proposes for a fixture repo is resolved by C1 over that same repo — if the two ends ever
+      disagree, this is where it surfaces. **No Makefile resolver is to be written here**: v0 proposes
+      no `make` targets, and a confirmed `make <target>` record carries `resolution: "external"` (the
+      *tool* is the system's), so it is reported `info`/*inspected* and never resolved. A future pass
+      tempted to add one should first ask which construct changes the set of targets — the answer is
+      unbounded, which is why the parser was deleted.
       **Three fixtures for the distinction the schema now carries:** a repo-declared command that
       resolves; a **confirmed** `external` record whose tool is absent from the machine → `info`,
       no `error`; and a `repo-declared` command that resolves to nothing → the A1 finding. **Plus
@@ -596,16 +607,27 @@ the renderers in Phase 6, which is where they are listed.
       promotion AST audit was deleted rather than narrowed** (owner decision 2026-08-14,
       `DECISION-2026-08-14-audit-shape.md`). `generate` is the **sole persister** (ADR-11), so this is
       the one seam at which "the tool never writes `confirmed`" is **decidable and total**, as against
-      a syntactic audit which is neither. Assert over the **bytes `generate` emits**: every
-      pre-existing record's `state` is preserved **exactly**, and **no record acquires `confirmed`**
-      that did not already carry it. Prove it non-vacuously by planting a promotion at the seam and
-      watching it redden — an audit over clean code reports nothing whether it works or not.
+      a syntactic audit which is neither. Assert over the **bytes `generate` emits**: a pre-existing
+      record is **byte-identical in full** — `value`, `state`, `resolution`, `confidence` and `waived`
+      alike — and is **neither deleted nor replaced**; and **no record acquires `confirmed`** that did
+      not already carry it. **A `state`-only comparison is NOT sufficient and was the first draft of
+      this task:** ADR-11 requires a confirmed record remain *exactly as the human left it* and be
+      *never auto-deleted*, so changing its value, resolution, confidence or waiver — or dropping it
+      entirely — evades a state-only check while breaking the guarantee the task advertises. Prove it
+      non-vacuously by planting each of those mutations at the seam and watching them redden — an
+      audit over clean code reports nothing whether it works or not.
 - [ ] **P6.8** `generate`'s half of P3.7's behavioural check: a run with **stdin closed** and a run
       with the pty installed as the **controlling terminal** (`setsid` + `TIOCSCTTY`, not merely fd 0
       — that distinction is what made the Phase-3 fixture blind) give **byte-identical** output *and*
-      manifest. Both arrangements run in their own session, the pty carries a distinguishing window
-      size so the oracle can say *which* terminal was reached, and the master is drained: a child that
-      writes to `/dev/tty` and is not drained wedges where `SIGKILL` does not reap it.
+      manifest **and every generated artifact** (`AGENTS.md`, `CLAUDE.md`, both indexes) — comparing
+      only stdout and the manifest would miss a TTY branch that changes a rendered file. Both
+      arrangements run in their own session, the pty carries a distinguishing window size so the
+      oracle can say *which* terminal was reached, and the master is drained: a child that writes to
+      `/dev/tty` and is not drained wedges where `SIGKILL` does not reap it. **The drained pty
+      transcript must additionally be asserted EMPTY.** Draining alone only prevents the hang: a
+      *write-only* prompt — one that prints a question to `/dev/tty` and never reads — leaves stdout,
+      the manifest and the artifacts all identical and passes a comparison-only check. The bytes that
+      reached the terminal are the evidence, so they are asserted, not merely consumed.
 
 **Done when:** greenfield `generate` on a repo with no manifest creates `.steward.json` and every
 absent target, and `check` then passes against them **before any `git add`** and with no hand-edit

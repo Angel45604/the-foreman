@@ -20,14 +20,23 @@ ADR-32 : a path whose name carries an ASCII control character is never
          proposed — v0 can make no claim about it — and a diagnostic says so.
 
 DECISION-2026-08-14-command-grammar: the interim boundary this file pins.
-Package scripts and Makefile targets are proposed **only at the repository
-root**, because `npm run test` and `make test` name whatever project the cwd
-is in; a nested one is diagnosed and never proposed. The grammar is the
-invocation form (`npm run <script>`, `make <target>`, a tracked executable's
-repository-relative path **under a leading `./`**), not the declared body. A
-tracked executable is self-locating, so it is proposed at any depth; the
-`./` is that decision's 2026-08-14 correction, and `CommandGrammarTest` and
-`CommandClaimWordingTest` are where it is pinned.
+Package scripts are proposed **only at the repository root**, because
+`npm run test` names whatever project the cwd is in; a nested one is
+diagnosed and never proposed. The grammar is the invocation form
+(`npm run <script>`, a tracked executable's repository-relative path **under a
+leading `./`**), not the declared body. A tracked executable is
+self-locating, so it is proposed at any depth; the `./` is that decision's
+2026-08-14 correction, and `CommandGrammarTest` and `CommandClaimWordingTest`
+are where it is pinned.
+
+That decision's **SCOPE AMENDMENT** removes the third kind: v0 proposes **no
+`make` target at all**, because a reader that does not expand `$(...)`,
+evaluate `ifeq` or follow `include` cannot know which targets a makefile has
+— three gate rounds proved it three times over. A tracked makefile still
+establishes the make stack and is diagnosed; `MakefileNotProposedTest` owns
+the four properties that had to survive the deletion, and
+`TypedCommandTest.test_no_emitted_command_invokes_make` is the same exclusion
+where the values are typed.
 
 **Six traps this file is written against, each named where it is defended.**
 
@@ -369,13 +378,6 @@ class CommandGrammarTest(ScanFixture):
         self.commit()
         self.assertNotIn("jest", self.values(self.survey().commands))
 
-    def test_a_makefile_target_becomes_the_make_form(self):
-        self.write("Makefile", "lint:\n\truff check .\n\ntest:\n\tpytest\n")
-        self.commit()
-        self.assertEqual(
-            ["make lint", "make test"], self.values(self.survey().commands)
-        )
-
     def test_a_tracked_executable_is_proposed_with_a_leading_dot_slash(self):
         """The decision's table, after its **2026-08-14 correction**.
 
@@ -461,7 +463,7 @@ class CommandGrammarTest(ScanFixture):
 class CommandClaimWordingTest(ScanFixture):
     """P3.2 — the claim a command finding makes, read back against every kind.
 
-    `_command_findings` makes **one** sentence for all three declaration kinds:
+    `_command_findings` makes **one** sentence for every declaration kind:
     "%r is a command this repository declares, and a human can type it at the
     repository root". One sentence for several kinds is only true if it is true
     of each of them, and before the 2026-08-14 correction it was false for
@@ -476,19 +478,19 @@ class CommandClaimWordingTest(ScanFixture):
     literal, so a scanner that stopped prefixing cannot pass.
     """
 
-    # Four values, covering all three kinds and both depths of the third.
-    KINDS = ("./build.sh", "./scripts/deploy.sh", "make release", "npm run check")
+    # Three values, covering both remaining kinds and both depths of the
+    # second. A fourth, `make release`, went with the makefile reader.
+    KINDS = ("./build.sh", "./scripts/deploy.sh", "npm run check")
 
     TYPABLE = "a human can type it at the repository root"
 
     # The program names the claim leaves to `PATH`, which is what a human
-    # typing `npm` or `make` at the root actually wants. Named here so the skip
-    # in the path assertion below is a stated exception and not a hole.
-    PROGRAM_WORDS = ("make", "npm")
+    # typing `npm` at the root actually wants. Named here so the skip in the
+    # path assertion below is a stated exception and not a hole.
+    PROGRAM_WORDS = ("npm",)
 
     def claims(self):
         self.write("package.json", '{"scripts": {"check": "tsc --noEmit"}}\n')
-        self.write("Makefile", "release:\n\techo\n")
         self.write("build.sh", "#!/bin/sh\nexit 0\n")
         self.write("scripts/deploy.sh", "#!/bin/sh\nexit 0\n")
         os.chmod(os.path.join(self.root, "build.sh"), 0o755)
@@ -507,7 +509,7 @@ class CommandClaimWordingTest(ScanFixture):
             )
         )
 
-    def test_the_fixture_produces_all_four_kinds(self):
+    def test_the_fixture_produces_all_three_kinds(self):
         """Non-vacuity: the wording assertions below say nothing at all about a
         kind this fixture never got the scanner to propose."""
         self.assertEqual(list(self.KINDS), sorted(self.claims()))
@@ -525,11 +527,11 @@ class CommandClaimWordingTest(ScanFixture):
     def test_a_value_naming_a_file_here_is_a_path_and_not_a_bare_word(self):
         """The property that makes the sentence true, over the real survey.
 
-        `npm` and `make` are program names and being looked up on `PATH` is
-        exactly right for them. Everything else the scanner proposes names a
-        file inside this repository, and a shell only reads such a word as a
-        path when it contains a slash — so it has to carry one, and the counter
-        is what stops this passing over a survey where nothing did.
+        `npm` is a program name and being looked up on `PATH` is exactly right
+        for it. Everything else the scanner proposes names a file inside this
+        repository, and a shell only reads such a word as a path when it
+        contains a slash — so it has to carry one, and the counter is what
+        stops this passing over a survey where nothing did.
 
         **Both assertions, and the second is not the first restated.** Written
         against `scan.EXECUTABLE_PREFIX` alone, emptying that constant would
@@ -633,13 +635,21 @@ class CommandRecordShapeTest(ScanFixture):
         A named script in a declaration file *says* it is a command. A mode
         bit says a file is executable and nothing more — that it is a command
         anyone should run is the scanner's inference, and it is a weaker one.
+
+        The `high` half used to be read out of `python_fixture`'s Makefile.
+        That fixture no longer proposes a command at all (v0 reads no
+        makefile), so the declaration half is a package script here — which is
+        the only declared-command kind left.
         """
-        self.python_fixture()
+        self.write(PACKAGE_JSON, '{"scripts": {"check": "tsc --noEmit"}}\n')
+        self.write("scripts/check.sh", "#!/bin/sh\nexit 0\n")
+        os.chmod(os.path.join(self.root, "scripts", "check.sh"), 0o755)
+        self.commit()
         levels = dict(
             (record["value"], record["confidence"])
             for record in self.survey().commands
         )
-        self.assertEqual("high", levels["make test"])
+        self.assertEqual("high", levels["npm run check"])
         self.assertEqual("low", levels["./scripts/check.sh"])
 
 
@@ -656,7 +666,6 @@ class EvidenceTest(ScanFixture):
 
     def test_a_command_finding_names_the_declaration_it_was_read_from(self):
         self.write("package.json", '{"scripts": {"check": "tsc"}}\n')
-        self.write("Makefile", "release:\n\techo\n")
         self.write("scripts/build.sh", "#!/bin/sh\nexit 0\n")
         os.chmod(os.path.join(self.root, "scripts", "build.sh"), 0o755)
         self.commit()
@@ -664,7 +673,6 @@ class EvidenceTest(ScanFixture):
             zip(self.values(self.survey().commands), self.observed(scan.COMMAND_FINDING))
         )
         self.assertIn("package.json", observed["npm run check"])
-        self.assertIn("Makefile", observed["make release"])
         self.assertIn("index", observed["./scripts/build.sh"])
 
     def test_a_path_finding_distinguishes_a_root_document_from_a_nested_one(self):
@@ -684,45 +692,20 @@ class EvidenceTest(ScanFixture):
         self.assertIn("convention", observed["README.md"])
 
 
-class DuplicateProposalTest(ScanFixture):
-    """P3.2 — one claim per command, because the cardinality is the record count.
-
-    ADR-32: "the cardinality each check reports is exactly the record count."
-    Two records holding the same string would make one claim count as two
-    examined items — coverage inflated by an accident of which files happen to
-    declare the same target.
-    """
-
-    def test_a_target_declared_twice_in_one_makefile_is_proposed_once(self):
-        """**The duplication source changed with B3, and the property did
-        not.** Two tracked makefiles used to be the way to declare one target
-        twice; `make` reads only the highest-precedence file, so the scanner
-        now reads only that one too (`ShadowedMakefileTest`) and the pair can
-        no longer collide. A target declared twice **in one file** still can —
-        GNU make accepts it, warns about the overridden recipe, and has one
-        target — and that is what this class is about.
-        """
-        self.write("Makefile", "test: a\n\techo a\n\ntest: b\n\techo b\n")
-        self.commit()
-        self.assertEqual(["make test"], self.values(self.survey().commands))
-
-    def test_the_fixture_really_declares_it_twice(self):
-        """Non-vacuity: the equality above would also hold if the reader saw
-        only the first rule line of the file."""
-        self.write("Makefile", "test: a\n\techo a\n\nonly-here: b\n\techo b\n")
-        self.commit()
-        self.assertEqual(
-            ["make only-here", "make test"], self.values(self.survey().commands)
-        )
-
-
 class RootBoundaryTest(ScanFixture):
     """P3.2 — a nested project is diagnosed, never guessed at.
 
-    `npm run test` and `make test` name whichever project the shell is in, and
+    `npm run test` names whichever project the shell is in, and
     `commandRecord` has no field to carry a working directory. Nothing is
     silently dropped (ADR-28): the file is named, and the cardinality line
     states the count.
+
+    **The boundary now has one subject, and that is deliberate.** It applied
+    to a nested makefile too until v0 stopped reading makefiles at any depth;
+    a nested makefile is diagnosed for *that* reason instead
+    (`MakefileNotProposedTest`), because a note blaming the working directory
+    would tell a human that moving the file to the root would help, and it
+    would not.
     """
 
     def test_a_nested_package_manifest_proposes_nothing(self):
@@ -742,12 +725,16 @@ class RootBoundaryTest(ScanFixture):
             [repr("packages/web/package.json")], [n.where for n in notes]
         )
 
-    def test_a_nested_makefile_is_diagnosed_too(self):
+    def test_a_nested_makefile_is_diagnosed_for_the_reason_that_is_true(self):
+        """The counter-weight to narrowing the boundary: the file is still
+        named — nothing is silently dropped — and the note that names it says
+        why v0 read no target out of it, not that it sits in a subdirectory."""
         self.write("sub/Makefile", "test:\n\techo hi\n")
         self.commit()
         survey = self.survey()
         self.assertEqual([], self.values(survey.commands))
-        self.assertIn(scan.NESTED_DECLARATION, self.note_ids(survey))
+        self.assertIn(scan.UNREAD_MAKEFILE, self.note_ids(survey))
+        self.assertNotIn(scan.NESTED_DECLARATION, self.note_ids(survey))
 
     def test_the_cardinality_line_states_the_nested_count(self):
         self.node_fixture()
@@ -878,6 +865,205 @@ class UnparseableDeclarationTest(ScanFixture):
             self.assertNotIn("yarn", value)
 
 
+class MakefileNotProposedTest(ScanFixture):
+    """**The 2026-08-14 scope amendment**: v0 proposes no `make` target at all.
+
+    Three gate rounds produced three fresh crops of fabricated commands out of
+    one hand-rolled reader — assignments, then directive arguments, then Make
+    escaping, the bodies of *inactive* `ifeq` branches and `$(info hello:
+    world)`. The mechanism is structural rather than sloppy: GNU make is a
+    **macro language with conditionals and file inclusion**, so which targets
+    exist depends on `$(...)` expansion, on `ifeq`/`ifdef` evaluation and on
+    `include`d files, and a reader that does none of those cannot know them.
+    Every approximation error is a documented command that does not resolve —
+    acceptance case A1, manufactured by the tool that exists to detect it —
+    and ADR-32 names the end of that road: a checker that cries wolf gets
+    ignored.
+
+    **This class is the four properties the deletion had to preserve**, each
+    asserted here and none of them left to a reader:
+
+    1. a tracked makefile still establishes the **make** stack (P3.1);
+    2. it emits an ADR-28 diagnostic **naming the file**, so nothing is
+       silently dropped — the same treatment `Taskfile.yml`, `justfile` and
+       `Rakefile` already get, and those paths produced zero defects across
+       the same three rounds;
+    3. `scan` still exits 0;
+    4. the `commands` cardinality still states its reason when it lands at
+       zero (ADR-30) — a repository whose only declaration was a makefile must
+       not render a reasonless zero.
+
+    The hostile makefile below is the one the deleted reader was tested
+    against. It is kept **as a fixture for the deletion**: every target in it
+    is real, and the assertion is that not one of them is proposed. A fixture
+    holding only lines the reader refused would pass against a scanner that
+    still parsed makefiles perfectly.
+    """
+
+    # Real targets, and the shapes three gate rounds fabricated commands out
+    # of. Nothing here may reach the report as a command.
+    HOSTILE = (
+        "# a comment\n"
+        "REGISTRY = https://example.invalid/image\n"
+        "CFLAGS := -g\n"
+        # `-include` rather than `include`, so that real `make` can still read
+        # the file in the non-vacuity probe below: the optional spelling is
+        # silently skipped when the file is absent, and it is the same
+        # directive-with-a-colon-in-its-argument shape either way.
+        "-include config:prod.mk\n"
+        "vpath %.c src:lib\n"
+        "\n"
+        ".PHONY: test lint\n"
+        "\n"
+        "test: build\n"
+        "\tpytest\n"
+        "\n"
+        "lint:\n"
+        "\truff check .\n"
+        "\n"
+        "ifeq ($(NEVER),1)\n"
+        "inactive:\n"
+        "\techo\n"
+        "endif\n"
+        "\n"
+        "define helper\n"
+        "hidden: nope\n"
+        "endef\n"
+    )
+
+    # Every command string the deleted reader ever emitted for `HOSTILE`,
+    # real targets included. T3: the exclusion below is an equality over the
+    # whole proposed set as well, so it cannot pass over a scanner that
+    # proposed nothing for an unrelated reason.
+    NEVER_PROPOSED = (
+        "make CFLAGS",
+        "make REGISTRY",
+        "make config",
+        "make hidden",
+        "make https",
+        "make inactive",
+        "make lint",
+        "make src",
+        "make test",
+    )
+
+    def hostile_repository(self):
+        self.write("Makefile", self.HOSTILE)
+        self.commit()
+
+    def test_the_fixture_really_declares_targets_make_has(self):
+        """Non-vacuity, asked of **real `make`** rather than of the reader
+        that was deleted (ADR-23): the exclusions below say nothing unless the
+        file really declares something a human could invoke."""
+        real_make = shutil.which("make")
+        if real_make is None:
+            self.skipTest("no `make` on PATH to verify the fixture against")
+        self.hostile_repository()
+        done = subprocess.run(
+            [real_make, "-n", "lint"],
+            cwd=self.root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        self.assertEqual(
+            0,
+            done.returncode,
+            "make cannot read the fixture at all, so it declares no target "
+            "and every exclusion below is vacuous: %s"
+            % done.stdout.decode("utf-8", "replace"),
+        )
+
+    def test_no_target_is_ever_proposed(self):
+        self.hostile_repository()
+        values = self.values(self.survey().commands)
+        self.assertEqual([], values)
+        for invented in self.NEVER_PROPOSED:
+            self.assertNotIn(invented, values)
+
+    def test_a_tracked_makefile_still_establishes_the_make_stack(self):
+        """**Property 1.** The amendment deletes a parser, not a detector:
+        P3.1 asks what the repository contains, and a tracked makefile answers
+        it — cheaply, correctly, and with no reading of the file at all."""
+        self.hostile_repository()
+        self.assertEqual(
+            [("", "make", ("Makefile",))], list(self.survey().stacks)
+        )
+
+    def test_the_makefile_is_diagnosed_by_name(self):
+        """**Property 2.** ADR-28: a candidate silently dropped both hides a
+        real edge and manufactures a false orphan."""
+        self.hostile_repository()
+        notes = [n for n in self.survey().notes if n.id == scan.UNREAD_MAKEFILE]
+        self.assertEqual([repr("Makefile")], [n.where for n in notes])
+
+    def test_the_diagnostic_says_plainly_that_no_target_is_proposed(self):
+        """A note saying only "not proposed" leaves the human nothing to act
+        on, so it names the bound and what to do instead."""
+        self.hostile_repository()
+        note = [n for n in self.survey().notes if n.id == scan.UNREAD_MAKEFILE][0]
+        for fragment in ("no", "target", "stack", ".steward.json"):
+            self.assertIn(fragment, note.observed, fragment)
+
+    def test_the_scan_still_exits_zero_and_prints_the_diagnostic(self):
+        """**Property 3.**"""
+        self.hostile_repository()
+        code, out, err = self.run_scan()
+        self.assertEqual(0, code, err)
+        self.assertNotIn("Traceback", err, "a predicted case printed a crash")
+        self.assertIn(scan.UNREAD_MAKEFILE, out)
+
+    def test_a_makefile_only_repository_states_its_zero_command_reason(self):
+        """**Property 4.** ADR-30: "0 examined, 0 problems found" may never
+        render as coverage, so the one repository the amendment empties has to
+        say why it is empty."""
+        self.hostile_repository()
+        _found, cardinalities = scan.survey_findings(self.survey())
+        line = [c for c in cardinalities if c["check"] == scan.COMMAND_CHECK][0]
+        self.assertEqual(0, line["examined"])
+        self.assertEqual(scan.NO_COMMAND, line["reason"])
+
+    def test_every_tracked_makefile_is_named_and_none_shadows_another(self):
+        """Precedence went with the parser, and its absence is the assertion.
+
+        While targets were parsed, only the makefile `make` itself loads could
+        be proposed from, so the other tracked names were "shadowed" and
+        diagnosed as such. Nothing is proposed from any of them now, so there
+        is no precedence to resolve — and both files are declarations, so both
+        are named.
+        """
+        self.write("GNUmakefile", "active:\n\techo\n")
+        self.write("Makefile", "shadowed:\n\techo\n")
+        self.commit()
+        survey = self.survey()
+        self.assertEqual([], self.values(survey.commands))
+        self.assertEqual(
+            [repr("GNUmakefile"), repr("Makefile")],
+            sorted(n.where for n in survey.notes if n.id == scan.UNREAD_MAKEFILE),
+        )
+
+    def test_every_makefile_name_that_establishes_the_stack_is_diagnosed(self):
+        """The cross-check that keeps the two tables honest: a makefile name
+        the-steward reports as a `make` project but never diagnoses would be a
+        file it names in one breath and drops silently in the next."""
+        self.assertEqual(
+            sorted(scan.MAKEFILES),
+            sorted(
+                name
+                for name, stack in scan.DECLARATIONS.items()
+                if stack == "make"
+            ),
+        )
+
+    def test_a_package_script_beside_it_is_still_proposed(self):
+        """The counter-weight, and T3: refusing every makefile must not be a
+        scanner that stopped proposing commands."""
+        self.write(PACKAGE_JSON, '{"scripts": {"check": "tsc --noEmit"}}\n')
+        self.hostile_repository()
+        survey = self.survey()
+        self.assertEqual(["npm run check"], self.values(survey.commands))
+        self.assertIn(scan.UNREAD_MAKEFILE, self.note_ids(survey))
+
+
 class UnnameableScriptTest(ScanFixture):
     """P3.2 — **B5**: the refusal is the name quoting cannot rescue, not
     whitespace.
@@ -898,8 +1084,8 @@ class UnnameableScriptTest(ScanFixture):
 
     * an **ASCII control character**, which no record value may hold (ADR-32)
       and which would render as two lines of a one-item-per-line section;
-    * an **empty** name, which names no script and which `make ''` rejects
-      outright ("empty string invalid as file name");
+    * an **empty** name, which `npm run ''` makes typable and still names
+      nothing;
     * an **option-like** name — `OptionLikeNameTest` owns that half.
 
     The predicate moved with the rule: what is validated is the **final
@@ -938,9 +1124,8 @@ class UnnameableScriptTest(ScanFixture):
         self.assertIn(scan.UNREPRESENTABLE, self.note_ids(survey))
 
     def test_an_empty_script_name_is_not_proposed(self):
-        """Quoting makes `npm run ''` typable and leaves it naming nothing,
-        and `make ''` is an error in GNU make — so this is a refusal the
-        quoting rule does not reach."""
+        """Quoting makes `npm run ''` typable and leaves it naming nothing —
+        so this is a refusal the quoting rule does not reach."""
         survey = self.scan_with_script("")
         self.assertEqual(["npm run ok"], self.values(survey.commands))
         self.assertIn(scan.UNREPRESENTABLE, self.note_ids(survey))
@@ -966,92 +1151,6 @@ class UnnameableScriptTest(ScanFixture):
         the next `generate` (ADR-32)."""
         survey = self.scan_with_script("build all")
         manifest.validate({"commands": list(survey.commands)})
-
-
-class MakefileGrammarTest(ScanFixture):
-    """P3.2 — the hand-rolled Makefile reader, and what it must not propose.
-
-    No stdlib parser exists for this and none may be vendored, so the grammar
-    is line-oriented and deliberately narrow. Everything it refuses is
-    something that would otherwise become a command record naming a target
-    `make` does not have — which is A1, manufactured by us.
-    """
-
-    HOSTILE = (
-        "# a comment\n"
-        "CFLAGS := -g\n"
-        "PREFIX ?= /usr/local\n"
-        "export TAG := v1\n"
-        "SIMPLE ::= x\n"
-        "FILES := one.c \\\n"
-        "         two.c:extra\n"
-        "\n"
-        ".PHONY: test lint\n"
-        "\n"
-        "test: build\n"
-        "\tpytest\n"
-        "\n"
-        "lint:\n"
-        "\truff check .\n"
-        "\n"
-        "%.o: %.c\n"
-        "\tcc -c $<\n"
-        "\n"
-        "$(GENERATED):\n"
-        "\ttouch $@\n"
-        "\n"
-        "ifeq ($(A):,$(B))\n"
-        "endif\n"
-        "\n"
-        "define helper\n"
-        "hidden: nope\n"
-        "endef\n"
-        "\n"
-        "double::\n"
-        "\techo hi\n"
-        "\n"
-        "build/artifact: build\n"
-        "\ttouch $@\n"
-    )
-
-    def test_only_the_real_targets_are_proposed(self):
-        self.write("Makefile", self.HOSTILE)
-        self.commit()
-        self.assertEqual(
-            [
-                "make build/artifact",
-                "make double",
-                "make lint",
-                "make test",
-            ],
-            self.values(self.survey().commands),
-        )
-
-    def test_the_fixture_really_contains_every_shape_it_excludes(self):
-        """Non-vacuity: an equality over four targets would also pass if the
-        fixture had simply lost the hostile lines."""
-        for fragment in (
-            "CFLAGS :=",
-            "SIMPLE ::=",
-            "two.c:extra",
-            ".PHONY:",
-            "%.o: %.c",
-            "$(GENERATED):",
-            "ifeq ($(A):,$(B))",
-            "hidden: nope",
-        ):
-            self.assertIn(fragment, self.HOSTILE)
-
-    def test_only_the_makefile_make_would_read_is_read(self):
-        """**This assertion is B3 inverted.** It used to say the-steward reads
-        every tracked makefile name, "because each is a declaration and
-        neither is silently preferred" — which proposed `make a` for a repo
-        where bare `make a` fails, since `make` loads `GNUmakefile` alone.
-        `ShadowedMakefileTest` owns the rule and its diagnostic."""
-        self.write("Makefile", "a:\n\techo\n")
-        self.write("GNUmakefile", "b:\n\techo\n")
-        self.commit()
-        self.assertEqual(["make b"], self.values(self.survey().commands))
 
 
 class AmbiguousIndexEntryTest(ScanFixture):
@@ -1721,19 +1820,19 @@ class TypedCommandTest(ScanFixture):
     )
 
     # What a correct scan must produce when each of its values is typed.
-    # Thirteen lines: nine executables, three package scripts, one Makefile
-    # target. Three fixture declarations are deliberately absent:
+    # Twelve lines: nine executables and three package scripts. What the
+    # fixture declares and this list deliberately omits:
     #
-    # * the option-like names `--help` and `-j4` — quoting cannot rescue them,
-    #   so they are diagnosed instead (`OptionLikeNameTest`);
-    # * the target `shadowed`, which only the **shadowed** `Makefile` declares
-    #   — `make` loads `GNUmakefile` alone, so `make shadowed` would be a
-    #   documented command that does not resolve (`ShadowedMakefileTest`).
+    # * the option-like name `--help` — quoting cannot rescue it, so it is
+    #   diagnosed instead (`OptionLikeNameTest`);
+    # * **every makefile target**, `release` and `shadowed` and `-j4` alike —
+    #   v0 proposes no target from a makefile at all
+    #   (`MakefileNotProposedTest`), and `test_no_emitted_command_invokes_make`
+    #   below is that half asserted where the values are typed.
     EXPECTED_OUTPUT = (
         "BACKSLASH_RAN",
         "DASH_RAN",
         "LEADSPACE_RAN",
-        "MAKE-ARGV: [release]",
         "NPM-ARGV: [run] [a;id]",
         "NPM-ARGV: [run] [build all]",
         "NPM-ARGV: [run] [check]",
@@ -1783,8 +1882,10 @@ class TypedCommandTest(ScanFixture):
             )
             + "\n",
         )
-        # `GNUmakefile` is the file `make` loads; the `Makefile` beside it is
-        # never read, and its target must never be offered (B3).
+        # Two makefiles full of perfectly ordinary targets. **Not one of them
+        # may be offered**, and the `make` shim stays on `PATH` so that a
+        # regression which offered one is intercepted and named rather than
+        # silently running a real build in the fixture.
         self.write("GNUmakefile", "release:\n\techo\n\n-j4:\n\techo\n")
         self.write("Makefile", "shadowed:\n\techo\n")
         for relpath, token in self.EXECUTABLES:
@@ -1834,8 +1935,9 @@ class TypedCommandTest(ScanFixture):
     def test_every_emitted_command_runs_the_thing_it_names(self):
         """The whole point: the claim, executed rather than read.
 
-        Asserted as an equality over the **multiset of outputs**, not as ten
-        independent `assertIn`s, so a value that silently ran the wrong thing
+        Asserted as an equality over the **multiset of outputs**, not as a
+        dozen independent `assertIn`s, so a value that silently ran the wrong
+        thing
         (`npm run a;id` reaching npm as `run a`, then `id`) cannot pass.
         """
         self.hostile_repository()
@@ -1843,8 +1945,8 @@ class TypedCommandTest(ScanFixture):
         self.assertEqual(
             len(self.EXPECTED_OUTPUT),
             len(values),
-            "the scanner proposed %r, which is not the ten commands this "
-            "fixture declares" % (values,),
+            "the scanner proposed %r, which is not the twelve commands this "
+            "fixture declares that v0 proposes" % (values,),
         )
         observed = []
         for value in values:
@@ -1873,23 +1975,29 @@ class TypedCommandTest(ScanFixture):
                 "`id`, which this repository does not declare" % value,
             )
 
-    def test_no_emitted_command_names_the_shadowed_makefiles_target(self):
-        """B3, end to end in the fixture that types the values.
+    def test_no_emitted_command_invokes_make(self):
+        """The scope amendment, in the fixture that types the values.
 
-        The shims answer to any argv, so this half cannot be established by
-        running the value — `make shadowed` would print `MAKE-ARGV:
-        [shadowed]` against a shim exactly as `make release` does. What is
-        assertable here is that the scanner never offers it, and
-        `ShadowedMakefileTest.test_gnu_make_really_ignores_the_shadowed_file`
-        is where real `make` is asked whether that is the right answer.
+        The shims answer to any argv, so this cannot be established by running
+        the value — `make shadowed` would print `MAKE-ARGV: [shadowed]`
+        against a shim exactly as `make release` would. What is assertable
+        here is that no emitted value invokes `make` at all, and the
+        non-vacuity is the counter: this fixture tracks two makefiles holding
+        three ordinary targets between them, and something *is* proposed from
+        it.
         """
         self.hostile_repository()
         values = self.values(self.survey().commands)
-        self.assertNotIn("make shadowed", values)
-        self.assertIn(
-            "make release",
-            values,
-            "no makefile was read at all — the exclusion above proved nothing",
+        self.assertEqual(
+            [],
+            [value for value in values if value.split(" ")[0] == "make"],
+            "a makefile target reached the report",
+        )
+        self.assertEqual(
+            len(self.EXPECTED_OUTPUT),
+            len(values),
+            "the scanner proposed nothing at all — the exclusion above proved "
+            "nothing",
         )
 
 
@@ -1898,12 +2006,15 @@ class OptionLikeNameTest(ScanFixture):
 
     `shlex`-style quoting makes every metacharacter safe, and does **nothing**
     for a name that reads as an option: quoting `--help` yields `--help`
-    unchanged. `npm run --help` prints npm's help, and `make -j4` asks for four
-    parallel jobs and builds the default target — neither names the thing the
-    record claims. ADR-23 forbids writing product code against an unverified
-    vendor contract, so an end-of-options form nobody here has verified is not
-    the answer either; ADR-28 leaves exactly one: diagnose it, and propose
-    nothing.
+    unchanged, and `npm run --help` prints npm's help rather than running a
+    script by that name. ADR-23 forbids writing product code against an
+    unverified vendor contract, so an end-of-options form nobody here has
+    verified is not the answer either; ADR-28 leaves exactly one: diagnose it,
+    and propose nothing.
+
+    The `make -j4` half of this refusal went with the makefile reader — v0
+    proposes no target from a makefile, so there is no option-like target left
+    to refuse. The rule survives in full for the kind that remains.
     """
 
     def test_an_option_like_script_name_is_not_proposed(self):
@@ -1915,19 +2026,23 @@ class OptionLikeNameTest(ScanFixture):
         self.assertEqual(["npm run ok"], self.values(survey.commands))
         self.assertIn(scan.OPTION_LIKE_NAME, self.note_ids(survey))
 
-    def test_an_option_like_make_target_is_not_proposed(self):
-        self.write("Makefile", "-j4:\n\techo jobs\n\nreal:\n\techo real\n")
+    def test_a_single_hyphen_name_is_refused_too(self):
+        """`OPTION_PREFIX` is one character, not two: `npm run -s` reaches npm
+        as its `--silent` short flag, so the short form is the same defect."""
+        self.write(
+            PACKAGE_JSON, json.dumps({"scripts": {"-s": "x", "ok": "y"}}) + "\n"
+        )
         self.commit()
         survey = self.survey()
-        self.assertEqual(["make real"], self.values(survey.commands))
+        self.assertEqual(["npm run ok"], self.values(survey.commands))
         self.assertIn(scan.OPTION_LIKE_NAME, self.note_ids(survey))
 
     def test_the_diagnostic_names_the_name_and_the_file(self):
-        self.write("Makefile", "-j4:\n\techo jobs\n")
+        self.write(PACKAGE_JSON, json.dumps({"scripts": {"--help": "x"}}) + "\n")
         self.commit()
         notes = [n for n in self.survey().notes if n.id == scan.OPTION_LIKE_NAME]
-        self.assertEqual([repr("Makefile")], [n.where for n in notes])
-        self.assertIn(repr("-j4"), notes[0].observed)
+        self.assertEqual([repr(PACKAGE_JSON)], [n.where for n in notes])
+        self.assertIn(repr("--help"), notes[0].observed)
 
     def test_a_leading_hyphen_still_reaches_an_executable(self):
         """The counter-weight, and it is not symmetry for its own sake:
@@ -1952,12 +2067,11 @@ class ShellWordTest(ScanFixture):
 
     def test_an_ordinary_value_is_never_quoted(self):
         self.write(PACKAGE_JSON, '{"scripts": {"test": "jest"}}\n')
-        self.write("Makefile", "lint:\n\truff check .\n")
         self.write("scripts/build.sh", "#!/bin/sh\nexit 0\n")
         os.chmod(os.path.join(self.root, "scripts", "build.sh"), 0o755)
         self.commit()
         self.assertEqual(
-            ["./scripts/build.sh", "make lint", "npm run test"],
+            ["./scripts/build.sh", "npm run test"],
             self.values(self.survey().commands),
         )
 
@@ -1990,135 +2104,51 @@ class ShellWordTest(ScanFixture):
         manifest.validate({"commands": list(survey.commands)})
 
 
-class MakefileAssignmentTest(ScanFixture):
-    """B2 — an ordinary assignment is not a rule, and five of them are not five.
-
-    The reader partitioned at the **first colon** before excluding assignments
-    and inline comments, so two perfectly ordinary lines produced five targets
-    `make` does not have — a 5:1 false-positive rate against the one real
-    target in the same file. ADR-32 names the outcome: "a checker that cries
-    wolf gets ignored, which is this tool's defining failure by another road."
-    """
-
-    ASSIGNMENTS = (
-        "REGISTRY = https://example.invalid/image\n"
-        "FOO = bar # note: explanation\n"
-        "test:\n"
-        "\techo real\n"
-    )
-
-    # What the old reader invented, named individually so a regression says
-    # which shape came back.
-    FABRICATED = ("make FOO", "make REGISTRY", "make bar", "make https", "make note")
-
-    def test_an_assignment_line_declares_no_target(self):
-        self.write("Makefile", self.ASSIGNMENTS)
-        self.commit()
-        self.assertEqual(["make test"], self.values(self.survey().commands))
-
-    def test_none_of_the_five_fabricated_targets_survive(self):
-        """The same property one name at a time, because a regression that
-        brings back one of them should say which."""
-        self.write("Makefile", self.ASSIGNMENTS)
-        self.commit()
-        values = self.values(self.survey().commands)
-        for invented in self.FABRICATED:
-            self.assertNotIn(invented, values)
-        self.assertIn(
-            "make test", values, "the reader lost the one real target too"
-        )
-
-    def test_the_fixture_really_contains_both_assignment_shapes(self):
-        """Non-vacuity: an equality over one target would also hold if the
-        fixture had quietly lost the lines that produce the wrong ones."""
-        self.assertIn("REGISTRY = https://", self.ASSIGNMENTS)
-        self.assertIn("# note: explanation", self.ASSIGNMENTS)
-
-    def test_every_assignment_operator_is_excluded(self):
-        self.write(
-            "Makefile",
-            "PLAIN = a:b\n"
-            "SIMPLE := c:d\n"
-            "POSIX ::= e:f\n"
-            "CONDITIONAL ?= g:h\n"
-            "APPEND += i:j\n"
-            "SHELLED != echo k:l\n"
-            "real:\n\techo\n",
-        )
-        self.commit()
-        self.assertEqual(["make real"], self.values(self.survey().commands))
-
-    def test_a_rule_whose_dependency_holds_an_equals_is_still_a_rule(self):
-        """The counter-weight the rule turns on: whichever comes **first**
-        decides, so `target: dep=1` is a rule and `VAR := value` is not."""
-        self.write("Makefile", "deploy: ENV=prod\n\techo\n")
-        self.commit()
-        self.assertEqual(["make deploy"], self.values(self.survey().commands))
-
-    def test_a_double_colon_rule_is_still_a_rule(self):
-        """`double::` is a rule and `double::=` is an assignment, and the two
-        differ by one character at the same position."""
-        self.write("Makefile", "double::\n\techo\n\nSTORED ::= x\n")
-        self.commit()
-        self.assertEqual(["make double"], self.values(self.survey().commands))
-
-    def test_a_colon_inside_a_comment_is_not_a_rule_separator(self):
-        """The other half of B2's fix, and the half an assignment rule alone
-        does not cover.
-
-        `FOO = bar # note: explanation` is caught by the assignment operator
-        before its comment ever matters. A **directive** line is not: nothing
-        in `include config.mk # target: nope` is an assignment, so without
-        stripping the comment first the reader partitions at the colon inside
-        it and reads `config.mk` and `target` as two targets `make` has never
-        had.
-        """
-        self.write(
-            "Makefile", "include config.mk # target: nope\nreal:\n\techo\n"
-        )
-        self.commit()
-        self.assertEqual(["make real"], self.values(self.survey().commands))
-
-
 class SameModeConflictTest(IndexFixture):
     """B3 — an unmerged path whose stages agree about the mode is still unmerged.
 
     `index_entries` recorded a **set of modes**, so three stages that all say
     `100644` collapsed to one apparent mode and `_one_mode` called the path
-    merged. The scanner then read the **conflicted** working-tree file —
-    conflict markers and all — and proposed a command out of each side of the
-    merge. The suite's existing fixture only ever planted stages that disagreed
-    about the executable bit, which is the rarer case.
+    merged. The scanner then read the **working-tree** file and proposed a
+    command out of each side of the merge. The suite's existing fixture only
+    ever planted stages that disagreed about the executable bit, which is the
+    rarer case.
+
+    **The conflicted declaration is a `package.json` and its working-tree copy
+    is valid JSON**, which is stronger than the conflict-marker file this
+    class was first written with: markers make the file unparseable, so a
+    scanner that ignored the index entirely would still propose nothing and
+    pass. Here the working tree holds a perfectly readable manifest declaring
+    both sides, so the only thing that can keep `npm run one` and `npm run
+    two` out of the report is the index being read as unmerged.
     """
 
-    CONFLICTED_MAKEFILE = (
-        b"<<<<<<< HEAD\none:\n\techo a\n=======\ntwo:\n\techo b\n>>>>>>> other\n"
-    )
+    RESOLVABLE_LOOKING = b'{"scripts": {"one": "a", "two": "b"}}\n'
 
     def conflict_all_stages(self):
-        sha_ours = self.blob(b"one:\n\techo a\n")
-        sha_theirs = self.blob(b"two:\n\techo b\n")
+        sha_ours = self.blob(b'{"scripts": {"one": "a"}}\n')
+        sha_theirs = self.blob(b'{"scripts": {"two": "b"}}\n')
         sha_script = self.blob(b"#!/bin/sh\nexit 0\n")
         self.plant(
             (
-                ("100644", sha_ours, 1, b"Makefile"),
-                ("100644", sha_ours, 2, b"Makefile"),
-                ("100644", sha_theirs, 3, b"Makefile"),
+                ("100644", sha_ours, 1, b"package.json"),
+                ("100644", sha_ours, 2, b"package.json"),
+                ("100644", sha_theirs, 3, b"package.json"),
                 ("100755", sha_script, 1, b"conflicted.sh"),
                 ("100755", sha_script, 2, b"conflicted.sh"),
                 ("100755", sha_script, 3, b"conflicted.sh"),
             )
         )
-        full = os.path.join(self.root, "Makefile")
+        full = os.path.join(self.root, PACKAGE_JSON)
         with open(full, "wb") as handle:
-            handle.write(self.CONFLICTED_MAKEFILE)
+            handle.write(self.RESOLVABLE_LOOKING)
 
     def test_the_fixture_really_planted_agreeing_modes(self):
         """Non-vacuity, and it is the whole distinction from the existing
         fixture: if the planted stages disagreed the old code would already
         have caught them."""
         self.conflict_all_stages()
-        for path, mode in (("Makefile", "100644"), ("conflicted.sh", "100755")):
+        for path, mode in ((PACKAGE_JSON, "100644"), ("conflicted.sh", "100755")):
             stages = [line for line in self.staged() if line.endswith("\t" + path)]
             self.assertEqual(3, len(stages), path)
             self.assertEqual(
@@ -2135,13 +2165,24 @@ class SameModeConflictTest(IndexFixture):
         self.assertIn(scan.UNMERGED_ENTRY, self.note_ids(survey))
 
     def test_neither_side_of_the_merge_becomes_a_command(self):
-        """Named individually: reading the conflicted file proposed **both**
-        sides, so the repository was told it declares two targets it has
-        never had at the same time."""
+        """Named individually: reading the working-tree file proposed **both**
+        sides, so the repository was told it declares two scripts it has never
+        had at the same time."""
         self.conflict_all_stages()
         values = self.values(self.survey().commands)
-        self.assertNotIn("make one", values)
-        self.assertNotIn("make two", values)
+        self.assertNotIn("npm run one", values)
+        self.assertNotIn("npm run two", values)
+
+    def test_the_working_tree_copy_really_declares_both_sides(self):
+        """Non-vacuity for the exclusion above, and the reason this fixture is
+        valid JSON rather than a marker-laden file: the manifest on disk is
+        readable and declares both scripts, so nothing but the index check
+        keeps them out."""
+        self.conflict_all_stages()
+        document = json.loads(
+            S.read_text(os.path.join(self.root, PACKAGE_JSON))
+        )
+        self.assertEqual(["one", "two"], sorted(document["scripts"]))
 
     def test_a_conflicted_executable_is_never_a_command(self):
         self.conflict_all_stages()
@@ -2153,7 +2194,7 @@ class SameModeConflictTest(IndexFixture):
         self.conflict_all_stages()
         notes = [n for n in self.survey().notes if n.id == scan.UNMERGED_ENTRY]
         self.assertEqual(
-            [repr("Makefile"), repr("conflicted.sh")],
+            [repr("conflicted.sh"), repr(PACKAGE_JSON)],
             sorted(n.where for n in notes),
         )
         for note in notes:
@@ -2162,9 +2203,9 @@ class SameModeConflictTest(IndexFixture):
     def test_a_merged_declaration_is_still_read(self):
         """The counter-weight: refusing an unmerged entry must not make the
         scanner blind to an ordinary one."""
-        self.write("Makefile", "honest:\n\techo\n")
+        self.write(PACKAGE_JSON, '{"scripts": {"honest": "x"}}\n')
         self.commit()
-        self.assertEqual(["make honest"], self.values(self.survey().commands))
+        self.assertEqual(["npm run honest"], self.values(self.survey().commands))
 
 
 class WorkingTreeSymlinkDeclarationTest(ScanFixture):
@@ -2184,33 +2225,29 @@ class WorkingTreeSymlinkDeclarationTest(ScanFixture):
     """
 
     HONEST_PACKAGE = '{"scripts": {"build": "x", "test": "y"}}\n'
-    HONEST_MAKEFILE = "honest:\n\techo\n"
 
     def swap_for_symlinks(self):
         self.write(PACKAGE_JSON, self.HONEST_PACKAGE)
-        self.write("Makefile", self.HONEST_MAKEFILE)
         self.write("elsewhere/package.json", '{"scripts": {"SMUGGLED": "z"}}\n')
-        self.write("elsewhere/Makefile", "SMUGGLED_TARGET:\n\techo\n")
         self.commit()
-        for relpath in (PACKAGE_JSON, "Makefile"):
-            os.remove(os.path.join(self.root, relpath))
-            os.symlink(
-                os.path.join("elsewhere", relpath), os.path.join(self.root, relpath)
-            )
+        os.remove(os.path.join(self.root, PACKAGE_JSON))
+        os.symlink(
+            os.path.join("elsewhere", PACKAGE_JSON),
+            os.path.join(self.root, PACKAGE_JSON),
+        )
 
     def test_the_fixture_really_keeps_the_regular_file_index_mode(self):
         """Non-vacuity, and it is the defect in one assertion: git still
         records `100644`, so the mode guard cannot possibly fire."""
         self.swap_for_symlinks()
         listed = S.git_read(self.root, "ls-files", "--stage").decode("utf-8")
-        for relpath in (PACKAGE_JSON, "Makefile"):
-            line = [l for l in listed.splitlines() if l.endswith("\t" + relpath)]
-            self.assertEqual(1, len(line), relpath)
-            self.assertTrue(
-                line[0].startswith("100644"),
-                "git no longer records the replaced file as regular — the "
-                "fixture is inert: %s" % line[0],
-            )
+        line = [l for l in listed.splitlines() if l.endswith("\t" + PACKAGE_JSON)]
+        self.assertEqual(1, len(line), PACKAGE_JSON)
+        self.assertTrue(
+            line[0].startswith("100644"),
+            "git no longer records the replaced file as regular — the "
+            "fixture is inert: %s" % line[0],
+        )
         self.assertIn(" T ", " " + S.porcelain(self.root))
 
     def test_the_smuggled_declaration_never_becomes_a_command(self):
@@ -2225,15 +2262,12 @@ class WorkingTreeSymlinkDeclarationTest(ScanFixture):
         self.swap_for_symlinks()
         self.assertEqual([], self.values(self.survey().commands))
 
-    def test_a_diagnostic_names_both_replaced_declarations(self):
+    def test_a_diagnostic_names_the_replaced_declaration(self):
         self.swap_for_symlinks()
         notes = [
             n for n in self.survey().notes if n.id == scan.SYMLINKED_DECLARATION
         ]
-        self.assertEqual(
-            [repr("Makefile"), repr(PACKAGE_JSON)],
-            sorted(n.where for n in notes),
-        )
+        self.assertEqual([repr(PACKAGE_JSON)], [n.where for n in notes])
 
     def test_the_scan_still_exits_zero(self):
         self.swap_for_symlinks()
@@ -2241,13 +2275,12 @@ class WorkingTreeSymlinkDeclarationTest(ScanFixture):
         self.assertEqual(0, code, err)
         self.assertNotIn("Traceback", err, "a predicted case printed a crash")
 
-    def test_the_same_declarations_are_read_when_no_link_is_in_the_way(self):
+    def test_the_same_declaration_is_read_when_no_link_is_in_the_way(self):
         """The control that makes every exclusion above mean something."""
         self.write(PACKAGE_JSON, self.HONEST_PACKAGE)
-        self.write("Makefile", self.HONEST_MAKEFILE)
         self.commit()
         self.assertEqual(
-            ["make honest", "npm run build", "npm run test"],
+            ["npm run build", "npm run test"],
             self.values(self.survey().commands),
         )
 
@@ -2622,21 +2655,31 @@ class NestedProjectStackTest(ScanFixture):
     def test_a_nested_project_still_proposes_no_command(self):
         """**The concern this fix must not swallow.** The command boundary is
         DECISION-2026-08-14 §1 and it is untouched: the nested declaration is
-        a stack, and it is still diagnosed rather than proposed from."""
+        a stack, and it is still diagnosed rather than proposed from.
+
+        Both nested declarations are named, and by the note that states the
+        reason that is true of each: the manifest by the root boundary, the
+        makefile by the scope amendment. Neither is dropped (ADR-28).
+        """
         self.write("packages/web/package.json", '{"scripts": {"build": "x"}}\n')
         self.write("packages/web/Makefile", "deploy:\n\techo\n")
         self.commit()
         survey = self.survey()
         self.assertEqual([], self.values(survey.commands))
         self.assertEqual(
-            [
-                repr("packages/web/Makefile"),
-                repr("packages/web/package.json"),
-            ],
+            [repr("packages/web/package.json")],
             sorted(
                 note.where
                 for note in survey.notes
                 if note.id == scan.NESTED_DECLARATION
+            ),
+        )
+        self.assertEqual(
+            [repr("packages/web/Makefile")],
+            sorted(
+                note.where
+                for note in survey.notes
+                if note.id == scan.UNREAD_MAKEFILE
             ),
         )
 
@@ -2652,402 +2695,6 @@ class NestedProjectStackTest(ScanFixture):
             self.assertEqual("inferred", item["tier"])
             self.assertEqual("info", item["severity"])
             self.assertIn(item["confidence"], findings.CONFIDENCES)
-
-
-class MakefileDirectiveTest(ScanFixture):
-    """**B2** — a directive line is not a rule, wherever its colon sits.
-
-    `MAKE_DIRECTIVES` existed and was consulted in the **wrong place**: only
-    `_is_make_target` looked at it, and that sees the tokens of a rule head
-    *after* the line has already been split at a colon. So the directive word
-    itself was filtered and its **argument** was not —
-
-        include config:prod.mk   ->  ['config', 'real']
-        vpath %.c src:lib        ->  ['src', 'real']
-
-    — proposing `make config`, a target `make` does not have, which is A1
-    manufactured by us. The line has to be refused **before** a rule separator
-    is looked for, which is where the comment strip and the assignment scan
-    already run.
-
-    The `define` cases are the same defect through a different hole: the block
-    detector compared `stripped.split(" ")[0]`, so a TAB-separated `define`
-    and GNU make's documented `override define` were not recognised as blocks
-    at all and their bodies' labels leaked out as targets.
-    """
-
-    def targets(self, body):
-        self.write("Makefile", body)
-        self.commit()
-        return self.values(self.survey().commands)
-
-    def test_a_directive_argument_containing_a_colon_is_not_a_target(self):
-        self.assertEqual(
-            ["make real"], self.targets("include config:prod.mk\nreal:\n\techo\n")
-        )
-
-    def test_every_include_spelling_is_a_directive(self):
-        self.assertEqual(
-            ["make real"],
-            self.targets(
-                "include a:1.mk\n"
-                "-include b:2.mk\n"
-                "sinclude c:3.mk\n"
-                "real:\n\techo\n"
-            ),
-        )
-
-    def test_a_vpath_directive_is_not_a_target(self):
-        self.assertEqual(
-            ["make real"], self.targets("vpath %.c src:lib\nreal:\n\techo\n")
-        )
-
-    def test_a_conditional_directive_is_not_a_target(self):
-        self.assertEqual(
-            ["make real"],
-            self.targets(
-                "ifdef HOST:\nelse\nendif\n"
-                "ifneq (a:b,c)\nendif\n"
-                "real:\n\techo\n"
-            ),
-        )
-
-    def test_a_tab_separated_define_block_leaks_no_body_label(self):
-        self.assertEqual(
-            ["make real"],
-            self.targets("define\thelper\nhidden: nope\nendef\nreal:\n\techo\n"),
-        )
-
-    def test_an_override_define_block_leaks_no_body_label(self):
-        self.assertEqual(
-            ["make real"],
-            self.targets(
-                "override define helper\nhidden: nope\nendef\nreal:\n\techo\n"
-            ),
-        )
-
-    def test_an_export_define_block_leaks_no_body_label(self):
-        self.assertEqual(
-            ["make real"],
-            self.targets(
-                "export define helper\nhidden: nope\nendef\nreal:\n\techo\n"
-            ),
-        )
-
-    def test_a_nested_define_block_is_closed_by_its_own_endef(self):
-        """A flat "am I defining" flag lets the **inner** `endef` reopen the
-        file, and everything after it in the outer body reads as rules."""
-        self.assertEqual(
-            ["make real"],
-            self.targets(
-                "define outer\n"
-                "define inner\n"
-                "inner-label: nope\n"
-                "endef\n"
-                "outer-label: nope\n"
-                "endef\n"
-                "real:\n\techo\n"
-            ),
-        )
-
-    def test_a_target_is_still_read_from_a_file_full_of_directives(self):
-        """The counter-weight: refusing directive lines must not refuse the
-        rule that follows them, or every exclusion above passes vacuously."""
-        self.assertEqual(
-            ["make build", "make real"],
-            self.targets(
-                "include config:prod.mk\n"
-                "export TAG := v1\n"
-                "build:\n\techo\n"
-                "real:\n\techo\n"
-            ),
-        )
-
-    def test_a_target_whose_name_begins_with_a_directive_word_is_a_rule(self):
-        """`includes:` is not the directive `include`, and the split has to be
-        on whitespace for that to stay true."""
-        self.assertEqual(
-            ["make includes"], self.targets("includes:\n\techo\n")
-        )
-
-
-class RecipePrefixTest(ScanFixture):
-    """**B2's other half** — `.RECIPEPREFIX`, refused rather than guessed at.
-
-    A recipe line is TAB-indented, and `.RECIPEPREFIX = >` changes that for
-    the rest of the file. The reader's only recipe rule is
-    `line.startswith("\\t")`, so every recipe line of such a file was read as
-    a potential rule and a URL in one of them fabricated a target:
-
-        .RECIPEPREFIX = >
-        real:
-        >   curl https://example.invalid/x     ->  ['real', 'curl', 'https']
-
-    **Refused, not supported**, and the refusal is the whole file. Supporting
-    it means encoding GNU make's semantics for a directive this project has
-    not verified — that the value's first character is the prefix, that an
-    empty value restores the tab, that it applies from the assignment onward —
-    which is product code against an unverified vendor contract (ADR-23). A
-    refusal carrying a diagnostic is never a false claim (ADR-28).
-    """
-
-    CUSTOM = (
-        ".RECIPEPREFIX = >\n"
-        "real:\n"
-        ">\tcurl https://example.invalid/x\n"
-    )
-
-    def scan_with(self, body):
-        self.write("Makefile", body)
-        self.commit()
-        return self.survey()
-
-    def test_a_custom_recipe_prefix_fabricates_no_target(self):
-        survey = self.scan_with(self.CUSTOM)
-        for invented in ("make curl", "make https"):
-            self.assertNotIn(invented, self.values(survey.commands))
-
-    def test_nothing_at_all_is_proposed_from_such_a_file(self):
-        """The stronger form, and the honest one: once the recipe marker is
-        something this reader does not track, it cannot tell a rule from a
-        recipe anywhere in the file — including for `real`."""
-        self.assertEqual([], self.values(self.scan_with(self.CUSTOM).commands))
-
-    def test_the_refusal_is_diagnosed_by_name(self):
-        survey = self.scan_with(self.CUSTOM)
-        notes = [n for n in survey.notes if n.id == scan.RECIPE_PREFIX]
-        self.assertEqual([repr("Makefile")], [n.where for n in notes])
-        self.assertIn(".RECIPEPREFIX", notes[0].observed)
-
-    def test_the_scan_still_exits_zero(self):
-        self.scan_with(self.CUSTOM)
-        code, out, err = self.run_scan()
-        self.assertEqual(0, code, err)
-        self.assertNotIn("Traceback", err, "a predicted case printed a crash")
-        self.assertIn(scan.RECIPE_PREFIX, out)
-
-    def test_every_spelling_of_the_assignment_is_caught(self):
-        for body in (
-            ".RECIPEPREFIX = >\nreal:\n\techo\n",
-            ".RECIPEPREFIX:=>\nreal:\n\techo\n",
-            ".RECIPEPREFIX ?= >\nreal:\n\techo\n",
-            "override .RECIPEPREFIX = >\nreal:\n\techo\n",
-        ):
-            with self.other_repo():
-                survey = self.scan_with(body)
-                self.assertEqual([], self.values(survey.commands), body)
-                self.assertIn(scan.RECIPE_PREFIX, self.note_ids(survey), body)
-
-    def test_a_makefile_that_never_touches_it_is_read_normally(self):
-        """The counter-weight: a refusal keyed on a substring somebody typed
-        in a comment or a variable *name* would refuse every Makefile."""
-        survey = self.scan_with(
-            "# see .RECIPEPREFIX in the manual\n"
-            "MY_RECIPEPREFIX = >\n"
-            "real:\n\techo\n"
-        )
-        self.assertEqual(["make real"], self.values(survey.commands))
-        self.assertNotIn(scan.RECIPE_PREFIX, self.note_ids(survey))
-
-
-class ShadowedMakefileTest(ScanFixture):
-    """**B3** — `make` reads one makefile, so the-steward proposes from one.
-
-    Every tracked root makefile name was parsed and every target of every one
-    of them proposed. Bare `make <target>` loads only the
-    **highest-precedence** file, so with `GNUmakefile` present a target
-    declared only in `Makefile` produced `make test` — and `make test` fails
-    with *No rule to make target*, against a finding claiming a human can type
-    it at the repository root. That is A1, emitted by the tool that exists to
-    detect it.
-
-    The lookup order is GNU make's documented one — `GNUmakefile`,
-    `makefile`, `Makefile` — and it is **verified against real `make`** below
-    rather than asserted from memory, because a fix written against a vendor
-    contract nobody checked is what ADR-23 forbids.
-    """
-
-    def test_the_lookup_order_is_gnu_makes_documented_one(self):
-        """Pinned as an ordered tuple: the list it replaces was alphabetical
-        (`GNUmakefile`, `Makefile`, `makefile`), which is the wrong order and
-        reads as the right one.
-
-        The second assertion is the cross-check that keeps the two tables
-        honest: a makefile name that establishes the `make` stack but is
-        missing from the lookup order would be a file the scanner reports and
-        can never read.
-        """
-        self.assertEqual(
-            ("GNUmakefile", "makefile", "Makefile"), scan.MAKEFILE_PRECEDENCE
-        )
-        self.assertEqual(
-            sorted(scan.MAKEFILE_PRECEDENCE),
-            sorted(
-                name
-                for name, stack in scan.DECLARATIONS.items()
-                if stack == "make"
-            ),
-        )
-
-    def shadowed_repository(self):
-        """The regression the gate named: **only the shadowed file** declares
-        a target, so a scanner that reads both proposes a command that fails
-        and one that reads neither proposes nothing."""
-        self.write("GNUmakefile", "only-here:\n\techo active\n")
-        self.write("Makefile", "test:\n\techo shadowed\n")
-        self.commit()
-
-    def test_a_target_only_the_shadowed_file_declares_is_never_proposed(self):
-        self.shadowed_repository()
-        values = self.values(self.survey().commands)
-        self.assertEqual(["make only-here"], values)
-        self.assertNotIn("make test", values)
-
-    def test_the_shadowed_file_is_diagnosed_and_the_active_one_named(self):
-        """ADR-28: the declaration is real and was deliberately not proposed
-        from, so it owes a diagnostic — and one that does not say which file
-        *is* read leaves the human with no way to act on it."""
-        self.shadowed_repository()
-        notes = [n for n in self.survey().notes if n.id == scan.SHADOWED_MAKEFILE]
-        self.assertEqual([repr("Makefile")], [n.where for n in notes])
-        self.assertIn("GNUmakefile", notes[0].observed)
-
-    def test_the_filesystem_cannot_hold_the_middle_pair_of_the_order(self):
-        """**The platform bound, asserted rather than assumed.**
-
-        `makefile` and `Makefile` differ only in case, and APFS is
-        case-insensitive: writing both leaves **one** file, so the end-to-end
-        fixture below it cannot exist here — the first `write` is overwritten
-        by the second, and a test asserting `make lower` would be asserting
-        over a repository that never held two makefiles. This is the same
-        shape as `UnencodableValueTest`'s bound, and it is stated the same
-        way: prove the platform collapses them, then ask the function that
-        owns the rule.
-        """
-        self.write("makefile", "lower:\n\techo\n")
-        self.write("Makefile", "upper:\n\techo\n")
-        self.commit()
-        tracked = S.git_read(self.root, "ls-files", "-z").decode("utf-8")
-        names = [
-            name
-            for name in tracked.split("\0")
-            if name.lower() == "makefile"
-        ]
-        if len(names) == 2:
-            self.skipTest(
-                "this filesystem is case-sensitive; the end-to-end pair is "
-                "expressible here and the unit assertion below is not the "
-                "only coverage"
-            )
-        self.assertEqual(1, len(names), tracked)
-
-    def test_lowercase_makefile_outranks_the_capitalised_one(self):
-        """The middle of the three, which an alphabetical order gets wrong —
-        at the function that owns it, for the reason stated above.
-
-        `_active_makefile` reads nothing but the **names** in the index, so a
-        mapping is the whole input it needs; the diagnostic is what says which
-        name it chose, and it is asserted here rather than the target list
-        because on a case-insensitive checkout both names resolve to the same
-        bytes on disk.
-        """
-        notes = []
-        entries = {
-            "makefile": frozenset((("100644", "0"),)),
-            "Makefile": frozenset((("100644", "0"),)),
-        }
-        self.assertEqual("makefile", scan._active_makefile(entries, notes))
-        self.assertEqual([repr("Makefile")], [note.where for note in notes])
-        self.assertIn(scan.SHADOWED_MAKEFILE, [note.id for note in notes])
-
-    def test_the_gnumakefile_pair_is_the_end_to_end_coverage_of_the_order(self):
-        """The counter-weight to the bound above: the *first* of the three
-        differs from the third by more than case, so that pair is a real
-        repository and is asserted end to end — twice over, by
-        `test_a_target_only_the_shadowed_file_declares_is_never_proposed` and
-        by real `make` below."""
-        self.shadowed_repository()
-        listed = S.git_read(self.root, "ls-files", "-z").decode("utf-8")
-        self.assertIn("GNUmakefile", listed.split("\0"))
-        self.assertIn("Makefile", listed.split("\0"))
-
-    def test_the_only_tracked_makefile_is_read_whatever_it_is_called(self):
-        """The counter-weight: preferring one name must not stop the scanner
-        reading a repository that tracks only a lower-precedence name."""
-        for name in scan.MAKEFILE_PRECEDENCE:
-            with self.other_repo():
-                self.write(name, "solo:\n\techo\n")
-                self.commit()
-                self.assertEqual(
-                    ["make solo"], self.values(self.survey().commands), name
-                )
-
-    def test_a_nested_makefile_is_no_ones_shadow(self):
-        """Precedence is resolved per directory by `make`, and only the root
-        is proposed from — so a nested `Makefile` is diagnosed as nested, not
-        as shadowed by a root `GNUmakefile` it has nothing to do with."""
-        self.write("GNUmakefile", "root-target:\n\techo\n")
-        self.write("sub/Makefile", "nested:\n\techo\n")
-        self.commit()
-        survey = self.survey()
-        self.assertEqual(["make root-target"], self.values(survey.commands))
-        self.assertEqual(
-            [repr("sub/Makefile")],
-            [n.where for n in survey.notes if n.id == scan.NESTED_DECLARATION],
-        )
-        self.assertNotIn(scan.SHADOWED_MAKEFILE, self.note_ids(survey))
-
-    def test_a_shadowed_file_is_still_evidence_of_the_make_stack(self):
-        """The two concerns stay apart. Which file `make` *reads* decides what
-        may be proposed; both files are tracked declarations of a make
-        project, and P3.1 reports what the repository contains."""
-        self.shadowed_repository()
-        self.assertEqual(
-            [("", "make", ("GNUmakefile", "Makefile"))],
-            list(self.survey().stacks),
-        )
-
-    def test_gnu_make_really_ignores_the_shadowed_file(self):
-        """**The vendor contract, verified rather than remembered** (ADR-23).
-
-        Both directions, because "make test failed" alone would also be true
-        of a repository make could not read at all: the active file's target
-        must succeed in the same tree where the shadowed file's target fails.
-        `-n` prints the recipe and runs nothing.
-        """
-        real_make = shutil.which("make")
-        if real_make is None:
-            self.skipTest("no `make` on PATH to verify the lookup order against")
-        self.shadowed_repository()
-        active = subprocess.run(
-            [real_make, "-n", "only-here"],
-            cwd=self.root,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-        self.assertEqual(
-            0,
-            active.returncode,
-            "make could not read the active file at all — the fixture is "
-            "inert: %s" % active.stdout.decode("utf-8", "replace"),
-        )
-        shadowed = subprocess.run(
-            [real_make, "-n", "test"],
-            cwd=self.root,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-        self.assertNotEqual(
-            0,
-            shadowed.returncode,
-            "`make test` succeeded, so this `make` does read the shadowed "
-            "file and the precedence rule this fix is written against is "
-            "wrong for it",
-        )
-        self.assertIn(
-            "No rule to make target",
-            shadowed.stdout.decode("utf-8", "replace"),
-        )
 
 
 class HostilePathDiagnosticTest(ScanFixture):
@@ -3220,6 +2867,261 @@ class HostileIndexPathDiagnosticTest(IndexFixture):
         self.assertEqual(0, code, err)
         out.encode("utf-8")
         self.assertNotIn(self.UNMERGED_NEWLINE.decode("utf-8"), out)
+
+
+# =====================================================================
+# Three more defects, from a third independent gate. Two of them are the docs
+# scope, which is the one inference this file had never read back out of the
+# rendered report — so the escaping rule B4 established everywhere else, and
+# the cardinality honesty ADR-30 asks of every count, were both unasserted
+# there.
+
+
+class NonRegularDeclarationTest(IndexFixture):
+    """**D1** — a tracked basename is not a declaration; the index mode decides.
+
+    `stacks_and_projects` matched `_basename(relpath)` against `DECLARATIONS`
+    and asked the index nothing else, so a tracked **symlink** named
+    `package.json` and a **gitlink** — a submodule — named `package.json` each
+    produced a **`high`-confidence** *this repository declares a node project*
+    over an entry holding no package declaration this core can read, and in
+    the gitlink's case holding no file at all.
+
+    **The shape is an asymmetry, and that is what makes it worth a class.**
+    The command pass has consulted the index mode since B4 and refused both
+    entries correctly the whole time; the stack pass never did. One consumer's
+    guard was never the other's, and the one that was missing it is the
+    finding a human reads first — a `high` confidence over something nobody
+    read is exactly what ADR-28's tier rule exists to forbid.
+
+    ADR-28 also settles what replaces the finding: not a silent skip. The
+    entry is real and deliberately not read, so it owes a diagnostic naming
+    it.
+    """
+
+    def head(self):
+        return (
+            S.git_read(self.root, "rev-parse", "HEAD").decode("utf-8").strip()
+        )
+
+    def plant_symlink(self):
+        """git stores a symlink as a blob whose bytes are the target path."""
+        self.plant(
+            (
+                (
+                    "120000",
+                    self.blob(b"elsewhere/package.json"),
+                    0,
+                    b"package.json",
+                ),
+            )
+        )
+
+    def plant_gitlink(self):
+        """A submodule entry: mode `160000`, pointing at a commit."""
+        self.plant((("160000", self.head(), 0, b"package.json"),))
+
+    def stacks(self, survey=None):
+        return list((self.survey() if survey is None else survey).stacks)
+
+    def stack_findings(self):
+        found, _cardinalities = scan.survey_findings(self.survey())
+        return [item for item in found if item["id"] == scan.STACK_FINDING]
+
+    def test_the_fixture_really_plants_a_symlink_and_a_gitlink(self):
+        """Non-vacuity: if git normalised either entry away, every assertion
+        below would pass over an index that never held one."""
+        for plant, mode in (
+            (self.plant_symlink, "120000"),
+            (self.plant_gitlink, "160000"),
+        ):
+            with self.other_repo():
+                plant()
+                staged = [
+                    line for line in self.staged() if line.endswith("\tpackage.json")
+                ]
+                self.assertEqual(1, len(staged), mode)
+                self.assertTrue(staged[0].startswith(mode), staged[0])
+
+    def test_a_symlinked_manifest_is_not_a_node_project(self):
+        self.plant_symlink()
+        self.assertEqual([], self.stacks())
+        self.assertEqual([], self.stack_findings())
+
+    def test_a_gitlink_named_like_a_manifest_is_not_a_node_project(self):
+        self.plant_gitlink()
+        self.assertEqual([], self.stacks())
+        self.assertEqual([], self.stack_findings())
+
+    def test_neither_is_dropped_without_a_diagnostic(self):
+        """ADR-28: a candidate silently dropped both hides a real edge and
+        manufactures a false orphan."""
+        for plant, note_id in (
+            (self.plant_symlink, scan.SYMLINKED_DECLARATION),
+            (self.plant_gitlink, scan.UNREADABLE_DECLARATION),
+        ):
+            with self.other_repo():
+                plant()
+                notes = [n for n in self.survey().notes if n.id == note_id]
+                self.assertEqual(
+                    [repr(PACKAGE_JSON)], [n.where for n in notes], note_id
+                )
+
+    def test_the_diagnostic_says_no_stack_was_inferred_either(self):
+        """A note that mentioned only the command would leave the human
+        wondering why the stack disappeared with it."""
+        self.plant_gitlink()
+        note = [
+            n for n in self.survey().notes if n.id == scan.UNREADABLE_DECLARATION
+        ][0]
+        self.assertIn("160000", note.observed)
+        self.assertIn("stack", note.observed)
+
+    def test_the_scan_still_exits_zero_over_either(self):
+        for plant in (self.plant_symlink, self.plant_gitlink):
+            with self.other_repo():
+                plant()
+                code, _out, err = self.run_scan()
+                self.assertEqual(0, code, err)
+                self.assertNotIn(
+                    "Traceback", err, "a predicted case printed a crash"
+                )
+
+    def test_a_regular_manifest_at_the_same_path_is_still_a_node_project(self):
+        """The control, and it is what stops "no stack" reading as a pass: the
+        same basename, tracked as an ordinary regular file, is a project."""
+        self.write(PACKAGE_JSON, '{"scripts": {"build": "x"}}\n')
+        self.commit()
+        self.assertEqual([("", "node", (PACKAGE_JSON,))], self.stacks())
+        self.assertEqual(1, len(self.stack_findings()))
+
+    def test_a_working_tree_symlink_is_still_a_declaration(self):
+        """The counter-weight, and it is the line between the two checks. The
+        index mode decides whether the repository **declares** something
+        there, and a committed regular file replaced in the working tree still
+        does — git records `100644`. Only the *read* is refused
+        (`WorkingTreeSymlinkDeclarationTest`), so the stack survives while the
+        command does not.
+        """
+        self.write(PACKAGE_JSON, '{"scripts": {"build": "x"}}\n')
+        # Deliberately **not** named `package.json`: a second manifest would
+        # be a nested node project of its own and the equality below would be
+        # asserting over two stacks rather than the one this test is about.
+        self.write("elsewhere/smuggled.json", '{"scripts": {"SMUGGLED": "z"}}\n')
+        self.commit()
+        os.remove(os.path.join(self.root, PACKAGE_JSON))
+        os.symlink(
+            os.path.join("elsewhere", "smuggled.json"),
+            os.path.join(self.root, PACKAGE_JSON),
+        )
+        survey = self.survey()
+        self.assertEqual([("", "node", (PACKAGE_JSON,))], self.stacks(survey))
+        self.assertEqual([], self.values(survey.commands))
+
+
+class DocsScopeReportSafetyTest(ScanFixture):
+    """**D2** — a docs-scope value reached the report unescaped.
+
+    Every other repository-derived string this module renders goes through
+    `_shown`, which is B4's fix and the reason a rule with one exception is a
+    rule nobody can audit. The docs-scope claim was that exception: it wrote
+    `", ".join(docs_scope["include"])` verbatim into the report.
+
+    `_representability_fault` does not catch this and could not — its rule is
+    ADR-32's, about ASCII control characters and bytes that are not UTF-8, and
+    a **Unicode formatting character** is neither. U+202E RIGHT-TO-LEFT
+    OVERRIDE is valid UTF-8, holds no control character, validates as a record
+    value, and reverses the rendering of everything after it in the terminal
+    of the human reading the report — so the single line naming this
+    repository's documentation scope can be made to read as something it does
+    not say.
+    """
+
+    RTL_OVERRIDE = "‮"
+    OVERRIDE_DIRECTORY = "gpj‮docs"
+
+    def plant(self):
+        self.write(self.OVERRIDE_DIRECTORY + "/guide.md", "# guide\n")
+        self.commit()
+
+    def test_the_fixture_really_tracks_the_override_bearing_directory(self):
+        """Non-vacuity: on a filesystem that refused the name, every assertion
+        below would pass over a repository that never held one."""
+        self.plant()
+        tracked = S.git_read(self.root, "ls-files", "-z").decode("utf-8").split("\0")
+        self.assertIn(self.OVERRIDE_DIRECTORY + "/guide.md", tracked)
+
+    def test_the_directory_is_in_the_inferred_scope_at_all(self):
+        """The counter-weight, and it is what makes this an escaping defect
+        rather than a representability one: the character is perfectly
+        representable, so the directory is an ordinary member of the scope. A
+        "fix" that dropped it would satisfy the assertion below by deleting
+        its subject."""
+        self.plant()
+        self.assertIn(self.OVERRIDE_DIRECTORY, self.survey().docs_scope["include"])
+
+    def test_the_override_never_reaches_the_report_raw(self):
+        self.plant()
+        code, out, err = self.run_scan()
+        self.assertEqual(0, code, err)
+        self.assertNotIn("Traceback", err, "a predicted case printed a crash")
+        self.assertNotIn(
+            self.RTL_OVERRIDE,
+            out,
+            "a Unicode formatting character from a repository path reached a "
+            "human's terminal, where it reverses the text that follows it",
+        )
+        self.assertIn(repr(self.OVERRIDE_DIRECTORY), out)
+
+
+class DocsScopeEvidenceTest(ScanFixture):
+    """**D3** — the docs-scope evidence counted documents the scope excludes.
+
+    `_docs_scope` leaves out a container it cannot represent and diagnoses it
+    (ADR-32, ADR-28), and the finding's evidence then counted the **whole**
+    corpus: "%d tracked document(s) satisfying ADR-10's predicate lie there",
+    said of a scope that does not name the directory some of them lie under.
+    The one sentence a human reads to size the scope therefore over-reported
+    it, which is ADR-30's concern pointed the other way — a count that claims
+    more coverage than the thing it is a count of.
+    """
+
+    OMITTED_DIRECTORY = "weird\ndir"
+
+    def plant(self):
+        self.write("docs/guide.md", "# guide\n")
+        self.write(self.OMITTED_DIRECTORY + "/hidden.md", "# hidden\n")
+        self.commit()
+
+    def scope_finding(self, survey=None):
+        found, _cardinalities = scan.survey_findings(
+            self.survey() if survey is None else survey
+        )
+        items = [item for item in found if item["id"] == scan.DOCS_SCOPE_FINDING]
+        self.assertEqual(1, len(items), "no docs-scope finding was emitted")
+        return items[0]
+
+    def test_the_fixture_really_leaves_one_container_out_of_the_scope(self):
+        """Non-vacuity: the count is only wrong if a document really lies
+        outside the inferred scope."""
+        self.plant()
+        survey = self.survey()
+        self.assertEqual(["README.md", "docs"], survey.docs_scope["include"])
+        self.assertEqual(3, len(survey.documents))
+        self.assertIn(scan.UNREPRESENTABLE, self.note_ids(survey))
+
+    def test_the_evidence_counts_only_the_documents_under_the_scope(self):
+        self.plant()
+        self.assertIn("2 tracked document(s)", self.scope_finding()["observed"])
+
+    def test_every_document_is_still_counted_when_none_is_omitted(self):
+        """The counter-weight: counting the included set must not collapse
+        into counting the directories, or an ordinary repository's scope would
+        be under-reported."""
+        self.write("docs/a.md", "# a\n")
+        self.write("docs/b.md", "# b\n")
+        self.commit()
+        self.assertIn("3 tracked document(s)", self.scope_finding()["observed"])
 
 
 if __name__ == "__main__":

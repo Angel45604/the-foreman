@@ -136,8 +136,21 @@ raise an alarm, but it can never be the guarantee. Whenever one is written, the 
 forms does it catch" but "what behavioural assertion is the actual guarantee, and does it exist yet".
 
 Accepted cost, recorded plainly: the behavioural invariant covers `record_findings`' inputs, so a
-*future* module writing `confirmed` is not caught until Phase 6. Nothing in Phases 4–5 can persist a
-record, so the exposure is bounded.
+*future* module writing `confirmed` is not caught until Phase 6.
+
+**Correction to the bound as first written.** This paragraph originally said "Nothing in Phases 4–5 can
+persist a record, so the exposure is bounded." That is true of *persistence* and misleading about
+*exposure*: **Phase 4 introduces the first real callers of `record_findings`** (C1 and C2), and the
+bounded lint explicitly permits capabilities it cannot see — a module may reach the filesystem through
+a re-exported name, which is the very defect corrected above. A Phase-4 caller could therefore mutate
+records in memory, or write through such a name, with only a `git status` check standing in the way —
+and that check can miss a rewrite that restores identical bytes.
+
+**Therefore, a Phase-4 obligation, recorded here rather than assumed:** each real caller of
+`record_findings` gets a **tree snapshot plus an input-non-mutation snapshot** in the same fixture that
+asserts the caller **actually produced findings** — otherwise the assertion is the vacuous pass ADR-30
+forbids. This is exactly the assertion that could not be written in Phase 3, because `cli.VERBS`
+["check"] was still `_stub` and no production caller existed.
 
 ### 2. Narrow the prompt audit's claim, and add the behavioural check for the three live verbs
 
@@ -220,8 +233,19 @@ terminal run → `open rows=7 columns=13`, i.e. **the fixture's own pty**. The `
 — it is necessary and was demonstrably insufficient, having stayed green throughout the period the
 fixture was blind.
 
-**The bound this check still has**, stated per ADR-28: three live verbs, one fixture repository, those
-two arrangements. Not `generate` (a Phase-1 stub), and not other channels.
+**The bound this check still has**, stated per ADR-28: three verbs, one fixture repository, those two
+arrangements. Not `generate` (a Phase-1 stub), and not other channels.
+
+**And a sharper bound on two of the three verbs, because "three live verbs" overstated it.** Only
+`scan` is a fully implemented verb today: `cli.VERBS["check"]` is still `_stub`, and `doctor` carries
+the trackedness inspection plus a stub cardinality for the rest. So for `check` and `doctor` the
+comparison currently runs over placeholder report paths, and the fixture's own liveness assertion
+("the verb produced a report") is satisfied by that placeholder — which is the vacuity ADR-30 warns
+about, one level up from where it is usually looked for. The check is still worth running for all
+three (it costs nothing and it will start biting the moment those verbs become real), but **only
+`scan`'s result is evidence about a real verb today.** `check`'s becomes evidence at Phase 4 and
+`doctor`'s at Phase 7, and each phase should re-run it as part of its own done-criteria rather than
+inheriting a green from here.
 
 ### 3. `FindingError` / `RecordError` stay out of `cli.REPORTED_FAULTS` — a Phase-4 caller obligation
 

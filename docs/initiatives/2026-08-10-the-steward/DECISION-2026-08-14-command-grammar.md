@@ -102,8 +102,8 @@ typing each emitted value into `/bin/sh` at the repository root — **3 of 10 di
 claimed**:
 
 ```
-"npm run a;id"           exit 0    NPM-ARGV: [run] [a]  + uid=NNN(user) gid=NN(group)...
-"./scripts/$(id).sh"     exit 127  ran `id`, then tried ./scripts/uid=NNN(user)
+"npm run a;id"           exit 0    NPM-ARGV: [run] [a]  + <the real output of `id`>
+"./scripts/$(id).sh"     exit 127  ran `id`, then tried ./scripts/<the real output of `id`>
 "./scripts/it's.sh"      exit 2    syntax error — the value cannot be typed at all
 "./scripts/check me.sh"  exit 127  runs ./scripts/check with argument me.sh
 "npm run --help"         exit 0    npm parses it as a FLAG, not a script named --help
@@ -126,11 +126,78 @@ Those are **unverified vendor contracts**, and ADR-23 forbids shipping against o
 authority. If either is ever verified against the pinned tool, these names become proposable — that is
 the only thing blocking them.
 
-**The claim is now a tested property, not prose.** The report's sentence "a human can type it at the
-repository root" is asserted by a test that runs each emitted value through `/bin/sh -c` with cwd at
-the repository root, against `npm`/`make` shims that print their argv, and checks the **received
-argv** — not merely a zero exit. Its absence is why this shipped: every prior fixture used well-formed
-names.
+**Half the claim is now a tested property, and the bound matters.** The report's sentence "a human can
+type it at the repository root" is asserted by a test that runs each emitted value through
+`/bin/sh -c` with cwd at the repository root, against `npm` shims that print their argv, and checks
+the **received argv** — not merely a zero exit. Its absence is why this shipped: every prior fixture
+used well-formed names.
+
+**What that test does NOT establish, stated because an earlier draft of this section overclaimed it.**
+The shim accepts and echoes *any* argv, so the test proves **shell tokenization** and the **absence of
+injection** — that the shell hands the tool the argument the record intended. It does **not** prove the
+real tool *interprets* that argument as the declared script. The `--help` case is the proof of the
+distinction: argv `[run] [--help]` is correct tokenization, and `npm` still reads it as a flag. That is
+why option-like names are refused on top of quoting, rather than quoting being treated as sufficient.
+
+### SCOPE AMENDMENT, 2026-08-14 — v0 does not propose `make` targets at all
+
+**Owner decision.** `codex-gate question` returned **`GROUNDED`, `settledByCanon: true`** — the
+project's own doctrine settles the direction — but it is recorded here as an explicit **scope
+amendment** rather than as an interpretation, because ADR-18 does name "Makefile targets".
+
+**Why.** Three gate rounds produced three fresh crops of fabricated commands from the same parser:
+
+| Round | Newly fabricated |
+|---|---|
+| 1 | assignments — `REGISTRY = https://x/y` → `make REGISTRY`, `make https`; **5 of 6 proposed commands did not exist** |
+| 2 | directives — `include config:prod.mk` → `make config`; `vpath`; `.RECIPEPREFIX`; `define` bodies; and reading every root makefile when `make` reads one |
+| 3 | Make escaping — `build\ all:` → `make all`; targets inside an **inactive `ifeq`** branch; `$(info hello: world)` → `make hello`; precedence taken from **index names** rather than working-tree files |
+
+Codex's independent read-only probe reproduced all three round-3 cases and named the mechanism: the
+implementation is **an unsound partial evaluator** — it skips conditional directive *lines* but keeps
+parsing their *bodies*, and filters individual tokens instead of rejecting a partly unrecognised rule
+head.
+
+This is structural, not sloppy. GNU make is a **macro language with conditionals and file inclusion**;
+which targets exist depends on `$(…)` expansion, `ifeq`/`ifdef` evaluation, and `include`d files. A
+reader that does not expand, evaluate or follow includes **cannot know** which targets exist, so every
+approximation error manufactures the exact false claim this tool exists to detect (A1) — and ADR-32
+warns that a checker that cries wolf gets ignored, "this tool's defining failure by another road".
+
+**The decision.** Delete the Makefile target parser. A tracked `Makefile` still:
+
+- establishes the **make stack** (P3.1) — cheap, correct, and unaffected;
+- emits an **ADR-28 diagnostic** naming the file and stating plainly that v0 proposes no targets from
+  it, so nothing is silently dropped.
+
+This is exactly the treatment already given to `Taskfile.yml` / `justfile` / `Rakefile` /
+`pyproject.toml` script tables (unparseable at the 3.9 floor, ADR-1) and to `.RECIPEPREFIX` (an
+unverified vendor contract, ADR-23). **Those paths have produced zero defects across three rounds; the
+parsed path produced three crops.** Consistency alone argues for it.
+
+**Cost, stated plainly:** a Makefile-driven repository gets no proposed build/test commands from `scan`.
+A human writes them into `.steward.json` and confirms them — which is what confirmation is for.
+
+### The C1 half, decided at the same time so the amendment is complete
+
+Codex's sharpest point: deleting the scan-side parser could merely **move** the problem, because
+Phase 4's C1 must resolve a human-confirmed `make test` record — which needs to know whether `test` is
+a real target. Same parser, different phase.
+
+**It does not move, because `make` is an external tool.** A confirmed `make <target>` record carries
+**`resolution: "external"`**: ADR-18 defines `external` as a command naming "a tool the repository does
+not declare and is not expected to", and `make` is precisely that — the repository declares the
+*target*, but the *tool* is the system's. C1 therefore reports it **`info`, tier *inspected*, counted
+separately in the cardinality line and never as coverage** (ADR-13, ADR-30). No parser is required in
+C1, and no schema change is required anywhere.
+
+The pieces already fit without new machinery: the manifest **already** enforces that `external` is
+valid only on a `confirmed` record, and only a human can confirm — so `scan` structurally cannot emit
+it. That is the same boundary this amendment draws, enforced by the schema rather than by a rule.
+
+**P4.2 must therefore NOT grow a Makefile resolver.** If a future pass is tempted, the question to ask
+first is which construct changes the set of targets — and the answer is unbounded, which is why this
+amendment exists.
 
 ### Clarification, 2026-08-14 — "repository root only" does not exclude a nested *executable*
 
