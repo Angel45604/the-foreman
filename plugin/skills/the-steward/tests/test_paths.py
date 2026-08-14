@@ -66,6 +66,50 @@ class RepoRootTest(unittest.TestCase):
         self.assertIsNone(paths.repo_root(outside))
 
 
+class GitAnsweredTest(unittest.TestCase):
+    """One place decides what a git exit status *means* (ADR-13).
+
+    `git_checked` is the `answers=(0,)` case and `git_answered` is the general
+    one, because some commands answer with a status: `check-ignore -q` says
+    *matched* with 0 and *no rule matches* with 1. What both refuse is the
+    third reading — `if code != 0`, which collapses *no* and *the probe
+    failed* into one value and lets a broken invocation be reported as a
+    finding-free result. Exercised against real git, with real failures.
+    """
+
+    def setUp(self):
+        self.root = S.make_git_repo()
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def test_a_status_in_answers_is_returned_not_raised(self):
+        code, _out = paths.git_answered(
+            self.root, ["check-ignore", "-q", "--no-index", "--", "plain.md"], (0, 1)
+        )
+        self.assertEqual(1, code, "git stopped using 1 for `no rule matches`")
+
+    def test_a_status_outside_answers_faults(self):
+        with self.assertRaises(paths.GitCommandFailed) as caught:
+            paths.git_answered(
+                self.root,
+                ["check-ignore", "-q", "--no-index", "--", "../outside.md"],
+                (0, 1),
+            )
+        message = str(caught.exception)
+        self.assertIn("check-ignore", message)
+        self.assertIn("128", message)
+
+    def test_git_checked_is_the_zero_only_case(self):
+        """Same real failure, admitted by neither: `ls-files` has no non-zero
+        answer at all."""
+        with self.assertRaises(paths.GitCommandFailed) as caught:
+            paths.git_checked(self.root, ["ls-files", "-z", "--", "../outside.md"])
+        self.assertIn("ls-files", str(caught.exception))
+
+    def test_git_checked_returns_stdout_on_success(self):
+        out = paths.git_checked(self.root, ["ls-files", "-z", "--", "*.md"])
+        self.assertEqual(b"README.md\0", out)
+
+
 class ContainTest(unittest.TestCase):
     def setUp(self):
         self.root = S.make_git_repo()

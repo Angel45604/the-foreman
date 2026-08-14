@@ -468,6 +468,59 @@ class LiveUnionTest(CorpusFixture):
         self.assertIn("rendered", manifest.RECORDED_KINDS)
 
 
+class TrackedButDeletedIsDeliberateSilenceTest(CorpusFixture):
+    """D3 — the decision, pinned, rather than left as prose and a comment.
+
+    A **tracked** document deleted from the working tree leaves the corpus and
+    is carried out in neither `documents` nor `missing_recorded`. That is a
+    choice, and the choice is to stay silent: an uncommitted deletion is
+    already reported, in full, by `git status` — asserted live below — so a
+    second report of it would be the-steward duplicating git rather than
+    telling anyone something new, and ADR-28's "no silently dropped path" is
+    about paths **we** recorded writing, which is a claim only the manifest
+    can make. The gate is therefore `recorded`, never `tracked`.
+
+    Untested, this reads identically to the bug: P6.3's orphan report and
+    ADR-28's diagnostic rule would both be satisfied by *emitting* here, so
+    without a test the next reader cannot tell the decision from an oversight,
+    and flipping it costs one keyword.
+    """
+
+    def setUp(self):
+        CorpusFixture.setUp(self)
+        write(self.root, "docs/tracked.md", "# tracked\n")
+        self.commit("tracked")
+        os.remove(os.path.join(self.root, "docs", "tracked.md"))
+
+    def test_it_is_not_a_document(self):
+        """There are no bytes to read, so C3 and C4 have nothing to check."""
+        result = corpus.enumerate_documents(self.root)
+        self.assertIn("docs/tracked.md", S.git(self.root, "ls-files").stdout.decode())
+        self.assertNotIn("docs/tracked.md", result.documents)
+
+    def test_it_is_not_carried_out_as_missing_either(self):
+        """The deliberate silence. If this ever fails, the decision changed —
+        update ADR-28 and P6.3's orphan report with it, do not relax the test.
+        """
+        result = corpus.enumerate_documents(self.root)
+        self.assertEqual((), result.missing_recorded)
+
+    def test_the_signal_it_defers_to_really_exists(self):
+        """The silence is a delegation, and this is the thing delegated to."""
+        self.assertIn(
+            "D docs/tracked.md", S.git(self.root, "status", "--porcelain").stdout.decode()
+        )
+
+    def test_recording_it_is_what_makes_it_speak(self):
+        """The gate is the manifest, not trackedness: the same tracked and
+        deleted path, once the-steward has recorded rendering it, is a claim
+        about our own output and is carried out."""
+        document = {"recorded": [recorded("docs/tracked.md")]}
+        result = corpus.enumerate_documents(self.root, document)
+        self.assertNotIn("docs/tracked.md", result.documents)
+        self.assertEqual(("docs/tracked.md",), result.missing_recorded)
+
+
 class TwoCorporaTest(CorpusFixture):
     """P2.1(d) / T3 — an index can never become its own input (ADR-10).
 

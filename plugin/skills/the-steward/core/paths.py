@@ -54,26 +54,30 @@ def _run(cwd, args, timeout, cap, stdin):
 def git_output(cwd, args, timeout=None, cap=None, stdin=None):
     """Run `git <args>` in `cwd`. Returns (returncode, stdout_bytes).
 
-    For the calls where a **non-zero status is an answer**: `check-ignore`
-    exits 1 for "no rule matches", `log` exits non-zero when nothing matches,
-    and `rev-parse` exits non-zero outside a repository. Callers that cannot
-    interpret a failure must use `git_checked` instead.
+    For the calls where a non-zero status is an answer **and every non-zero
+    status is the same answer**: `log` exits non-zero when nothing matches and
+    `rev-parse` exits non-zero outside a repository, and in both cases the
+    caller has nothing else to say. Where some statuses are answers and the
+    rest are errors — `check-ignore -q`, 0 and 1 against everything above —
+    use `git_answered`, and where none of them are, `git_checked`.
     """
     completed = _run(cwd, args, timeout, cap, stdin)
     return completed.returncode, completed.stdout
 
 
-def git_checked(cwd, args, timeout=None, cap=None, stdin=None):
-    """Run `git <args>` and **fault** on a non-zero status (ADR-13, exit 2).
+def git_answered(cwd, args, answers, timeout=None, cap=None, stdin=None):
+    """Run `git <args>` where `answers` is the set of statuses git uses as
+    **answers**, and **fault** on any other (ADR-13, exit 2).
 
-    For the calls where a failure has no honest interpretation. The shape this
-    replaces is `if code != 0: return []`, which turns a broken git invocation
-    into an empty corpus — "0 files checked, 0 problems found" rendered as
-    coverage, which is ADR-30's vacuous pass with our own plumbing as the
-    cause. A tool fault must never read as a pass.
+    Returns (returncode, stdout_bytes), because for the commands that need
+    this the status *is* the answer: `check-ignore -q` says *matched* with 0
+    and *no rule matches* with 1, and reserves everything above for errors.
+    Reading "not 0" as "no match" makes a broken probe indistinguishable from
+    a real negative — the `if code != 0` shape, which is why there is exactly
+    one place in this module that decides what a status means.
     """
     completed = _run(cwd, args, timeout, cap, stdin)
-    if completed.returncode != 0:
+    if completed.returncode not in answers:
         raise GitCommandFailed(
             "the-steward: `git %s` exited %d in %r: %s. Refusing to report "
             "over a result we could not obtain."
@@ -84,7 +88,20 @@ def git_checked(cwd, args, timeout=None, cap=None, stdin=None):
                 completed.stderr.decode("utf-8", "replace").strip() or "(no stderr)",
             )
         )
-    return completed.stdout
+    return completed.returncode, completed.stdout
+
+
+def git_checked(cwd, args, timeout=None, cap=None, stdin=None):
+    """Run `git <args>` where **only 0 is an answer**. Returns stdout_bytes.
+
+    For the calls where a failure has no honest interpretation. The shape this
+    replaces is `if code != 0: return []`, which turns a broken git invocation
+    into an empty corpus — "0 files checked, 0 problems found" rendered as
+    coverage, which is ADR-30's vacuous pass with our own plumbing as the
+    cause. A tool fault must never read as a pass.
+    """
+    _code, out = git_answered(cwd, args, (0,), timeout=timeout, cap=cap, stdin=stdin)
+    return out
 
 
 class OutputCapExceeded(Exception):

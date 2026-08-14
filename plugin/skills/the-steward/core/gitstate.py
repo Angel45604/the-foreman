@@ -46,21 +46,32 @@ UNTRACKED = "untracked"
 STATES = (TRACKED, IGNORED, UNTRACKED)
 
 
+# `check-ignore -q` says *matched* with 0 and *no rule matches* with 1, and
+# reserves every higher status for errors. Both of the first two are answers;
+# nothing else is, and `git_answered` is what makes that true rather than
+# claimed — `code == 0` cannot tell 128 from 1 and would read a failed probe
+# as a clean negative.
+CHECK_IGNORE_ANSWERS = (0, 1)
+CHECK_IGNORE_MATCHED = 0
+
+
 def _is_in_the_index(root, relpath):
-    code, out = paths.git_output(root, ["ls-files", "-z", "--", relpath])
-    if code != 0:
-        return False
+    """`ls-files` has no non-zero answer: a failure here is exit 2, never
+    `False`. `False` would flow on to `untracked`, and C2 treats
+    untracked-but-present as **resolved** — a claim reported verified off a
+    probe that never ran, which is the disease this tool exists to find."""
+    out = paths.git_checked(root, ["ls-files", "-z", "--", relpath])
     return bool(out.replace(b"\0", b""))
 
 
 def _matches_an_ignore_rule(root, relpath):
-    # `--no-index`: the pure pattern question (see the module docstring). `-q`
-    # exits 0 when a rule matches, 1 when none does, and >1 on an error —
-    # which must not read as "no match" by accident, so only 0 is a yes.
-    code, _out = paths.git_output(
-        root, ["check-ignore", "-q", "--no-index", "--", relpath]
+    # `--no-index`: the pure pattern question (see the module docstring).
+    code, _out = paths.git_answered(
+        root,
+        ["check-ignore", "-q", "--no-index", "--", relpath],
+        CHECK_IGNORE_ANSWERS,
     )
-    return code == 0
+    return code == CHECK_IGNORE_MATCHED
 
 
 def path_state(root, relpath):

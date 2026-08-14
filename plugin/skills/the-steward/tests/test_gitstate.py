@@ -22,6 +22,7 @@ worse than none** — it is the vacuous pass this project exists to refuse. So
 
 import os
 import shutil
+import subprocess
 import unittest
 
 import _support as S
@@ -49,6 +50,12 @@ class TriStateFixture(unittest.TestCase):
     def state(self, relpath):
         return gitstate.path_state(self.root, relpath)
 
+    def track_a_file_matching_an_ignore_rule(self):
+        self.write("keep.log")
+        S.git(self.root, "add", "-f", "keep.log")
+        S.git(self.root, "commit", "-q", "-m", "keep")
+        self.write(".gitignore", "*.log\n")
+
 
 class PathStateTest(TriStateFixture):
     def test_a_committed_path_is_tracked(self):
@@ -74,12 +81,6 @@ class PathStateTest(TriStateFixture):
         self.write(".gitignore", "*.log\n")
         self.write("run.log")
         self.assertEqual(gitstate.IGNORED, self.state("run.log"))
-
-    def track_a_file_matching_an_ignore_rule(self):
-        self.write("keep.log")
-        S.git(self.root, "add", "-f", "keep.log")
-        S.git(self.root, "commit", "-q", "-m", "keep")
-        self.write(".gitignore", "*.log\n")
 
     def test_tracked_beats_ignored(self):
         """The precedence this module owns: trackedness is asked first."""
@@ -263,6 +264,158 @@ class CleanlinessGuardTest(TriStateFixture):
         with self.assertRaises(AssertionError):
             with S.unchanged_tree(self, self.root):
                 S.git(self.root, "add", "staged-later.md")
+
+
+class GitFailureIsNeverAConfidentAnswerTest(TriStateFixture):
+    """ADR-13 / ADR-30, the `corpus` rule applied to the tri-state.
+
+    `if code != 0: return False` is the same shape as `if code != 0: return []`
+    one module over: it turns a git invocation that **failed** into the
+    confident answer `untracked`. Downstream that is the disease itself — C2
+    treats untracked-but-present as *resolved*, so a claim would be reported
+    verified off a probe that never ran. Only statuses git uses as answers are
+    answers; everything else is a fault, and a fault is exit 2.
+    """
+
+    def not_a_repository(self, tag):
+        outside = os.path.realpath(
+            os.path.join(
+                self.root, os.pardir, "steward-not-a-repo-%s-%d" % (tag, os.getpid())
+            )
+        )
+        os.makedirs(outside, exist_ok=True)
+        self.addCleanup(shutil.rmtree, outside, True)
+        if S.git(outside, "rev-parse", "--show-toplevel").returncode == 0:
+            self.skipTest("the system temp dir is itself inside a git repository")
+        return outside
+
+    def test_a_path_outside_the_repository_faults_rather_than_reading_untracked(self):
+        """Every probe fails here: `ls-files` exits 128 and so does
+        `check-ignore`. Answering `untracked` off two failures is the vacuous
+        pass with our own plumbing as the cause."""
+        with self.assertRaises(paths.GitCommandFailed) as caught:
+            self.state("../outside.md")
+        self.assertIn("ls-files", str(caught.exception))
+
+    def test_outside_a_repository_the_tri_state_faults(self):
+        outside = self.not_a_repository("tristate")
+        with self.assertRaises(paths.GitCommandFailed) as caught:
+            gitstate.path_state(outside, "anything.md")
+        self.assertIn("128", str(caught.exception))
+
+    def test_it_exits_two_through_the_cli(self):
+        import io
+
+        import cli
+
+        outside = self.not_a_repository("cli")
+
+        def verb(context):
+            gitstate.path_state(outside, "anything.md")
+            return cli.EXIT_OK
+
+        original = dict(cli.VERBS)
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            cli.VERBS["check"] = verb
+            code = cli.main(["check"], out, err, cwd=self.root)
+        finally:
+            cli.VERBS.clear()
+            cli.VERBS.update(original)
+        message = err.getvalue()
+        self.assertEqual(2, code, message)
+        self.assertNotIn("Traceback", message, "a predicted fault printed a crash")
+        self.assertIn("ls-files", message)
+
+    def test_check_ignore_exit_one_stays_a_real_answer(self):
+        """The other half of the rule: `check-ignore -q` uses **1** for *no
+        rule matches*, so faulting on every non-zero would make `untracked`
+        unreachable. `{0, 1}` are answers; nothing else is."""
+        self.write("AGENTS.md")
+        self.assertEqual(1, S.git(
+            self.root, "check-ignore", "-q", "--no-index", "--", "AGENTS.md"
+        ).returncode)
+        self.assertEqual(gitstate.UNTRACKED, self.state("AGENTS.md"))
+
+    def test_a_check_ignore_status_that_is_not_an_answer_faults(self):
+        """`ls-files` can succeed and `check-ignore` still fail — a corrupt
+        `.gitignore` chain, a `core.excludesFile` git cannot read.
+
+        Failed **at the child**, at `paths._run`'s documented single spawn
+        site, because no fixture makes real git fail *there alone*: every
+        pathspec that breaks `check-ignore` breaks `ls-files` first, so the
+        composition would otherwise be untestable and 128 would go on reading
+        as *no rule matches*. Only the child's exit status is fabricated; both
+        modules' own logic runs for real.
+        """
+        real = paths._run
+
+        def failing_check_ignore(cwd, args, *rest):
+            if args and args[0] == "check-ignore":
+                return subprocess.CompletedProcess(
+                    args, 128, b"", b"fatal: cannot read excludes file"
+                )
+            return real(cwd, args, *rest)
+
+        paths._run = failing_check_ignore
+        self.addCleanup(setattr, paths, "_run", real)
+        self.write("AGENTS.md")
+        with self.assertRaises(paths.GitCommandFailed) as caught:
+            self.state("AGENTS.md")
+        self.assertIn("check-ignore", str(caught.exception))
+
+
+class TheArgvIsTheContractTest(TriStateFixture):
+    """D2 — the guard above probes **git**; this one probes the **module**.
+
+    `test_the_precedence_is_ours_and_not_inherited_from_a_git_default` asks git
+    directly what `--no-index` does, so it cannot notice the module dropping
+    the flag: deleting `--no-index` from `_matches_an_ignore_rule` left the
+    whole suite green, and deleting it *and* reversing the two branches also
+    left it green. Both mutations are observable only in the argv the module
+    actually builds, so the argv is what this asserts.
+    """
+
+    def record_the_argv(self):
+        """Recorded at `paths._run`, the one spawn site, so the reading does
+        not depend on which wrapper the module happens to call through."""
+        real = paths._run
+        seen = []
+
+        def recording(cwd, args, *rest):
+            seen.append(list(args))
+            return real(cwd, args, *rest)
+
+        paths._run = recording
+        self.addCleanup(setattr, paths, "_run", real)
+        return seen
+
+    def test_the_ignore_probe_passes_no_index(self):
+        self.write(".gitignore", "*.log\n")
+        self.write("run.log")
+        seen = self.record_the_argv()
+        self.assertEqual(gitstate.IGNORED, self.state("run.log"))
+        probes = [args for args in seen if args and args[0] == "check-ignore"]
+        self.assertEqual(1, len(probes), seen)
+        self.assertIn(
+            "--no-index",
+            probes[0],
+            "without `--no-index` git applies its own index-over-ignore "
+            "precedence and this module's ordering becomes unreachable",
+        )
+
+    def test_trackedness_is_asked_first(self):
+        """The precedence, read off the call order rather than off an answer
+        that git would produce either way."""
+        self.track_a_file_matching_an_ignore_rule()
+        seen = self.record_the_argv()
+        self.assertEqual(gitstate.TRACKED, self.state("keep.log"))
+        self.assertEqual(
+            ["ls-files"],
+            [args[0] for args in seen],
+            "either `check-ignore` was asked first, or it was asked at all "
+            "after `ls-files` already said tracked",
+        )
 
 
 class ReadOnlyTest(TriStateFixture):
