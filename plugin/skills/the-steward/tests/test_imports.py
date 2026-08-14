@@ -927,6 +927,206 @@ class FailedProbeDisciplineTest(unittest.TestCase):
         self.assertIn("manifest.py", users)
 
 
+# ----------------------------------------------------------------------
+# The same audit, pointed at the layer where the ORACLES live.
+# ----------------------------------------------------------------------
+#
+# The three detectors above scan `core/` only, and instance twelve landed in
+# `tests/_support.py`: `tree_snapshot` read `git status`'s stdout and never
+# its exit code, so removing `.git/index` made the second reading equal the
+# first and `unchanged_tree` **passed**. An oracle that cannot fail is worth
+# less than no oracle — every read-only test in the suite leans on it, and one
+# broken oracle turns all of them green at once. Widening the scan to the
+# support layer immediately found a **second** live instance, `porcelain`,
+# which four suites assert `== ""` against.
+#
+# The support layer's raw primitive is its own `git()` helper, not
+# `paths.git_output`, so the existing detectors were blind to it by
+# construction — `failed_probe_sites` over `_support.py` returned `{}` while
+# both bugs were live. Hence a fourth detector, keyed on the distinction that
+# actually matters here: **a fixture may run git for its side effects and
+# ignore everything; a fixture that reads git's OUTPUT must read its STATUS.**
+# `make_git_repo` calling `git(root, "init", "-q")` is a side effect, not a
+# reading, and flagging it would drown the rule in noise.
+
+RAW_FIXTURE_GIT = "unchecked-fixture-git"
+
+# Sites in the support layer that read a `git` result's output without its
+# status. Equality-checked, like the core allowlist, in both directions.
+SUPPORT_PROBE_ALLOWLIST = {}
+
+SUPPORT_LAYER = ("_support.py",)
+
+
+def _is_fixture_git_call(node):
+    """A call to the support layer's own `git` helper, bare or via `S.`."""
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id == "git"
+    if isinstance(func, ast.Attribute):
+        return func.attr == "git"
+    return False
+
+
+def unchecked_fixture_git_sites(source):
+    """Functions that read a fixture `git` result's output, never its status.
+
+    A result is *read* when `.stdout` or `.stderr` is taken off the call or
+    off a name assigned from it. It is *checked* when `.returncode` is taken
+    off either in the same function. Reading without checking is the disease:
+    a failed `git status` hands back `b""`, and `b""` is exactly what every
+    cleanliness assertion here treats as *clean*.
+
+    Calls whose result is discarded entirely are not readings and are not
+    reported — `git(root, "commit", …)` in a fixture is a side effect.
+    """
+    found = []
+
+    def scan(function):
+        bound = set()
+        for node in ast.walk(function):
+            if isinstance(node, ast.Assign) and _is_fixture_git_call(node.value):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        bound.add(target.id)
+        read = checked = False
+        for node in ast.walk(function):
+            if not isinstance(node, ast.Attribute):
+                continue
+            base = node.value
+            if not (
+                _is_fixture_git_call(base)
+                or (isinstance(base, ast.Name) and base.id in bound)
+            ):
+                continue
+            if node.attr in ("stdout", "stderr"):
+                read = True
+            elif node.attr == "returncode":
+                checked = True
+        if read and not checked:
+            found.append(function.name)
+
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            scan(node)
+    return found
+
+
+def support_probe_sites(sources=None):
+    """{(module, function): costume} over the test-support layer.
+
+    Runs **all four** detectors, so the support layer is held to the core's
+    rules as well as its own. Takes its sources as a parameter for the same
+    reason `failed_probe_sites` does: an audit that only ever sees clean code
+    cannot tell you it still works.
+    """
+    if sources is None:
+        sources = {
+            module: S.read_text(os.path.join(S.TESTS_DIR, module))
+            for module in SUPPORT_LAYER
+        }
+    sites = dict(failed_probe_sites(sources))
+    for module in sorted(sources):
+        for function in unchecked_fixture_git_sites(sources[module]):
+            sites[(module, function)] = RAW_FIXTURE_GIT
+    return sites
+
+
+class TestSupportProbeDisciplineTest(unittest.TestCase):
+    """The oracles are held to the rule they exist to enforce.
+
+    `FailedProbeDisciplineTest` scans `core/`. That boundary is exactly where
+    instance twelve hid, and where instance thirteen was waiting: the layer a
+    reviewer trusts most is the one nothing audits.
+    """
+
+    def test_the_support_layer_has_no_unaudited_probe(self):
+        self.assertEqual(
+            sorted(SUPPORT_PROBE_ALLOWLIST),
+            sorted(support_probe_sites()),
+            "a test-support helper reads git's output without its status (or "
+            "an allowlist entry no longer names a real site). Use "
+            "`S.git_read`, which faults on a non-zero status, or read "
+            "`.returncode` yourself. A fixture running git purely for its "
+            "side effects is not a reading and is not reported.",
+        )
+
+    def test_the_detector_catches_both_instances_that_shipped(self):
+        """Planted verbatim — the non-vacuity counter-weight. A detector
+        validated only against code that is now clean proves nothing."""
+        shipped = (
+            "def porcelain(root):\n"
+            "    return git(root, 'status', '--porcelain').stdout.decode('utf-8')\n"
+            "def tree_snapshot(root):\n"
+            "    status = git(root, 'status', '--porcelain', '--untracked-files=all')\n"
+            "    lines = [status.stdout.decode('utf-8', 'surrogateescape')]\n"
+            "    return '\\n'.join(lines)\n"
+        )
+        self.assertEqual(
+            ["porcelain", "tree_snapshot"], unchecked_fixture_git_sites(shipped)
+        )
+        self.assertEqual(
+            {
+                ("_support.py", "porcelain"): RAW_FIXTURE_GIT,
+                ("_support.py", "tree_snapshot"): RAW_FIXTURE_GIT,
+            },
+            support_probe_sites({"_support.py": shipped}),
+        )
+
+    def test_the_detector_accepts_a_helper_that_reads_the_status(self):
+        checked = (
+            "def git_read(cwd, *args):\n"
+            "    completed = git(cwd, *args)\n"
+            "    if completed.returncode != 0:\n"
+            "        raise AssertionError(completed.stderr)\n"
+            "    return completed.stdout\n"
+        )
+        self.assertEqual([], unchecked_fixture_git_sites(checked))
+
+    def test_a_fixture_running_git_for_its_side_effects_is_not_a_reading(self):
+        """The line the rule is drawn on. `make_git_repo` ignores every
+        status it gets; flagging that would make the audit unusable."""
+        side_effects = (
+            "def make_git_repo(root):\n"
+            "    git(root, 'init', '-q')\n"
+            "    git(root, 'add', 'README.md')\n"
+            "    git(root, 'commit', '-q', '-m', 'init')\n"
+            "    return root\n"
+        )
+        self.assertEqual([], unchecked_fixture_git_sites(side_effects))
+
+    def test_the_support_layer_is_held_to_the_core_detectors_too(self):
+        """The widening is *all four* detectors, not a fourth one alone."""
+        planted = {
+            "_support.py": (
+                "import os\n"
+                "def _entries(directory):\n"
+                "    try:\n"
+                "        return sorted(os.listdir(directory))\n"
+                "    except OSError:\n"
+                "        return []\n"
+            )
+        }
+        self.assertEqual(
+            {("_support.py", "_entries"): SWALLOWED}, support_probe_sites(planted)
+        )
+
+    def test_the_scanned_layer_actually_exists(self):
+        """A scan pointed at a file that has been renamed away reports no
+        violations forever."""
+        for module in SUPPORT_LAYER:
+            self.assertTrue(
+                os.path.isfile(os.path.join(S.TESTS_DIR, module)), module
+            )
+        self.assertIn(
+            "def git_read(",
+            S.read_text(os.path.join(S.TESTS_DIR, "_support.py")),
+            "the checked-read helper the audit points callers at is gone",
+        )
+
+
 # The pathspecs the core builds **on purpose**, keyed by the name they are
 # written under, with the reason each is not literal. Everything else after a
 # `--` in a git argv must go through `paths.literal_pathspec`.

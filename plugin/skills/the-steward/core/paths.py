@@ -378,6 +378,19 @@ def _drain(child, workers, deadline, grace):
     itself a fault** — a stream we closed is not a stream that ended — which
     is why `forced` is reported rather than absorbed.
 
+    **The grace is one deadline shared by every cleanup step, not an
+    allowance handed out per step.** Passing `grace` to the forced joins and
+    then `grace` again to `_reap` made the worst case `timeout + 2 x grace`:
+    stuck pumps could consume the whole margin and a child slow to be
+    collected — blocked in uninterruptible I/O, say — then started a second
+    one. That is the very bound this function exists to hold, broken one
+    layer inside the fix that established it. So `cleanup_deadline` is
+    computed once, from the original deadline, and each step gets only what
+    is left of it. ADR-18's promise —
+    `GIT_TIMEOUT_SECONDS + GIT_CLEANUP_GRACE_SECONDS` — is exactly this
+    arithmetic, and `CleanupSharesOneDeadlineTest` asserts the two agree by
+    measuring against the constants rather than a number of its own.
+
     **Killing the group is the only lever, and closing the pipe is not one.**
     Calling `close()` on a buffered pipe another thread is blocked inside
     `read()` on waits for that thread's lock, so "unblock the reader by
@@ -386,13 +399,14 @@ def _drain(child, workers, deadline, grace):
     left where it is (it is a daemon thread and holds nothing the process
     needs) and the call returns a fault instead of waiting.
     """
+    cleanup_deadline = deadline + max(grace, 0.0)
     forced = False
     stuck = _join_within(workers, _remaining(deadline))
     if stuck:
         forced = True
         _kill_tree(child)
-        stuck = _join_within(stuck, grace)
-    _reap(child, grace)
+        stuck = _join_within(stuck, _remaining(cleanup_deadline))
+    _reap(child, _remaining(cleanup_deadline))
     return forced, stuck
 
 

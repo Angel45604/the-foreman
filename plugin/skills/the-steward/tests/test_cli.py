@@ -429,6 +429,67 @@ class InstalledCoreOwnershipTest(unittest.TestCase):
         self.assertFalse(self.context(document).core_is_installed())
         self.assert_no_command_is_advertised()
 
+    # -- ownership is a property of the RECORDS, not of today's package ---
+    #
+    # The freshness coupling this replaces was the twelfth instance of the
+    # project's one bug wearing its newest costume: the fix that made
+    # ownership evidence-based asked the evidence question of the **shipped**
+    # `inventory.FILES`, so a core an older the-steward installed — every
+    # child recorded, every digest matching, nothing foreign in the directory
+    # — reported *not installed* the moment this package gained or lost a
+    # module. ADR-20 says ours means recorded-and-byte-matching; P6.5a says an
+    # upgrade may **add** and **remove** inventory members. A core mid-upgrade
+    # is therefore ours, and the footer must advertise it.
+    def older_core(self, dropped="hooks.py", retired="legacy.py"):
+        """A core a previous version installed: one member this package has
+        since **added** is absent from it, and one it has since **removed** is
+        present. Every on-disk child is recorded and byte-matching."""
+        members = S.packaged_core_members()
+        self.assertIn(dropped, members, "the fixture names a module that left")
+        del members[dropped]
+        self.assertNotIn(retired, members, "the fixture's retired name is live")
+        members[retired] = b"# a module this package no longer ships\n"
+        return S.install_recorded_core(self.root, members)
+
+    def test_a_fully_recorded_older_inventory_is_still_ours(self):
+        document = self.older_core()
+        self.assertTrue(
+            self.context(document).core_is_installed(),
+            "a fully recorded core is ours whatever this package now ships",
+        )
+        code, out, _err = self.report()
+        self.assertIn(code, (0, 1))
+        self.assertIn("python3 -B tools/steward doctor", out)
+
+    def test_an_older_inventory_with_an_unrecorded_stray_is_not_ours(self):
+        """The counter-weight: dropping the freshness coupling must not drop
+        the collision rule it was standing in front of."""
+        document = self.older_core()
+        with open(os.path.join(self.directory, "sneak.py"), "w", encoding="utf-8") as h:
+            h.write("import os\n")
+        self.assertFalse(self.context(document).core_is_installed())
+        self.assert_no_command_is_advertised()
+
+    def test_an_older_inventory_whose_retired_member_was_edited_is_not_ours(self):
+        """A recorded child is ours only while its bytes are the recorded
+        bytes — including a child no packaged inventory would recreate."""
+        document = self.older_core()
+        with open(os.path.join(self.directory, "legacy.py"), "a", encoding="utf-8") as h:
+            h.write("# edited\n")
+        self.assertFalse(self.context(document).core_is_installed())
+        self.assert_no_command_is_advertised()
+
+    def test_a_recorded_child_reached_through_a_symlink_is_not_ours(self):
+        """Every safety limb still applies to the recorded set, not just to
+        names that happen to be in the shipped inventory."""
+        document = self.older_core()
+        target = os.path.join(self.directory, "legacy.py")
+        elsewhere = os.path.join(self.root, "legacy-copy.py")
+        os.rename(target, elsewhere)
+        os.symlink(os.path.join(os.pardir, os.pardir, "legacy-copy.py"), target)
+        self.assertTrue(os.path.isfile(target), "the fixture is inert")
+        self.assertFalse(self.context(document).core_is_installed())
+
     # -- the rest of the ownership contract ------------------------------
     def test_an_unrecorded_installation_is_not_installed(self):
         """Every byte right, no manifest: nothing says we put it there."""

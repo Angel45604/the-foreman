@@ -14,6 +14,7 @@ crosses a symlink** is never writable in place. `TargetIsSymlinkedTest` builds
 the exact attack and shows the digest check alone waving it through.
 """
 
+import contextlib
 import errno
 import hashlib
 import io
@@ -433,6 +434,20 @@ class PartialPipeIsNeverAnAnswerTest(unittest.TestCase):
         S.git(self.root, "add", "-A")
         S.git(self.root, "commit", "-q", "-m", "docs")
 
+    @contextlib.contextmanager
+    def restored(self):
+        """Undo **only** this block's monkeypatches on the way out.
+
+        The narrow counterpart to `doCleanups()`: the module attributes go
+        back, the fixture repository stays. Re-registered `addCleanup`s from
+        inside are harmless — they restore the same originals at teardown.
+        """
+        saved = (paths._READ_CHUNK_BYTES, paths.subprocess)
+        try:
+            yield
+        finally:
+            paths._READ_CHUNK_BYTES, paths.subprocess = saved
+
     def small_chunks(self, size=4):
         original = paths._READ_CHUNK_BYTES
         self.addCleanup(setattr, paths, "_READ_CHUNK_BYTES", original)
@@ -495,18 +510,36 @@ class PartialPipeIsNeverAnAnswerTest(unittest.TestCase):
         self.assertIn("stderr", str(caught.exception))
 
     def test_no_partial_result_reaches_any_of_the_three_primitives(self):
-        for call in (
-            lambda: paths.git_output(self.root, ["ls-files", "-z", "--", "*.md"]),
-            lambda: paths.git_answered(
-                self.root, ["ls-files", "-z", "--", "*.md"], (0,)
-            ),
-            lambda: paths.git_checked(self.root, ["ls-files", "-z", "--", "*.md"]),
+        """**Restore the monkeypatches between iterations, not the fixture.**
+
+        This loop used to call `self.doCleanups()`, which runs the *whole*
+        cleanup stack — including the `rmtree` that deletes `self.root`. The
+        second and third iterations then ran against a directory that no
+        longer existed, so `assertRaises(GitCommandFailed)` could be satisfied
+        by *git cannot chdir there* rather than by the truncated pipe the test
+        is about: two thirds of the coverage, passing for the wrong reason.
+        The `assertTrue` below is what makes that unable to come back.
+        """
+        for label, call in (
+            ("git_output", lambda: paths.git_output(
+                self.root, ["ls-files", "-z", "--", "*.md"])),
+            ("git_answered", lambda: paths.git_answered(
+                self.root, ["ls-files", "-z", "--", "*.md"], (0,))),
+            ("git_checked", lambda: paths.git_checked(
+                self.root, ["ls-files", "-z", "--", "*.md"])),
         ):
-            self.small_chunks()
-            self.fail_stdout_after(1)
-            with self.assertRaises(paths.GitCommandFailed):
-                call()
-            self.doCleanups()
+            with self.subTest(primitive=label):
+                self.assertTrue(
+                    os.path.isdir(self.root),
+                    "the fixture repository is gone — an assertRaises here "
+                    "would pass because git cannot chdir, not because the "
+                    "pipe was truncated",
+                )
+                with self.restored():
+                    self.small_chunks()
+                    self.fail_stdout_after(1)
+                    with self.assertRaises(paths.GitCommandFailed):
+                        call()
 
     def test_corpus_enumeration_never_reports_over_a_short_ls_files(self):
         self.small_chunks()
@@ -722,6 +755,193 @@ class CleanupIsBoundedTest(unittest.TestCase):
         ):
             with self.assertRaises(paths.GitCommandFailed):
                 call()
+
+
+class _StuckWorker(object):
+    """A pump that never finishes, and charges every join its full timeout.
+
+    Real threads are the wrong instrument for this measurement: a real stuck
+    pump is stuck on a real pipe, so the fixture would have to keep a real
+    descendant alive and the elapsed time would carry its scheduling noise.
+    What is under test is arithmetic — how much budget each cleanup step is
+    handed — and a fake that *spends exactly what it is given* is the only way
+    to see a step being handed a fresh allowance instead of the remainder.
+
+    `overshoot` is what the **first** join spends beyond its timeout, which is
+    what a genuinely wedged pump does to a `join(timeout=0)`: the poll itself
+    costs something. It is the only way to tell a forced retry charged for
+    what the first join spent from one handed the grace over again — with a
+    first join that lands exactly on the deadline the two are arithmetically
+    identical, and a mutation run proved a test without it cannot see the
+    difference.
+    """
+
+    def __init__(self, name="stdout", overshoot=0.0):
+        self.name = name
+        self.overshoot = overshoot
+        self.granted = []
+
+    def join(self, timeout=None):
+        extra = self.overshoot if not self.granted else 0.0
+        self.granted.append(timeout)
+        time.sleep(max(timeout or 0.0, 0.0) + extra)
+
+    def is_alive(self):
+        return True
+
+
+class _SlowToReapChild(object):
+    """A killed child that does not come back, e.g. blocked in uninterruptible
+    I/O. `wait` spends its whole budget and still fails to collect it."""
+
+    pid = -1
+
+    def __init__(self):
+        self.granted = []
+
+    def wait(self, timeout=None):
+        self.granted.append(timeout)
+        time.sleep(max(timeout or 0.0, 0.0))
+        raise subprocess.TimeoutExpired("git", timeout)
+
+    def kill(self):
+        pass
+
+
+class CleanupSharesOneDeadlineTest(unittest.TestCase):
+    """Cleanup gets **one** grace in total, not one per step.
+
+    ADR-18 as amended promises a worst case of `GIT_TIMEOUT_SECONDS +
+    GIT_CLEANUP_GRACE_SECONDS`. The fix that bounded cleanup at all handed
+    each *step* the grace as a fresh allowance: `_drain` could spend all of it
+    joining stuck pumps and then pass another full grace to `_reap`, so a
+    child slow to be collected cost `timeout + 2 x grace` — the documented
+    bound broken by the code written to establish it, one layer down.
+
+    The assertion is written against the **constants**, never against a number
+    typed into the test, so the promise in ADR-18 and the behavior here cannot
+    drift apart: raising the grace raises the bound this measures, and no
+    edit to the code can make the test agree with a longer worst case.
+    """
+
+    # The fakes spend their allowance exactly; this covers scheduling only.
+    TOLERANCE_SECONDS = 0.4
+
+    def pin(self, timeout, grace):
+        for name, value in (
+            ("GIT_TIMEOUT_SECONDS", timeout),
+            ("GIT_CLEANUP_GRACE_SECONDS", grace),
+        ):
+            self.addCleanup(setattr, paths, name, getattr(paths, name))
+            setattr(paths, name, value)
+
+    def documented_bound(self):
+        """The ADR's worst case, read from the constants it is stated in."""
+        return paths.GIT_TIMEOUT_SECONDS + paths.GIT_CLEANUP_GRACE_SECONDS
+
+    def test_a_stuck_pump_and_a_slow_reap_share_the_one_grace(self):
+        self.pin(timeout=0.4, grace=1.0)
+        child, worker = _SlowToReapChild(), _StuckWorker()
+
+        started = time.monotonic()
+        deadline = started + paths.GIT_TIMEOUT_SECONDS
+        # The child's own bound, spent as `_run` would spend it before
+        # cleanup begins. Everything after this is cleanup's share.
+        time.sleep(paths.GIT_TIMEOUT_SECONDS)
+
+        forced, stuck = paths._drain(
+            child, (worker,), deadline, paths.GIT_CLEANUP_GRACE_SECONDS
+        )
+        elapsed = time.monotonic() - started
+
+        self.assertTrue(forced, "the fixture never reached the forced path")
+        self.assertEqual((worker,), stuck, "the fixture's pump was not stuck")
+        self.assertTrue(child.granted, "the fixture never reached the reap")
+        self.assertLessEqual(
+            elapsed,
+            self.documented_bound() + self.TOLERANCE_SECONDS,
+            "cleanup took %.2fs against a documented worst case of %.2fs "
+            "(GIT_TIMEOUT_SECONDS + GIT_CLEANUP_GRACE_SECONDS) — a step was "
+            "handed a fresh grace instead of what remained of the shared one"
+            % (elapsed, self.documented_bound()),
+        )
+
+    def test_the_reap_is_charged_what_the_joins_already_spent(self):
+        """The same defect stated as arithmetic, so a regression names itself
+        rather than showing up as a stopwatch reading."""
+        self.pin(timeout=0.0, grace=1.0)
+        child, worker = _SlowToReapChild(), _StuckWorker()
+        paths._drain(child, (worker,), time.monotonic(), paths.GIT_CLEANUP_GRACE_SECONDS)
+        self.assertLessEqual(
+            sum(grant for grant in worker.granted[1:]) + sum(child.granted),
+            paths.GIT_CLEANUP_GRACE_SECONDS + self.TOLERANCE_SECONDS,
+            "the forced joins and the reap were granted %r and %r — together "
+            "more than the one cleanup grace of %.2fs"
+            % (worker.granted[1:], child.granted, paths.GIT_CLEANUP_GRACE_SECONDS),
+        )
+
+    def test_a_pump_that_overshoots_its_join_does_not_reset_the_grace(self):
+        """The limb the first two tests are blind to.
+
+        The first join is bounded by the *original* deadline, so when it lands
+        exactly there, `grace` and `remaining(cleanup_deadline)` are the same
+        number and a forced retry handed either behaves identically — a
+        mutation run confirmed a fixture without an overshoot cannot tell them
+        apart. A wedged pump does not land exactly there: `join(timeout=0)`
+        still costs a poll. What that poll spent is spent, and the retry must
+        be charged for it.
+        """
+        overshoot = 0.8
+        self.pin(timeout=0.0, grace=1.0)
+        child = _SlowToReapChild()
+        worker = _StuckWorker(overshoot=overshoot)
+
+        started = time.monotonic()
+        paths._drain(child, (worker,), started, paths.GIT_CLEANUP_GRACE_SECONDS)
+        elapsed = time.monotonic() - started
+
+        self.assertGreaterEqual(
+            elapsed, overshoot, "the fixture's first join never overshot"
+        )
+        self.assertLessEqual(
+            elapsed,
+            self.documented_bound() + self.TOLERANCE_SECONDS,
+            "cleanup took %.2fs against a documented worst case of %.2fs — "
+            "the forced retry was not charged the %.2fs the first join spent"
+            % (elapsed, self.documented_bound(), overshoot),
+        )
+
+    def test_the_ordinary_path_is_not_charged_anything(self):
+        """The control: without it, `return early` would pass both tests."""
+
+        class _DoneWorker(object):
+            name = "stdout"
+
+            def join(self, timeout=None):
+                pass
+
+            def is_alive(self):
+                return False
+
+        class _ReapedChild(object):
+            pid = -1
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                raise AssertionError("the ordinary path killed the child")
+
+        self.pin(timeout=1.0, grace=1.0)
+        started = time.monotonic()
+        forced, stuck = paths._drain(
+            _ReapedChild(),
+            (_DoneWorker(),),
+            time.monotonic() + paths.GIT_TIMEOUT_SECONDS,
+            paths.GIT_CLEANUP_GRACE_SECONDS,
+        )
+        self.assertEqual((False, ()), (forced, stuck))
+        self.assertLess(time.monotonic() - started, self.TOLERANCE_SECONDS)
 
 
 class GitOutputDecodingTest(unittest.TestCase):

@@ -323,6 +323,57 @@ class CleanlinessGuardTest(TriStateFixture):
             with S.unchanged_tree(self, self.root):
                 os.makedirs(os.path.join(self.root, "docs", "steward"))
 
+    # ------------------------------------------------------------------
+    # The oracle's own failed-probe costume — instance **twelve**, and the
+    # first one inside the test-support layer rather than the core. The guard
+    # ran `git status` and read its stdout without ever looking at its status.
+    # Remove or corrupt `.git/index` and the second `status` exits 128 with
+    # **empty** stdout; the walk excludes `.git`; so the snapshot equals the
+    # clean one and the guard *passes*. "Nothing changed" and "I could not
+    # look" became the same reading, in the one place whose entire job is to
+    # tell those apart — and an oracle that cannot fail is worth less than no
+    # oracle, because every read-only test in the suite leans on it.
+    # ------------------------------------------------------------------
+
+    def test_it_fails_when_its_own_git_probe_fails(self):
+        with self.assertRaises(AssertionError) as caught:
+            with S.unchanged_tree(self, self.root):
+                os.remove(os.path.join(self.root, ".git", "index"))
+                os.mkdir(os.path.join(self.root, ".git", "index"))
+        self.assertIn("git status", str(caught.exception))
+
+    def test_the_damaged_probe_really_does_answer_empty(self):
+        """Without this the test above could pass because the *walk* saw
+        something, leaving the ignored status a live bug behind a green test.
+        """
+        os.remove(os.path.join(self.root, ".git", "index"))
+        os.mkdir(os.path.join(self.root, ".git", "index"))
+        broken = S.git(self.root, "status", "--porcelain", "--untracked-files=all")
+        self.assertNotEqual(0, broken.returncode, "the fixture did not break git")
+        self.assertEqual(b"", broken.stdout, "the fixture's probe still answered")
+
+    def test_it_reports_what_the_failed_probe_said(self):
+        """A fault that cannot say why is the next version of this bug."""
+        os.remove(os.path.join(self.root, ".git", "index"))
+        os.mkdir(os.path.join(self.root, ".git", "index"))
+        with self.assertRaises(AssertionError) as caught:
+            S.tree_snapshot(self.root)
+        message = str(caught.exception)
+        self.assertIn(self.root, message)
+        self.assertIn("index", message, "git's own stderr is not in the fault")
+
+    def test_the_other_oracle_faults_on_a_failed_probe_too(self):
+        """`S.porcelain` is the same oracle without the walk, and four suites
+        assert `assertEqual("", S.porcelain(root))` against it. It was found
+        by pointing the structural guard at the test-support layer, not by
+        anyone noticing it — which is the argument for the widened scan."""
+        self.assertEqual("", S.porcelain(self.root), "the control is not clean")
+        os.remove(os.path.join(self.root, ".git", "index"))
+        os.mkdir(os.path.join(self.root, ".git", "index"))
+        with self.assertRaises(AssertionError) as caught:
+            S.porcelain(self.root)
+        self.assertIn("index", str(caught.exception))
+
     def test_it_ignores_churn_inside_the_git_directory(self):
         """The guard is about repository *data*. git rewrites its own
         bookkeeping (`index`, logs, `gc` output) on reads we do not control,

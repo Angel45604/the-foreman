@@ -20,7 +20,6 @@ import bootstrap
 import digest
 import findings
 import hooks
-import inventory
 import manifest
 import paths
 
@@ -88,6 +87,30 @@ def _recorded_copies(document):
     return stored
 
 
+def _recorded_core_members(document):
+    """{name: sha256} for the `copied` records **directly under** the core
+    directory — or `None` if any of them is not a flat child of it.
+
+    The installed core is a flat directory of files (`inventory.FILES` is a
+    flat list, and the copy never walks). A `copied` record naming
+    `tools/steward/<something>/<else>` therefore describes an installation
+    this tool cannot have performed, and the honest answer to *did we install
+    that* is no. Returning `None` rather than skipping the record keeps the
+    nested case from silently narrowing the recorded set until the remainder
+    happens to match what is on disk.
+    """
+    prefix = INSTALLED_CORE_DIRECTORY + "/"
+    members = {}
+    for path, sha256 in _recorded_copies(document).items():
+        if not isinstance(path, str) or not path.startswith(prefix):
+            continue
+        name = path[len(prefix):]
+        if not name or "/" in name:
+            return None
+        members[name] = sha256
+    return members
+
+
 def installed_core_is_ours(root, document):
     """Is the core at `tools/steward` one **this repository's manifest owns**?
 
@@ -111,12 +134,28 @@ def installed_core_is_ours(root, document):
     2. its component chain **crosses no symlink**, and neither does any
        child's: a link resolving back inside passes containment, which is
        DEBT ITEM 7 exactly;
-    3. a **manifest** exists — it is the only place ownership is recorded, so
-       a byte-perfect copy nobody recorded is somebody else's copy;
-    4. the directory's children are **exactly the declared inventory** — a
-       stray unlisted file is a collision, not something to overlook;
-    5. every member is recorded `copied` and its **digest matches** the bytes
-       on disk.
+    3. **something is recorded** under the contract path — the manifest is the
+       only place ownership is recorded, so a byte-perfect copy nobody
+       recorded is somebody else's copy;
+    4. the directory's children are **exactly the recorded set** — a stray
+       unlisted file is a collision, not something to overlook, and a recorded
+       child that is gone is not an installation either;
+    5. every recorded member is kind `copied` and its **digest matches** the
+       bytes on disk.
+
+    **The recorded set, not `inventory.FILES` — and that distinction is the
+    twelfth instance of this project's one bug.** Asking the evidence question
+    of the *currently packaged* inventory silently added a sixth requirement,
+    *and the core is the version we ship today*, which ADR-20 never says: ours
+    means recorded-and-byte-matching, and P6.5a explicitly supports an upgrade
+    that **adds** and **removes** inventory members. Under the coupling, a
+    core an older the-steward installed — every child recorded, every digest
+    matching, nothing foreign present — reported *not installed* the moment
+    this package gained or lost one module, suppressing the footer and
+    conflating ordinary version drift with a foreign collision. Whether the
+    installed core matches the packaged one is a **freshness** question
+    (P6.6's sync), asked and answered elsewhere; it is not what ownership
+    means.
 
     A failed *look* is never one of these answers: `ENOENT`/`ENOTDIR` is
     genuine absence and answers False, and anything else is exit 2 (ADR-13).
@@ -134,23 +173,23 @@ def installed_core_is_ours(root, document):
             "Refusing to report over a directory we did not manage to look at "
             "— that is not the same as an empty one." % (directory, exc)
         )
-    if children != set(inventory.FILES):
-        return False
     # An **unmanaged** repository (no manifest, ADR-32) records nothing, so it
     # owns nothing. It needs no rule of its own: the empty record set is the
     # answer, and a separate `document is None` branch was redundant with it.
-    stored = _recorded_copies(document or {})
-    for name in inventory.FILES:
+    recorded = _recorded_core_members(document or {})
+    if recorded is None or not recorded:
+        return False
+    if children != set(recorded):
+        return False
+    for name in sorted(recorded):
         relpath = "%s/%s" % (INSTALLED_CORE_DIRECTORY, name)
-        if relpath not in stored:
-            return False
         if paths.crosses_symlink(root, relpath):
             return False
         located = os.path.join(directory, name)
         if not os.path.isfile(located):
             return False
         try:
-            if digest.of_file(located) != stored[relpath]:
+            if digest.of_file(located) != recorded[name]:
                 return False
         except OSError as exc:
             raise StewardError(

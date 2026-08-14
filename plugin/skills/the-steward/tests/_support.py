@@ -68,9 +68,43 @@ def run_core(interpreter, argv, cwd, core_dir=None, bare=False, env=None):
 
 
 def git(cwd, *args):
+    """Run git for the fixture's own purposes. The **status is the caller's**.
+
+    Deliberately raw: fixtures run git for its side effects (`init`, `add`,
+    `commit`) far more often than for its output, and a helper that raised on
+    every non-zero status would be wrong for `check-ignore`, which answers
+    with 1. What is **not** optional is that a caller reading this result's
+    *output* also reads its *status* — see `git_read`, and
+    `TestSupportProbeDisciplineTest`, which fails on a new site that does not.
+    """
     return subprocess.run(
         ["git"] + list(args), cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
+
+
+def git_read(cwd, *args):
+    """`git`, for the callers that read its **output**: stdout, or a fault.
+
+    An oracle that reads stdout without reading the status cannot tell an
+    empty answer from a probe that never ran, and an empty answer is what
+    every cleanliness assertion in this suite treats as *clean*. That is the
+    disease this project keeps re-contracting, and the test-support layer is
+    where it does the most damage, because a broken oracle turns every test
+    that leans on it green at once.
+    """
+    completed = git(cwd, *args)
+    if completed.returncode != 0:
+        raise AssertionError(
+            "the fixture's `git %s` in %r exited %d: %s. Refusing to read an "
+            "answer out of a probe that failed."
+            % (
+                " ".join(args),
+                cwd,
+                completed.returncode,
+                completed.stderr.decode("utf-8", "replace").strip() or "(no stderr)",
+            )
+        )
+    return completed.stdout
 
 
 def make_git_repo(prefix="steward-fixture-"):
@@ -89,21 +123,37 @@ def make_git_repo(prefix="steward-fixture-"):
 
 
 def porcelain(root):
-    return git(root, "status", "--porcelain").stdout.decode("utf-8")
+    """The other oracle the widened guard caught, in the same costume.
+
+    Four suites assert `assertEqual("", S.porcelain(root))` or compare two
+    readings of it. Reading stdout off a failed `git status` returns `""`, so
+    every one of those assertions passed over a probe that never ran.
+    """
+    return git_read(root, "status", "--porcelain").decode("utf-8")
 
 
 INSTALLED_CORE_DIRECTORY = "tools/steward"
 
 
-def install_owned_core(root, manifest_extra=None):
-    """Vendor the packaged core into `root` **with its ownership evidence**.
+def packaged_core_members():
+    """{name: bytes} for the packaged core's declared inventory."""
+    members = {}
+    for name in core_inventory():
+        with open(os.path.join(CORE_DIR, name), "rb") as handle:
+            members[name] = handle.read()
+    return members
 
-    This is what an installation the-steward actually performed looks like
-    (P6.5a): the complete declared inventory, copied byte for byte, and one
-    `recorded` entry per file — `kind: copied`, with the file's digest — in a
-    tracked `.steward.json`. A directory that merely *contains* a
-    `__main__.py` is not this, which is the distinction the footer's
-    installed-core predicate turns on.
+
+def install_recorded_core(root, members, manifest_extra=None):
+    """Write `members` ({name: bytes}) at `tools/steward` and record each one.
+
+    The general form of `install_owned_core`: an installation the-steward
+    performed is a set of files on disk and one `copied` record per file, and
+    **which** files those are is a property of the run that installed them,
+    not of the core that happens to be packaged now (ADR-20, P6.5a). Taking
+    the member set as a parameter is what lets a fixture describe a core an
+    *older* the-steward installed — whose inventory has since gained and lost
+    modules — and still assert it is ours.
 
     Written with the test's own `json` and `hashlib` rather than through the
     core's `jsonio`/`digest`, so the subject under test is never also the
@@ -115,12 +165,9 @@ def install_owned_core(root, manifest_extra=None):
     if not os.path.isdir(directory):
         os.makedirs(directory)
     recorded = []
-    for name in core_inventory():
-        source = os.path.join(CORE_DIR, name)
-        target = os.path.join(directory, name)
-        with open(source, "rb") as handle:
-            payload = handle.read()
-        with open(target, "wb") as handle:
+    for name in sorted(members):
+        payload = members[name]
+        with open(os.path.join(directory, name), "wb") as handle:
             handle.write(payload)
         recorded.append(
             {
@@ -135,6 +182,19 @@ def install_owned_core(root, manifest_extra=None):
     with open(os.path.join(root, ".steward.json"), "w", encoding="utf-8") as handle:
         handle.write(json.dumps(document, indent=2, sort_keys=True) + "\n")
     return document
+
+
+def install_owned_core(root, manifest_extra=None):
+    """Vendor the **currently packaged** core into `root` with its evidence.
+
+    This is what an installation the-steward just performed looks like
+    (P6.5a): the complete declared inventory, copied byte for byte, and one
+    `recorded` entry per file — `kind: copied`, with the file's digest — in a
+    tracked `.steward.json`. A directory that merely *contains* a
+    `__main__.py` is not this, which is the distinction the footer's
+    installed-core predicate turns on.
+    """
+    return install_recorded_core(root, packaged_core_members(), manifest_extra)
 
 
 def core_inventory():
@@ -255,9 +315,27 @@ def tree_snapshot(root):
     **not** through the core's `paths` module, so the subject under test is
     never also the oracle (the trap
     `RepoRootTest.test_returns_none_outside_a_repository` documents).
+
+    **And the probe's status is checked, because instance twelve of this
+    project's one bug landed here.** The status was read for its stdout and
+    never for its exit code. An operation that removes or corrupts
+    `.git/index` makes the second `status` exit 128 with **empty** stdout, the
+    walk excludes `.git`, and the resulting snapshot is byte-identical to the
+    clean one — so `unchanged_tree` passed over a probe that never ran. That
+    is the disease in its purest form: the guard whose whole job is to
+    distinguish *nothing changed* from *something did* could not distinguish
+    either from *I could not look*. Every read-only test in the suite leans on
+    this function, so a failed probe faults here rather than answering.
     """
-    status = git(root, "status", "--porcelain", "--untracked-files=all")
-    lines = [status.stdout.decode("utf-8", "surrogateescape")]
+    try:
+        status = git_read(root, "status", "--porcelain", "--untracked-files=all")
+    except AssertionError as exc:
+        raise AssertionError(
+            "the cleanliness oracle could not read %r: %s A snapshot taken "
+            "over a probe that failed is not a reading of the tree — it is an "
+            "empty string that looks like one." % (root, exc)
+        )
+    lines = [status.decode("utf-8", "surrogateescape")]
     entries = _walk(root)
     for relative in sorted(entries):
         lines.append("%s\t%s" % (relative, entries[relative]))
