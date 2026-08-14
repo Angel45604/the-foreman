@@ -25,5 +25,6 @@ FILES = (
     "manifest.py",
     "manifest.v1.json",
     "paths.py",
+    "records.py",
     "text.py",
 )
