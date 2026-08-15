@@ -409,6 +409,39 @@ class _ShimSubprocess(object):
         return child
 
 
+def install_fake_git(test, directory, script):
+    """Put a `git` running `script` first on PATH for the rest of `test`.
+
+    **Prepended, never replaced.** Replacing PATH takes `sleep` off it too, so
+    a fixture whose whole point is a child that outlives its bound gets one
+    that dies instantly and proves nothing — the first draft of
+    `CleanupIsBoundedTest` passed for exactly that reason.
+    """
+    path = os.path.join(directory, "git")
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(script)
+    os.chmod(path, 0o755)
+    original = os.environ.get("PATH", "")
+    test.addCleanup(os.environ.__setitem__, "PATH", original)
+    os.environ["PATH"] = directory + os.pathsep + original
+    return path
+
+
+# A `git` that is still running when its bound runs out, whatever the machine
+# is doing. `%d` seconds is not a wait anything pays: the timeout fires first
+# and `_kill_tree` takes the group down, so the sleep is the *margin* by which
+# the child outlives its bound, not a cost to the suite.
+_GIT_OUTLASTING_ITS_BOUND = """#!/bin/sh
+sleep %d
+"""
+
+# The bound the child above cannot beat, and the margin it beats it by. Small
+# enough that the timeout path costs the suite a quarter of a second; twenty
+# times smaller than the sleep, so no amount of load reverses the order.
+TIMEOUT_UNDER_TEST_SECONDS = 0.25
+TIMEOUT_OVERRUN_SECONDS = 5
+
+
 class PartialPipeIsNeverAnAnswerTest(unittest.TestCase):
     """A pipe that failed is a **fault**, never a shorter answer (ADR-13).
 
@@ -475,6 +508,12 @@ class PartialPipeIsNeverAnAnswerTest(unittest.TestCase):
             child.stdin = _FlakyPipe(child.stdin, writes)
 
         self.inject(wrap)
+
+    def fake_git(self, script):
+        """A `git` running `script`, first on PATH, in a directory we remove."""
+        directory = tempfile.mkdtemp(prefix="steward-fake-git-")
+        self.addCleanup(shutil.rmtree, directory, True)
+        return install_fake_git(self, directory, script)
 
     # -- the control -----------------------------------------------------
     def test_the_uninjected_control_reads_the_whole_corpus(self):
@@ -614,12 +653,38 @@ class PartialPipeIsNeverAnAnswerTest(unittest.TestCase):
             paths.git_checked(self.root, ["ls-files", "-z", "--", "*.md"])
 
     def test_a_timeout_is_still_reported_as_a_timeout(self):
+        """**The timeout is made certain by the child, not by a tiny number.**
+
+        This test used to pin `GIT_TIMEOUT_SECONDS` to 0.000001 and run a real
+        `ls-files`, which does not force the timeout path — it *races* it. The
+        deadline is taken after `Popen` returns, so whether a timeout fires at
+        all depends on whether git has already exited by the time the first
+        `wait` polls: if it has, `wait` returns its status and nothing raises,
+        which is the observed `GitCommandFailed not raised` — a red for a test
+        whose subject was never exercised. Worse in the other direction, an
+        infinitesimal bound also lands on the *forced-cleanup* fault, so a run
+        that went green could have gone green on a different fault entirely.
+
+        A git that sleeps twenty times its bound removes the race in the only
+        honest place, the child: no scheduling order leaves it exited at the
+        first `wait`. The `TimeoutExpired` assertion is what makes the subject
+        — a timeout reported **as a timeout**, not renamed by the pipe errors
+        the kill causes — something this test can actually see.
+        """
+        self.fake_git(_GIT_OUTLASTING_ITS_BOUND % TIMEOUT_OVERRUN_SECONDS)
         original = paths.GIT_TIMEOUT_SECONDS
         self.addCleanup(setattr, paths, "GIT_TIMEOUT_SECONDS", original)
-        paths.GIT_TIMEOUT_SECONDS = 0.000001
+        paths.GIT_TIMEOUT_SECONDS = TIMEOUT_UNDER_TEST_SECONDS
         with self.assertRaises(paths.GitCommandFailed) as caught:
             paths.git_checked(self.root, ["ls-files", "-z", "--", "*.md"])
-        self.assertIn("ls-files", str(caught.exception))
+        message = str(caught.exception)
+        self.assertIn("ls-files", message)
+        self.assertIn(
+            "TimeoutExpired",
+            message,
+            "the call faulted, but not as a timeout — the one fault this test "
+            "exists to see was renamed to %r" % message,
+        )
 
 
 # A `git` that leaves a descendant holding stdout and stderr. Nothing exotic:
@@ -635,6 +700,16 @@ exit 0
 _GIT_HANGING_WITH_A_DESCENDANT = """#!/bin/sh
 sleep %d &
 sleep %d
+"""
+
+# The same descendant, plus the one fact a **scoped** survivor check needs:
+# git's own pid. `start_new_session=True` makes git the leader of its own
+# process group, so `$$` here *is* the group id `_kill_tree` signals, and
+# everything git spawned is in it.
+_GIT_LEAVING_A_DESCENDANT_RECORDING_ITS_GROUP = """#!/bin/sh
+echo $$ > '%s'
+sleep %d &
+exit 0
 """
 
 _GIT_BEHAVING = """#!/bin/sh
@@ -672,16 +747,29 @@ class CleanupIsBoundedTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.bin, True)
 
     def fake_git(self, script):
-        path = os.path.join(self.bin, "git")
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write(script)
-        os.chmod(path, 0o755)
-        original = os.environ.get("PATH", "")
-        self.addCleanup(os.environ.__setitem__, "PATH", original)
-        # **Prepended, not replaced.** Replacing it takes `sleep` off PATH too,
-        # so the descendant dies instantly and the fixture proves nothing —
-        # the first draft of this test passed for exactly that reason.
-        os.environ["PATH"] = self.bin + os.pathsep + original
+        return install_fake_git(self, self.bin, script)
+
+    def recorded_group(self, pidfile):
+        """The process group the fake git recorded — or a failure, never a
+        number nothing wrote.
+
+        `pgrep -g` answers *nothing is running* for a group id that never
+        existed, so a fixture that did not run would satisfy the survivor
+        assertion below without the product being consulted at all: ADR-30's
+        vacuous pass, in the oracle this time.
+        """
+        self.assertTrue(
+            os.path.isfile(pidfile),
+            "the fake git never recorded its process group, so the survivor "
+            "check below would be asking about no group at all",
+        )
+        with open(pidfile, "r", encoding="utf-8") as handle:
+            recorded = handle.read().strip()
+        self.assertTrue(
+            recorded.isdigit() and int(recorded) > 1,
+            "the fake git recorded %r, which is not a process group" % recorded,
+        )
+        return int(recorded)
 
     def bound(self, timeout=1.0, grace=2.0):
         for name, value in (
@@ -727,20 +815,45 @@ class CleanupIsBoundedTest(unittest.TestCase):
 
     def test_the_descendant_is_gone_afterwards(self):
         """The pipes are released because the **tree** was taken down, not
-        because we walked away from threads still holding them."""
-        self.fake_git(_GIT_LEAVING_A_DESCENDANT % DESCENDANT_LIFETIME_SECONDS)
+        because we walked away from threads still holding them.
+
+        **Scoped to the killed git's own process group, because `pgrep -f
+        'sleep 30'` is a question about the whole machine.** That check matched
+        every process anywhere whose command line contains the same string —
+        observed reporting nine foreign pids as *a descendant of the killed
+        git*, and failing an otherwise clean run for something the code under
+        test never spawned. The scope the product's promise is actually stated
+        in is the process group: `_kill_tree` signals `child.pid` as a group
+        precisely because `start_new_session=True` put everything git spawned
+        inside it. `pgrep -g` asks about **that** group, so a foreign `sleep`
+        cannot answer, and every genuine descendant still does.
+        """
+        pidfile = os.path.join(self.bin, "group.pid")
+        self.fake_git(
+            _GIT_LEAVING_A_DESCENDANT_RECORDING_ITS_GROUP
+            % (pidfile, DESCENDANT_LIFETIME_SECONDS)
+        )
         self.bound()
         with self.assertRaises(paths.GitCommandFailed):
             paths.git_checked(self.root, ["ls-files"])
         survivors = subprocess.run(
-            ["pgrep", "-f", "sleep %d" % DESCENDANT_LIFETIME_SECONDS],
+            ["pgrep", "-g", str(self.recorded_group(pidfile))],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+        )
+        # 0 is *matched*, 1 is *nothing matched*; anything else is pgrep
+        # failing, which prints nothing on stdout and would read as clean.
+        self.assertIn(
+            survivors.returncode,
+            (0, 1),
+            "pgrep exited %d (%r) — an empty stdout here is a probe that did "
+            "not run, not an absence of survivors"
+            % (survivors.returncode, survivors.stderr.strip()),
         )
         self.assertEqual(
             b"",
             survivors.stdout.strip(),
-            "a descendant of the killed git is still running",
+            "a member of the killed git's process group is still running",
         )
 
     def test_a_run_that_needed_forcing_is_never_reported_as_an_answer(self):
