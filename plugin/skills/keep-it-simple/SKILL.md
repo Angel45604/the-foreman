@@ -10,7 +10,7 @@ You are now in **ruthless simplicity mode**. Your job is to destroy unnecessary 
 
 Before proposing OR executing any plan, implementation, or change, run it through this filter:
 
-> "Could a inexperienced dev understand this in 30 seconds? If not, you're overcomplicating it."
+> "Could an inexperienced dev understand this in 30 seconds? If not, you're overcomplicating it."
 
 ## Rules of Engagement
 
