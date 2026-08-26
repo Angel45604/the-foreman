@@ -15,7 +15,8 @@
 - **Escaping law:** every ledger-derived string reaches HTML only via `esc()` and Markdown only via `mdEsc()`/`fencedCode()` (`references/esc.mjs`). Every ledger number reaching geometry/CSS custom props passes `safeNum()` first.
 - **Fail-closed law:** unknown block type throws in BOTH `renderBlocks` and `blocksToMarkdown`. Never add a silent skip.
 - **The one rule:** no `border:` used as a visible edge (only `border: 0`/`border: none` resets), no background other than `var(--bg)` on surfaces, no colored dividers. Dark = Blue Graphite seven-token swap exactly: `--bg:#282e39; --tx:#eef2f9; --sb:#9eabba; --sd:#171b24; --sl:#384250; --ac:#6687ff; --acq:#9cb2ff`.
-- **Forbidden strings** anywhere in shipping engine output or sources after this initiative: `#009ACC`, `#2d323b`, `MINDCLOUD`, `MindCloud` (historical `docs/initiatives/` records exempt).
+- **Forbidden strings** in shipping engine SOURCES and engine-owned defaults/copy after this initiative: `#009ACC`, `#2d323b`, `MINDCLOUD`, `MindCloud` (historical `docs/initiatives/` records exempt). Ledger-provided values follow the owner's accent policy recorded in Task 10 (gate round-1 decision blocker).
+- **Fonts are embedded, never linked**: style.css carries Sora + Nunito Sans latin woff2 subsets as data-URI `@font-face` (OFL-licensed, copied from the portfolio's `design-system/fonts/`); no `<link>`/`url(http…)` anywhere in rendered output (ADR-003 self-containment tests stay green).
 - Run tests from the repo root: `node --test plugin/skills/the-foreman/references/`. All existing tests must pass at every commit (updated where the plan says so, never deleted without replacement).
 - Commit after every task with the message given; end every message with `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
 - Never push; never touch `~/.claude/skills/the-foreman/` (the live install).
@@ -63,17 +64,33 @@ test('topo renders root, children, aside with escaping', () => {
   assert.match(md, /R/); assert.match(md, /C1/);
 });
 
-test('deltaRow clamps positions and never emits NaN', () => {
+test('deltaRow clamps positions, renders endpoints, never emits NaN', () => {
   const html = renderBlocks([{ type: 'deltaRow', items: [
-    { label: 'approve', from: '36%', to: '0%', fromPos: 36, toPos: 1e999 },
-    { label: 'bad', from: 'x', to: 'y', fromPos: 'junk', toPos: -5 }] }]);
+    { label: 'approve', from: '36%', to: '0%', fromPos: 36, toPos: 1e308, min: '0%', max: '100%' },
+    { label: 'bad', from: 'x', to: 'y', fromPos: 'junk', toPos: -5 },
+    { label: 'inf', from: 'a', to: 'b', fromPos: 1e999, toPos: Infinity }] }]);
   assert.match(html, /class="deltas"/);
   assert.ok(!/NaN|Infinity/.test(html));
-  assert.match(html, /--b:100/);           // 1e999 clamped to 100
+  assert.match(html, /--b:100/);           // finite over-range 1e308 clamps to 100
   assert.match(html, /--a:0/);             // 'junk' falls back to 0
-  const md = blocksToMarkdown([{ type: 'deltaRow', items: [{ label: 'L', from: '1', to: '2' }] }]);
-  assert.match(md, /L.*1.*2/);
+  assert.match(html, /style="--a:0;--b:0"/); // non-finite 1e999/Infinity => fallback 0, both
+  assert.match(html, /class="delta__f"><span>0%<\/span><span>100%<\/span>/); // min/max endpoints render
+  const md = blocksToMarkdown([{ type: 'deltaRow', items: [{ label: 'L', from: '1', to: '2', min: 'lo', max: 'hi' }] }]);
+  assert.match(md, /L.*1.*2/); assert.match(md, /lo.*hi/); // twin carries endpoints too
 });
+
+test('registry closed-set oracle includes the new figure blocks with html+md', () => {
+  for (const t of ['topo', 'deltaRow']) {
+    assert.ok(BLOCK_TYPES.includes(t), t);
+    assert.equal(typeof BLOCKS[t].html, 'function');
+    assert.equal(typeof BLOCKS[t].md, 'function');
+  }
+});
+```
+
+Also update the existing `EXPECTED_BLOCK_TYPES` literal oracle in `blocks.test.mjs` to append `'topo', 'deltaRow'` (each figure task appends its own two — the oracle must list all six by Task 3 or those tasks stay red).
+
+```js
 ```
 
 - [ ] **Step 2: Run to verify both fail**: `node --test plugin/skills/the-foreman/references/blocks.test.mjs` → FAIL `unknown block type: topo` / `deltaRow`.
@@ -103,23 +120,29 @@ test('deltaRow clamps positions and never emits NaN', () => {
     },
   },
 
-  // { type:'deltaRow', items:[{label, from, to, fromPos?, toPos?}] } — from/to are
-  // DISPLAY strings; fromPos/toPos are 0..100 track positions (safeNum-clamped).
+  // { type:'deltaRow', items:[{label, from, to, fromPos?, toPos?, min?, max?}] } — from/to and
+  // min/max are DISPLAY strings; fromPos/toPos are 0..100 track positions (safeNum-clamped;
+  // non-finite => fallback 0 per the existing safeNum contract).
   deltaRow: {
     html(block) {
       const items = Array.isArray(block?.items) ? block.items : [];
       const rows = items.map((it) => {
         const a = round(safeNum(it?.fromPos, { min: 0, max: 100, fallback: 0 }));
         const b = round(safeNum(it?.toPos, { min: 0, max: 100, fallback: 0 }));
+        const ends = (it?.min != null || it?.max != null)
+          ? `<div class="delta__f"><span>${esc(it?.min ?? '')}</span><span>${esc(it?.max ?? '')}</span></div>` : '';
         return `<div class="delta"><span class="delta__k">${esc(it?.label)}</span>`
           + `<span class="delta__v">${esc(it?.from)}<small>→</small><span class="to">${esc(it?.to)}</span></span>`
-          + `<div class="track" aria-hidden="true" style="--a:${a};--b:${b}"><b></b><i class="was"></i><i class="now"></i></div></div>`;
+          + `<div class="track" aria-hidden="true" style="--a:${a};--b:${b}"><b></b><i class="was"></i><i class="now"></i></div>${ends}</div>`;
       }).join('');
       return `<div class="deltas">${rows}</div>`;
     },
     md(block) {
       const items = Array.isArray(block?.items) ? block.items : [];
-      return items.map((it) => `- **${mdEsc(it?.label)}**: ${mdEsc(it?.from)} → ${mdEsc(it?.to)}`).join('\n');
+      return items.map((it) => {
+        const ends = (it?.min != null || it?.max != null) ? ` (scale ${mdEsc(it?.min ?? '')}–${mdEsc(it?.max ?? '')})` : '';
+        return `- **${mdEsc(it?.label)}**: ${mdEsc(it?.from)} → ${mdEsc(it?.to)}${ends}`;
+      }).join('\n');
     },
   },
 ```
@@ -150,13 +173,21 @@ test('duel renders lanes, optional flatline, escapes', () => {
 
 test('verdictFan allowlists variants and clamps dot counts', () => {
   const html = renderBlocks([{ type: 'verdictFan', verdict: 'BLOCK', fates: [
-    { count: 6, label: 'fixable', variant: 'ok' }, { count: 1e999, label: 'huge', variant: '"><script>' }] }]);
+    { count: 6, label: 'fixable', variant: 'ok' },
+    { count: 1e308, label: 'huge', variant: '"><script>' },   // finite over-range → clamp 24
+    { count: 1e999, label: 'inf', variant: 'warn' }] }]);      // non-finite → fallback 0 dots
   assert.match(html, /BLOCK/);
   assert.equal((html.match(/class="fate fate--ok"/g) || []).length, 1);
   assert.equal((html.match(/class="fate fate--x"/g) || []).length, 1);  // injected variant coerced
-  assert.equal((html.match(/<i><\/i>/g) || []).length, 6 + 24);          // clamp at 24
+  assert.equal((html.match(/class="fate fate--warn"/g) || []).length, 1);
+  assert.equal((html.match(/<i><\/i>/g) || []).length, 6 + 24 + 0);
   assert.ok(!html.includes('<script>'));
 });
+```
+
+Append `'duel', 'verdictFan'` to the `EXPECTED_BLOCK_TYPES` oracle and extend the html+md oracle test to cover them.
+
+```js
 ```
 
 - [ ] **Step 2: Run → FAIL** (unknown block types).
@@ -236,6 +267,8 @@ test('ladder allowlists status', () => {
 });
 ```
 
+Append `'dotMatrix', 'ladder'` to the `EXPECTED_BLOCK_TYPES` oracle (all six figure types now listed) and extend the html+md oracle test.
+
 - [ ] **Step 2: Run → FAIL.**
 - [ ] **Step 3: Implement**:
 
@@ -290,52 +323,79 @@ test('ladder allowlists status', () => {
 
 - [ ] **Step 4: Run → PASS.**  - [ ] **Step 5: Commit**: `git add -A && git commit -m "feat(blocks): add dotMatrix and ladder figure blocks"`
 
-### Task 4: `bar` gains optional additive `tags[]`
+### Task 4: `bar` becomes the carved-track figure (+ optional additive `tags[]`)
 
 **Files:** `blocks.mjs` (the `bar` block), `blocks.test.mjs`.
 
-**Interfaces:** `{ type:'bar', bars:[{label, value, tags?:[{label, kind?:'spawn'|'code'}]}], max? }`. Tags render ONLY in the HTML wrapper (`.tag/.tag--spawn/.tag--code` chips above each bar row — reference lines ~813–828); the twin appends ` [tag1, tag2]` after the value. Absent `tags` → byte-identical output to today (pin it).
+**Interfaces:** LEDGER SHAPE unchanged plus optional tags: `{ type:'bar', bars:[{label, value, tags?:[{label, kind?:'spawn'|'code'}]}], max? }`. The SVG rendering is REPLACED for all bars (the approved restyle) by the reference's HTML `.bars/.brow` carved-track form (reference lines ~811–829); classes `.bars/.bars__cap/.brow/.brow__l/.brow__tags/.tag(.tag--spawn|.tag--code)/.brow__bar/.brow__rail/.brow__v`. Width = `round(min(100, value/denom*100))` with today's exact denominator rules (declared max > largest value > 1). Twin unchanged except tags append ` [tag1, tag2]`.
 
-- [ ] **Step 1: Failing test**:
+- [ ] **Step 1: Failing test** (replace the existing bar SVG-geometry tests with semantic track tests — keep the existing safeNum/denominator cases, re-asserted against `--w`):
 
 ```js
-test('bar tags are additive and allowlisted; absent tags unchanged', () => {
-  const plain = { type: 'bar', bars: [{ label: 'a', value: 2 }] };
-  const before = renderBlocks([plain]);                       // uses current impl
-  const tagged = renderBlocks([{ type: 'bar', bars: [{ label: 'a', value: 2,
+test('bar renders carved tracks for all bars; tags allowlisted and additive', () => {
+  const untagged = renderBlocks([{ type: 'bar', bars: [{ label: 'a<b', value: 2 }, { label: 'c', value: 4 }] }]);
+  assert.match(untagged, /class="bars"/);
+  assert.match(untagged, /a&lt;b/);
+  assert.match(untagged, /--w:50/);                            // 2/4 of the largest
+  assert.match(untagged, /--w:100/);
+  assert.ok(!untagged.includes('<svg'));                       // SVG form retired
+  const tagged = renderBlocks([{ type: 'bar', bars: [{ label: 'a', value: 1,
     tags: [{ label: '3 spawns', kind: 'spawn' }, { label: 'x', kind: 'bad"' }] }] }]);
   assert.match(tagged, /class="tag tag--spawn"/);
-  assert.match(tagged, /class="tag"[^-]/);                    // unknown kind → bare tag
-  assert.equal(renderBlocks([plain]), before);                // byte-identical without tags
+  assert.match(tagged, /class="tag"><i><\/i>x</);              // unknown kind → bare tag, escaped
+  assert.ok(!tagged.includes('bad"'));
+});
+
+test('bar numeric guards survive the restyle', () => {
+  const html = renderBlocks([{ type: 'bar', bars: [{ label: 'x', value: 1e999 }, { label: 'y', value: -3 }] }]);
+  assert.ok(!/NaN|Infinity/.test(html));
+  assert.match(html, /--w:0/);                                 // non-finite → fallback 0; negative → clamped 0
 });
 ```
 
-- [ ] **Step 2: Run → FAIL** (no `.tag` markup).
-- [ ] **Step 3: Implement**: add `const BAR_TAG_KINDS = new Set(['spawn', 'code']);` beside the other allowlists. In `bar.html`, when any bar has tags, wrap the SVG in a `.barwrap` that is preceded per-bar by an HTML tag row — implement by switching bar rendering to the reference's HTML `.bars/.brow` form when `tags` are present, keeping the SVG path untouched when absent:
+- [ ] **Step 2: Run → FAIL** (current impl emits SVG).
+- [ ] **Step 3: Implement**: add `const BAR_TAG_KINDS = new Set(['spawn', 'code']);` beside the other allowlists; replace `bar.html` entirely:
 
 ```js
-      const anyTags = bars.some((b) => Array.isArray(b?.tags) && b.tags.length);
-      if (anyTags) {
-        const denomH = denom; // same computed denominator as the SVG path
-        const rows = bars.map((b, i) => {
-          const v = values[i];
-          const w = round(Math.min(100, (v / denomH) * 100));
-          const tags = (Array.isArray(b?.tags) ? b.tags : []).map((t) => {
-            const kind = BAR_TAG_KINDS.has(t?.kind) ? ` tag--${t.kind}` : '';
-            return `<span class="tag${kind}"><i></i>${esc(t?.label)}</span>`;
-          }).join('');
-          return `<div class="brow"><div class="brow__l"><b>${esc(b?.label)}</b><span class="brow__tags">${tags}</span></div>`
-            + `<div class="brow__bar"><div class="brow__rail"><i style="--w:${w}"></i><em style="--w:${w}"></em></div>`
-            + `<span class="brow__v">${esc(v)}</span></div></div>`;
+    html(block) {
+      const bars = Array.isArray(block?.bars) ? block.bars : [];
+      const values = bars.map((b) => safeNum(b?.value, { min: 0 }));
+      const declaredMax = block?.max != null ? safeNum(block.max, { min: 0 }) : 0;
+      const largest = values.reduce((m, v) => (v > m ? v : m), 0);
+      const denom = declaredMax > 0 ? declaredMax : largest > 0 ? largest : 1;
+      const rows = bars.map((b, i) => {
+        const v = values[i];
+        const w = round(Math.min(100, (v / denom) * 100));
+        const tags = (Array.isArray(b?.tags) ? b.tags : []).map((t) => {
+          const kind = BAR_TAG_KINDS.has(t?.kind) ? ` tag--${t.kind}` : '';
+          return `<span class="tag${kind}"><i></i>${esc(t?.label)}</span>`;
         }).join('');
-        return `<div class="bars">${rows}</div>`;
-      }
-      // …existing SVG path unchanged below…
+        return `<div class="brow"><div class="brow__l"><b>${esc(b?.label)}</b>${tags ? `<span class="brow__tags">${tags}</span>` : ''}</div>`
+          + `<div class="brow__bar"><div class="brow__rail"><i style="--w:${w}"></i><em style="--w:${w}"></em></div>`
+          + `<span class="brow__v">${esc(v)}</span></div></div>`;
+      }).join('');
+      return `<div class="bars">${rows}</div>`;
+    },
 ```
 
-Twin: append `${tags.length ? ` [${tags.map((t) => mdEsc(t?.label)).join(', ')}]` : ''}` to each bar line.
+Twin: keep today's lines, appending `${Array.isArray(b?.tags) && b.tags.length ? ` [${b.tags.map((t) => mdEsc(t?.label)).join(', ')}]` : ''}`.
 
-- [ ] **Step 4: Run → PASS** (including the byte-identical pin). - [ ] **Step 5: Commit**: `git add -A && git commit -m "feat(blocks): additive per-bar tags with HTML track rendering"`
+- [ ] **Step 4: Run → PASS.** - [ ] **Step 5: Commit**: `git add -A && git commit -m "feat(blocks): bar renders carved tracks with optional tags"`
+
+### Task 4b: legacy blocks move to the Gate Board class families
+
+**Files:** `blocks.mjs` (`donut`, `phaseSteps`, `table`, `pillRow`, `statRow` html renderers — ledger shapes and md() untouched), `blocks.test.mjs`.
+
+**Interfaces:** every emitted class pairs with a styled selector in Task 8's CSS:
+- `donut` → the tick-ring: `.ringwrap/.ring/.ring__t(.on)/.ring__c/.ring__legend` (reference ~857–866). Ticks: 13 when `max<=24` use `max` ticks else 24; lit count = `round(value/max*ticks)`; angles are `round(i*360/ticks)` degrees via `--r`; center shows `value / max` (or `pct%` when max is 100) + esc'd label. All numbers through `safeNum` first.
+- `phaseSteps` → the stops track: `.stops/.stop/.stop__mark/.stop__n/.stop__body/.stop__sign` (reference ~1030–1036); status renders as the `.stop__sign` text (`done ✓` / `active ▸` / `pending`), detail as the body `<p>`.
+- `table` → `.scrollx` + `.gt/.gt__r(.gt__r--h)/.gt__num` raised rows with `--cols: repeat(N, 1fr)` where N = columns.length (an integer, never ledger text); caption becomes an esc'd `<h4>` above.
+- `pillRow` → `.pill--ok/.pill--warn` (BEM double-dash replaces the legacy `pill ok` space form) with the `<i>` dot.
+- `statRow` → `.wells/.well/.well__v(.is-ok|.is-warn)/.well__l` carved wells (reference ~386–395).
+
+- [ ] **Step 1: Failing tests**: for each of the five, assert the new class family appears, the old one (`donutwrap`, `phaseflow`, `<table`, `"pill ok"`, `statrow`) does NOT, escaping holds, and donut/table numeric/column counts are guard-derived (e.g. `donut` with `value:1e999` → 0 lit ticks; `table` `--cols` equals columns.length).
+- [ ] **Step 2: Run → FAIL.** - [ ] **Step 3: Implement the five renderers.** - [ ] **Step 4: Run → PASS** (md() outputs byte-identical — pin one md() case per block).
+- [ ] **Step 5: Commit**: `git add -A && git commit -m "feat(blocks): legacy renderers emit the Gate Board class families"`
 
 ### Task 5: `scaffold.mjs` — the Gate Board shell
 
@@ -347,14 +407,22 @@ Twin: append `${tags.length ? ` [${tags.map((t) => mdEsc(t?.label)).join(', ')}]
 
 ```js
 export function slugify(label)                 // 'Decision record' -> 'decision-record'; alnum+dash, lowercase, never empty ('section')
+export function allocateIds(labels)            // -> unique id per label, in order: slugify each; 'top' is RESERVED
+                                               //    (a chapter slugifying to 'top' gets 'top-2'); any repeat gets -2/-3…
 export function drawer(label, innerHtml)       // native <details class="dw"><summary>… returns '' when innerHtml is falsy
 export function unit({ kicker, statement, lead, figureHtml, pillsHtml, drawerLabel, drawerHtml })
 export function gateBoard({ crumb, title, verdict, lede, keyStats, ask, chapters, sources, foot })
 //  keyStats: [{value,label,variant?}] (rendered as .tiles; esc'd; empty/absent -> no tiles row)
-//  ask: { headline, note?, recommendation?, recommendedBy?, targetId } -> the .ask strip (absent -> none)
-//  chapters: [{ label, unitsHtml }] -> ids from slugify(label); rail = Top + one chip per chapter
+//  ask: { headline, note?, recommendation?, recommendedBy?, targetId? } -> the .ask strip (absent -> none).
+//    headline/note/recommendation/recommendedBy each render INDEPENDENTLY when present (no field
+//    gates another); targetId, when given, must be one of the allocated chapter ids (templates
+//    pass the resolved id, never a raw label).
+//  chapters: [{ label, unitsHtml }] -> ids from allocateIds(labels); rail = Top + one chip per chapter
 //  sources: [{label, value}] -> .src chips; foot: string
 // Returns bodyHtml: rail nav + #top section (crumb/hero/tiles/ask) + chapter <section id=…> + foot.
+// gateBoard ALSO returns the id map for templates: return value is { bodyHtml, ids } — templates
+// that must know the ask chapter's resolved id call allocateIds themselves first and pass both
+// chapters and ask.targetId from the same allocation (single source of truth).
 ```
 
 Markup and classes lift from `gate-board-reference.html`: rail lines ~612–622, hero/tiles/ask ~625–658, unit/drawer ~666–707. All dynamic strings esc'd; rail chip numbers are 1..N generated integers.
@@ -372,17 +440,30 @@ test('slugify is stable and safe', () => {
   assert.equal(slugify('!!!'), 'section');
 });
 
+test('allocateIds is collision-safe and reserves top', () => {
+  assert.deepEqual(allocateIds(['Diagnosis', 'Plan', 'Diagnosis', 'Top', '汉字', '中文']),
+    ['diagnosis', 'plan', 'diagnosis-2', 'top-2', 'section', 'section-2']);
+});
+
+test('ask strip renders recommendation without a note, and note without recommendation', () => {
+  const a = gateBoard({ title: 't', ask: { headline: 'H', recommendation: 'Pick A', recommendedBy: 'Claude' }, chapters: [] });
+  assert.match(a.bodyHtml, /Pick A/); assert.match(a.bodyHtml, /Claude/);
+  const b = gateBoard({ title: 't', ask: { headline: 'H', note: 'just a note' }, chapters: [] });
+  assert.match(b.bodyHtml, /just a note/);
+});
+
 test('gateBoard renders rail chips for Top + every chapter, with matching section ids', () => {
-  const body = gateBoard({ crumb: 'C', title: 'T', verdict: 'V', lede: 'L',
+  const { bodyHtml, ids } = gateBoard({ crumb: 'C', title: 'T', verdict: 'V', lede: 'L',
     keyStats: [{ value: '1', label: 'one' }],
     ask: { headline: 'H<x>', targetId: 'your-call' },
     chapters: [{ label: 'Diagnosis', unitsHtml: '<p>u</p>' }, { label: 'Your call', unitsHtml: '<p>d</p>' }] });
-  assert.match(body, /href="#top"/);
-  assert.match(body, /href="#diagnosis"/); assert.match(body, /id="diagnosis"/);
-  assert.match(body, /href="#your-call"/); assert.match(body, /id="your-call"/);
-  assert.match(body, /H&lt;x&gt;/);
-  assert.match(body, /class="tiles"/);
-  assert.ok(!/#009ACC|MINDCLOUD/i.test(body));
+  assert.deepEqual(ids, ['diagnosis', 'your-call']);
+  assert.match(bodyHtml, /href="#top"/);
+  assert.match(bodyHtml, /href="#diagnosis"/); assert.match(bodyHtml, /id="diagnosis"/);
+  assert.match(bodyHtml, /href="#your-call"/); assert.match(bodyHtml, /id="your-call"/);
+  assert.match(bodyHtml, /H&lt;x&gt;/);
+  assert.match(bodyHtml, /class="tiles"/);
+  assert.ok(!/#009ACC|MINDCLOUD/i.test(bodyHtml));
 });
 
 test('unit + drawer compose; empty drawer collapses to nothing', () => {
@@ -415,23 +496,42 @@ export function unit({ kicker = '', statement = '', lead = '', figureHtml = '', 
     + `${figureHtml}${pillsHtml}${drawer(drawerLabel, drawerHtml)}</article>`;
 }
 
+export function allocateIds(labels) {
+  const taken = new Set(['top']);
+  return labels.map((label) => {
+    const base = slugify(label);
+    let id = base;
+    for (let n = 2; taken.has(id); n += 1) id = `${base}-${n}`;
+    taken.add(id);
+    return id;
+  });
+}
+
 export function gateBoard({ crumb = '', title = '', verdict = '', lede = '', keyStats = [], ask = null, chapters = [], sources = [], foot = '' } = {}) {
-  const chs = chapters.map((c) => ({ id: slugify(c.label), label: String(c.label ?? ''), unitsHtml: c.unitsHtml ?? '' }));
+  const ids = allocateIds(chapters.map((c) => c.label));
+  const chs = chapters.map((c, i) => ({ id: ids[i], label: String(c.label ?? ''), unitsHtml: c.unitsHtml ?? '' }));
   const chips = [{ id: 'top', label: 'Top' }, ...chs]
     .map((c, i) => `<a class="nav__chip${i === 0 ? ' is-live' : ''}" href="#${c.id}" data-sec="${c.id}"${i === 0 ? ' aria-current="true"' : ''}><span class="nav__n" aria-hidden="true">${i + 1}</span>${esc(c.label)}</a>`)
     .join('');
   const nav = `<nav class="nav" aria-label="Chapters"><div class="nav__track" id="navtrack">${chips}<span class="nav__hint" aria-hidden="true">1&ndash;${chs.length + 1} jump &middot; Home / End</span></div></nav>`;
   const tiles = keyStats.length
     ? `<div class="tiles" role="list" aria-label="The numbers that matter">${keyStats.map((s) => `<div class="tile" role="listitem"><b>${esc(s?.value)}</b><span>${esc(s?.label)}</span></div>`).join('')}</div>` : '';
+  // headline / note / recommendation / attribution each render independently — no field gates another
+  const askBits = ask
+    ? [ask.note ? esc(ask.note) : '',
+       ask.recommendation ? `<strong>${esc(ask.recommendation)}</strong>` : '',
+       ask.recommendedBy ? `<span class="chip">${esc(ask.recommendedBy)}</span>` : ''].filter(Boolean).join(' ')
+    : '';
+  const askTarget = ask?.targetId && (ask.targetId === 'top' || ids.includes(ask.targetId)) ? ask.targetId : null;
   const askStrip = ask
-    ? `<div class="ask"><div class="ask__txt"><span class="ask__kick">What is being asked of you</span><b>${esc(ask.headline)}</b>${ask.note ? `<p>${esc(ask.note)}${ask.recommendation ? ` <strong>${esc(ask.recommendation)}</strong>${ask.recommendedBy ? ` <span class="chip">${esc(ask.recommendedBy)}</span>` : ''}` : ''}</p>` : ''}</div>${ask.targetId ? `<a class="btn btn--accent" href="#${slugify(ask.targetId)}">Jump to the ask</a>` : ''}</div>` : '';
+    ? `<div class="ask"><div class="ask__txt"><span class="ask__kick">What is being asked of you</span><b>${esc(ask.headline)}</b>${askBits ? `<p>${askBits}</p>` : ''}</div>${askTarget ? `<a class="btn btn--accent" href="#${askTarget}">Jump to the ask</a>` : ''}</div>` : '';
   const head = `<section id="top" aria-label="Verdict"><header class="wrap crumbrow"><span class="chip crumb">${esc(crumb)}</span><div class="tools"><span class="chip">Gate artifact</span><button class="btn btn--sm jsonly" id="exp-all" type="button">Expand all</button><button class="btn btn--sm jsonly" id="col-all" type="button">Collapse all</button></div></header>`
     + `<div class="wrap hero"><h1>${esc(title)}</h1>${verdict ? `<p class="verdictline">${esc(verdict)}</p>` : ''}${lede ? `<p class="lede">${esc(lede)}</p>` : ''}</div>`
     + `<div class="wrap">${tiles}${askStrip}</div></section>`;
   const sections = chs.map((c) => `<section class="chap" id="${c.id}" aria-label="${esc(c.label)}"><div class="wrap"><div class="seclab"><span></span><h2>${esc(c.label)}</h2></div>${c.unitsHtml}</div></section>`).join('');
   const src = sources.length ? `<div class="wrap src" aria-label="Evidence base">${sources.map((s) => `<span class="chip"><b>${esc(s?.value)}</b>&nbsp;${esc(s?.label)}</span>`).join('')}</div>` : '';
   const footer = foot ? `<p class="wrap foot">${esc(foot)}</p>` : '';
-  return `${nav}\n${head}\n${sections}\n${src}\n${footer}`;
+  return { bodyHtml: `${nav}\n${head}\n${sections}\n${src}\n${footer}`, ids };
 }
 ```
 
@@ -445,7 +545,9 @@ export function gateBoard({ crumb = '', title = '', verdict = '', lede = '', key
 - Consumes: `gateBoard/unit/drawer/slugify` (Task 5 signatures), `renderBlocks` (blocks registry incl. Tasks 1–4).
 - Produces: `planDeck(ledger) => { title, favicon, bodyHtml }` (same external contract `render.mjs` uses). Shared helpers the other templates reuse (Task 7): `const fav`, `const crumbOf` (default now `'THE-FOREMAN · DEV WORKFLOW'`), `function heroOf(meta, fallbackVerdict)`, `function askOf(ledger)`, `function figureSplit(blocks, explicitFigure)` → `{figureHtml, drawerBlocks}` where the figure is `explicitFigure ?? first block whose type ∈ FIGURE_TYPES` (`['statRow','bar','donut','phaseSteps','topo','deltaRow','duel','verdictFan','dotMatrix','ladder']`).
 
-Behavior: hero from `meta.title/verdict(??subtitle)/lede`; tiles from `meta.keyStats`; ask strip from `meta.ask ?? (ledger.decision ? {headline: decision.question, recommendation, recommendedBy, targetId: 'your-call'} : null)`; chapters group consecutive slides by `chapter ?? 'Board'`; each slide renders as `unit({kicker, statement: s.statement ?? s.heading, lead: s.lead, figureHtml, pillsHtml: <pillRow blocks stay outside the drawer>, drawerHtml: bullets+cards+callout+remaining blocks})`; when `ledger.decision` exists, append a `Your call` chapter rendering option cards (reference lines ~1161–1229: letter well, risk chip allowlist `low|med|high`→`--low/--med/--high` else `--med`, recommended marker on `decision.recommendation` match, gist = first sentence of pros ≤ 140 chars, collapsed verbatim pros/cons in `<details class="optpc">`) + `.rec` strip; `sources` from `ledger.findings?.sources`.
+Behavior: hero from `meta.title/verdict(??subtitle)/lede`; tiles from `meta.keyStats`; chapters group consecutive slides by `chapter ?? 'Board'`; each slide renders as `unit({kicker, statement: s.statement ?? s.heading, lead: s.lead, figureHtml, pillsHtml: <pillRow blocks stay outside the drawer>, drawerHtml: bullets+cards+callout+remaining blocks})`.
+
+**Ask resolution (single source of truth):** the template builds the FULL chapter-label list first — content chapters, plus an appended ask chapter labeled `Your call` whenever `ledger.decision` OR `meta.ask` exists — then calls `allocateIds` ONCE on that list; the ask strip's `targetId` is the allocated id of that appended chapter (never a raw label, never synthesized elsewhere). Ask-strip fields: `meta.ask` wins when present; else derived from `decision` (`headline: decision.question, recommendation, recommendedBy`). The ask CHAPTER's content: with `decision`, the option cards (reference lines ~1161–1229: letter well, risk chip allowlist `low|med|high`→`--low/--med/--high` else `--med`, recommended marker on `decision.recommendation` match, gist = first sentence of pros ≤ 140 chars, collapsed verbatim pros/cons in `<details class="optpc">`) + `.rec` strip; with only `meta.ask`, a single unit restating headline/note/recommendation so the jump target always lands on real content. `sources` from `ledger.findings?.sources`. Add a test: a ledger with `meta.ask` and NO `decision` still renders a `Your call` section whose id the ask strip links to.
 
 - [ ] **Step 1: Failing tests** — replace the deck-era assertions in `templates.test.mjs` for planDeck with:
 
@@ -477,16 +579,18 @@ test('planDeck escapes ledger text and tolerates a minimal legacy ledger', () =>
 
 **Files:** `templates.mjs` (rest), `templates.test.mjs` (update the seven), delete the now-unused `deck()`/`slide()`/`card()` helpers.
 
-**Interfaces:** unchanged external signatures for `brief/decisionCard/liveRun/phaseTracker/findings/comparison/dashboard`. Composition per spec §6, using the same helpers:
-- `brief`: hero(title, verdict=win.verified?'Verified':'Claimed — not yet verified'); one `Board` chapter unit (statement=win.landed distilled? NO — statement = meta.title stays in hero; the unit statement is `'What landed'` literal with lead ''); figure = `verdictFan`? NO — brief has no natural figure: unit with pills (`Verified`/`Claimed` variant) and drawer holding landed+evidence verbatim; ask from `win.next`.
-- `decisionCard`: hero + `Your call` chapter exactly as planDeck's decision chapter; ask strip from the question.
-- `liveRun`: hero + one unit; figure = `statRow` built from `{what→lead}`? NO: keyStats absent; unit statement `'Live-run gate — authorize before anything runs'`, pills `cost`/`blastRadius` summary chips are ledger text so they render as drawer content; drawer = What/Cost/Blast radius/Cleanup as four `.co` callouts (verbatim); ask headline literal `'Authorize this live run?'` + note from `lr.cost`.
-- `phaseTracker`: figure = `phaseSteps` block from `pt.phases`; optional `donut` from `pt.progress` into the drawer; ask from `pt.note`.
-- `findings`: figure = `dotMatrix` when every item has a boolean-mappable verdict? NO — keep deterministic: figure = existing `table` block (columns Finding/Confidence/Evidence/Verdict) rendered in the drawer, and the FIGURE is `statRow` built from `f.sources` (value/label) when present; summary → ask note; sources → chips.
-- `comparison`: figure = `table` (options × criteria) in the unit body (tables are drawer-first: place the table as drawerHtml with drawerLabel 'The comparison', statement = meta.title? statement = `'Options compared'` literal); ask = recommendation.
-- `dashboard`: keyStats = `d.stats`; figure = `d.chart` via `figureSplit`; rows → drawer `rankedRows`; ask = `d.ask`.
+**Interfaces:** unchanged external signatures for `brief/decisionCard/liveRun/phaseTracker/findings/comparison/dashboard`. Composition per spec §6, using the same helpers.
 
-- [ ] **Step 1: Failing tests** — for each type one test asserting: `class="nav"` present, its content fields appear escaped, its ask renders, and no `slide`/old classes. Plus: `assert.throws(() => templates.dashboard({ dashboard: { chart: { type: 'nope' } } }))` (unknown chart still fails closed).
+**Visible-content contract (test-pinned): a gate's decision-critical facts are NEVER inside `<details>`.** Drawers hold supporting evidence and long verbatim prose only. Per type:
+- `brief`: hero(title, verdict = win.verified ? 'Verified' : 'Claimed — not yet verified'); one `Board` chapter unit — statement `'What landed'`, **`win.landed` renders VISIBLY as the unit's `.co` callout**, status pill (`Verified` ok / `Claimed` warn) visible; the drawer holds `win.evidence` verbatim; ask from `win.next`.
+- `decisionCard`: hero + `Your call` chapter exactly as planDeck's decision chapter (option cards visible with gists + risk chips; only the verbatim pros/cons prose is collapsed); ask strip from the question.
+- `liveRun`: hero; **`keyStats` synthesized VISIBLY as two tiles: `{value: lr.cost-first-clause, label: 'cost'}`, `{value: lr.blastRadius-first-clause, label: 'blast radius'}`** (first clause = text up to the first `·` or `.`, ≤ 80 chars, esc'd) plus a unit whose statement is `'Live-run gate — authorize before anything runs'` and whose **`.co` callouts for What / Cost / Blast radius / Cleanup are all VISIBLE in the unit body**; the drawer holds nothing unless the ledger adds `blocks[]`; ask headline `'Authorize this live run?'` with note from `lr.what`'s first sentence.
+- `phaseTracker`: figure = `phaseSteps` (stops track) VISIBLE; optional `donut` from `pt.progress` also visible beside it; ask from `pt.note`.
+- `findings`: **figure = the findings `table` (Finding/Confidence/Evidence/Verdict) VISIBLE in the unit body**; `statRow` wells from `f.sources` visible above it when present; summary → ask note; sources → chips. Drawer: none by default.
+- `comparison`: **figure = the options × criteria `table` VISIBLE** (statement `'Options compared'`); ask = recommendation.
+- `dashboard`: keyStats = `d.stats` (visible tiles); figure = `d.chart` via `figureSplit` visible; rows → `rankedRows` visible; ask = `d.ask`.
+
+- [ ] **Step 1: Failing tests** — for each type one test asserting: `class="nav"` present, its content fields appear escaped, its ask renders, no `slide`/old classes, **and the visible-content pin: the primary facts named above occur OUTSIDE any `<details>` element** (assert by splitting the bodyHtml on `<details` and checking the fact strings appear in the pre-details segments — e.g. for liveRun, `lr.what` text is in a segment before/outside `<details>`). Plus: `assert.throws(() => templates.dashboard({ dashboard: { chart: { type: 'nope' } } }))` (unknown chart still fails closed).
 - [ ] **Step 2: Run → FAIL.** - [ ] **Step 3: Implement.** - [ ] **Step 4: Run → PASS** (full blocks+templates+scaffold suite).
 - [ ] **Step 5: Commit**: `git add -A && git commit -m "feat(templates): all eight artifact types render the Gate Board; retire deck()"`
 
@@ -495,9 +599,10 @@ test('planDeck escapes ledger text and tolerates a minimal legacy ledger', () =>
 **Files:** `references/style.css` (full rewrite), `references/style.test.mjs` (new).
 
 The CSS is an extraction, not an invention: take the `<style>` block of `docs/initiatives/2026-08-26-neumorphic-gate-board/gate-board-reference.html` (lines 5–609) verbatim as the base — it already contains tokens (light + Blue Graphite dark in both carriers), rail, hero/tiles/ask, units/drawers, and every figure family — then make exactly these adaptations:
-1. Keep class names as-is (blocks/scaffold from Tasks 1–7 emit them).
-2. Add legacy-block classes still emitted by the registry (`.statrow/.stat/.stat-value/.stat-label`, `.donutwrap/.barwrap/.sparkwrap` + SVG text classes, `.flow/.step/.arw`, `.phaseflow/.phasestep/.phase-mark/.phase-detail`, `.relrow`, `pre/code` code+diff styles, `.callout`→restyle as `.co`) — port each to the neumorphic idiom (carved panels, raised rows, engraved separators; SVG `var(--line)`→`var(--sd)`, `var(--accent)`→`var(--ac)`; define `--line`/`--accent`/`--tint`/`--ok-tint`/`--err-tint` as neumorphic-mapped aliases in `:root` so legacy SVG markup keeps rendering).
-3. Add `.mx{grid-template-columns:1fr repeat(var(--mxcols,2),96px)}` (Task 3) and `.track` var-driven `--a/--b` positioning (Task 1).
+1. Keep class names as-is (blocks/scaffold from Tasks 1–7 emit them; Task 4b moved donut/bar/table/pillRow/statRow/phaseSteps onto these families already).
+2. **Replace the Google Fonts `<link>`s with embedded `@font-face` data-URI declarations** at the top of style.css: base64-encode `sora-latin.woff2` and `nunito-sans-latin.woff2` (copy the two files from the portfolio repo `/Users/angel/Desktop/portfolio/design-system/fonts/` into `references/fonts/` first, committed) as `src:url(data:font/woff2;base64,…) format('woff2')` with the same weight ranges the portfolio declares (Sora 700–800, Nunito Sans 400–800), `font-display:swap`, and full system fallback stacks in the family rules. Rendered artifacts make ZERO external requests (ADR-003).
+3. Style the still-legacy emitters: `.flow/.step(.gate|.go)/.arw`, `.relrow .k/.v`, `pre/code` + `.diff-add/.diff-del/.diff-ctx`, `.sparkwrap` — ported to the neumorphic idiom; define `--accent:var(--ac)` and `--line:var(--sd)` alias tokens in `:root` ONLY for lineSpark's SVG strokes (the one remaining SVG emitter).
+4. Add `.mx{grid-template-columns:1fr repeat(var(--mxcols,2),96px)}` (Task 3), `.track` var-driven `--a/--b` positioning (Task 1), `.wells` (Task 4b statRow), and `.optpc` option-card drawer styles (Task 6).
 
 - [ ] **Step 1: Failing test** (`style.test.mjs`):
 
@@ -517,9 +622,17 @@ test('css carries Blue Graphite in both dark carriers and no old brand', () => {
   assert.match(css, /:root\[data-theme="dark"\]/);
 });
 
-test('the one rule: no visible borders, surfaces are --bg', () => {
+test('the one rule: no visible borders, no second surface fills, engraved dividers only', () => {
   const borders = css.match(/border(-\w+)?\s*:\s*(?!0|none)[^;]+;/g) || [];
   assert.deepEqual(borders.filter((b) => !/border-radius|border-collapse/.test(b)), []);
+  // every background/background-color is var(--bg), a --lineV/--lineH engraved
+  // gradient, transparent, or currentColor status-dot fill via allowlisted tokens
+  const bgs = css.match(/background(-color)?\s*:\s*[^;]+;/g) || [];
+  const allowed = /var\(--bg\)|var\(--lineV\)|var\(--lineH\)|var\(--ac\)|var\(--acq\)|var\(--ok\)|var\(--warn\)|var\(--err\)|var\(--sb\)|var\(--sd\)|transparent|none|currentColor/;
+  assert.deepEqual(bgs.filter((b) => !allowed.test(b)), []);
+  assert.ok(!/linear-gradient(?![^;]*--line)/.test(css));       // no gradients besides the engraved pair
+  assert.ok(!/url\(\s*['"]?https?:/.test(css));                  // no external requests (ADR-003)
+  assert.match(css, /data:font\/woff2;base64,/);                 // fonts embedded
 });
 
 test('rail, unit, drawer, and every figure family have styles', () => {
@@ -537,7 +650,7 @@ test('rail, unit, drawer, and every figure family have styles', () => {
 
 **Files:** Create `references/gate-board.js`; Test `references/gate-board.test.mjs` (new).
 
-Extraction: the reference mockup's `<script>` (lines 1244–1341) verbatim, with two generalizations: (a) `ids` is derived at runtime — `var ids = Array.prototype.map.call(document.querySelectorAll('.nav__chip'), function(a){ return a.getAttribute('data-sec'); });` — so any chapter set works; (b) number-key handling covers `1..9` bounded by `ids.length`.
+Extraction: the reference mockup's `<script>` (lines 1244–1341) verbatim, with three generalizations: (a) `ids` is derived at runtime — `var ids = Array.prototype.map.call(document.querySelectorAll('.nav__chip'), function(a){ return a.getAttribute('data-sec'); });` — so any chapter set works; (b) number-key handling covers `1..9` bounded by `ids.length`; (c) **`Home` jumps to `ids[0]` and `End` to `ids[ids.length - 1]` — no hardcoded chapter id anywhere** (the reference's literal `'yourcall'` End target does not survive extraction; it would miss `your-call` and every non-decision page).
 
 - [ ] **Step 1: Failing test** (string-contract tests, mirroring how `slide-engine.test.mjs` pins behavior without a DOM):
 
@@ -547,9 +660,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 const js = readFileSync(new URL('./gate-board.js', import.meta.url), 'utf8');
 
-test('page script derives chapters from the rail, no hardcoded ids', () => {
+test('page script derives chapters from the rail, no hardcoded ids anywhere', () => {
   assert.match(js, /querySelectorAll\('\.nav__chip'\)/);
   assert.ok(!js.includes("['top', 'diagnosis'"));
+  assert.ok(!/['"]yourcall['"]|['"]your-call['"]|['"]diagnosis['"]/.test(js)); // End/Home derived, never literal
+  assert.match(js, /ids\[ids\.length - 1\]/);   // End = last chapter
+  assert.match(js, /ids\[0\]/);                  // Home = first chapter
 });
 test('keyboard, scrollspy, offsets, expand-all are wired', () => {
   for (const needle of ['IntersectionObserver', "e.key === 'Home'", "e.key === 'End'",
@@ -567,7 +683,11 @@ test('script never references deck-era elements', () => {
 
 **Files:** Modify `references/render.mjs`; Create `references/lint.mjs` + `references/lint.test.mjs`; Update `references/render.test.mjs`; Delete `references/slide-engine.js`, `references/slide-engine.test.mjs`.
 
-**Interfaces:** `lintLedger(ledger, type) => string[]` — pure, no IO. Rules (each returns a `lint: …` string): statement/heading > 12 words in a statement slot; `` ` `` or `@` inside a statement (code-token smell); gate types (`planDeck/brief/decisionCard/liveRun`) missing BOTH `meta.verdict` and `meta.subtitle`, or missing any ask source; `meta.keyStats` present with length outside 3..5. `render.mjs`: read `gate-board.js` instead of `slide-engine.js`; remove the `SYMBOLS` const and its interpolation; accent guard compares against `'#5B7CFA'`; after `make(ledger)`, `for (const w of lintLedger(ledger, type)) console.error('[gate-board lint]', w);` — before the secret scan, never throwing.
+**Interfaces:** `lintLedger(ledger, type) => string[]` — pure, no IO. Rules (each returns a `lint: …` string): statement/heading > 12 words in a statement slot; `` ` `` or `@` inside a statement (code-token smell); gate types (`planDeck/brief/decisionCard/liveRun`) missing BOTH `meta.verdict` and `meta.subtitle`, or missing any ask source; `meta.keyStats` present with length outside 3..5.
+
+`render.mjs` changes: read `gate-board.js` instead of `slide-engine.js`; remove the `SYMBOLS` const and its interpolation; after `make(ledger)`, `for (const w of lintLedger(ledger, type)) console.error('[gate-board lint]', w);` — before the secret scan, never throwing.
+
+**Accent override — the `--user-ac` source token.** Task 8's tokens change to consume an inherited source: `:root{ --ac: var(--user-ac, #5b7cfa); }` and BOTH dark carriers use `--ac: var(--user-ac, #6687ff);` (the fallback differs per theme; an override wins in all three host states because the var reference, not the literal, is what the carriers redefine). `render.mjs`'s override emits `<style>:root{--user-ac:${accent}}</style>` (strict 6-hex validation unchanged). **Accent normalization policy (owner decision, gate round 1):** *resolved per the owner's answer — see the committed decision note in this file's history; implement exactly one of:* (a) legacy-default normalization — `meta.accent` equal to `#009ACC` (case-insensitive) is treated as "house default, no override emitted" (preserving the original semantics where `#009ACC` meant default), while any OTHER hex emits the override; or (b) verbatim pass-through of every valid hex including `#009ACC`. Tests: theme-matrix (override visible in auto-dark, forced-light, forced-dark via string assertions on the emitted style + carrier var usage), plus the policy case for a `#009ACC` ledger.
 
 - [ ] **Step 1: Failing tests**: lint unit tests (one per rule firing + one clean ledger → `[]`); render test updates asserting output contains `nav__track` and NOT `<svg width="0"`/`#i-cog`/`slide-engine`, plus the existing secret-scan fail-closed tests unchanged.
 - [ ] **Step 2: Run → FAIL.** - [ ] **Step 3: Implement; delete the two slide-engine files.** - [ ] **Step 4: Run full suite → PASS.**
@@ -577,20 +697,33 @@ test('script never references deck-era elements', () => {
 
 **Files:** `references/markdown.mjs`, `references/markdown.test.mjs`.
 
-Changes: `head(meta)` gains, after the crumb: `meta.verdict ?? meta.subtitle` as a bold line, `meta.lede` as a paragraph, `meta.keyStats` as a `- **value** — label` list, `meta.ask.headline` as `> **The ask:** …`. planDeck slide headings become `## ${mdEsc(s?.kicker ?? '')} — ${mdEsc(s?.statement ?? s?.heading ?? '')}`; `s.lead` renders as a paragraph when present. All other type twins keep their shapes (they already mirror content, which is unchanged).
+Changes — the twin mirrors EVERY content addition the HTML gained (ADR-003 portable-twin doctrine):
+1. `head(meta)` gains, after the crumb: `meta.verdict ?? meta.subtitle` as a bold line, `meta.lede` as a paragraph, `meta.keyStats` as a `- **value** — label` list, and a shared `askToMarkdown(ask)` serializer emitting `> **The ask:** headline` plus separate lines for note, `**Recommendation:** …`, and `(recommendedBy)` — each independently when present.
+2. planDeck slide headings become `## ${mdEsc(s?.kicker ?? '')} — ${mdEsc(s?.statement ?? s?.heading ?? '')}`; `s.lead` renders as a paragraph.
+3. **Figures**: when `s.figure` is present, serialize it via `blocksToMarkdown([s.figure])` BEFORE the slide's other content; when the figure was the FALLBACK (picked from `s.blocks`), do NOT serialize it twice — `blocksToMarkdown(s.blocks)` already covers it (test both cases).
+4. **Decision chapter**: planDeck with `ledger.decision` appends a `## Your call` section reusing the existing decisionCard twin body (question, per-option pros/cons/risk lines, attributed recommendation) — extract that body into a shared `decisionToMarkdown(d)` used by both planDeck and decisionCard.
+5. **Sources**: `ledger.findings?.sources` appends an `**Evidence base:**` list on planDeck.
 
-- [ ] **Step 1: Failing tests**: render the reference ledger + a `meta.keyStats`-bearing synthetic ledger; assert the twin contains the verdict line, each keyStat, the ask quote, and a `statement`-overridden heading; assert injection strings stay escaped (`mdEsc`).
+- [ ] **Step 1: Failing tests**: render the reference ledger + a synthetic ledger carrying `meta.keyStats`, `meta.ask` (recommendation, no note), an explicit `figure`, AND a fallback figure from `blocks`; assert the twin contains the verdict line, each keyStat, the ask + recommendation lines, the explicit figure's serialization exactly once, the fallback figure exactly once, the `## Your call` decision section with all four options, the sources list, and a `statement`-overridden heading; assert injection strings stay escaped (`mdEsc`).
 - [ ] **Step 2: Run → FAIL.** - [ ] **Step 3: Implement.** - [ ] **Step 4: Run → PASS.**
 - [ ] **Step 5: Commit**: `git add -A && git commit -m "feat(twin): executive summary and statements in the Markdown twin"`
 
 ### Task 12: Back-compat corpus
 
-**Files:** Create `references/fixtures/legacy-plandeck.json` (copy of `docs/initiatives/2026-08-26-neumorphic-gate-board/reference-ledger.json`), `references/fixtures/legacy-minimal.json` (`{"meta":{"title":"t"},"slides":[{"heading":"h","bullets":["b"],"blocks":[{"type":"statRow","stats":[{"value":"1","label":"l"}]}]}]}`); Test `references/backcompat.test.mjs` (new).
+**Files:** Create under `references/fixtures/`:
+- `legacy-plandeck.json` — copy of `docs/initiatives/2026-08-26-neumorphic-gate-board/reference-ledger.json` (carries slides+chapters+findings+liveRun+decision+win, and blocks: statRow, table, pillRow, phaseSteps, rankedRows).
+- `legacy-minimal.json` — `{"meta":{"title":"t"},"slides":[{"heading":"h","bullets":["b"]}]}`.
+- `legacy-allblocks.json` — one slide per REMAINING legacy block type not in the reference ledger (`donut`, `bar`, `lineSpark`, `flow`, `code`, `diff`), synthetic values.
+- `legacy-dup-chapters.json` — slides with NON-consecutive repeated `chapter` labels (the shape four real ledgers have): `[{"chapter":"A","heading":"1"},{"chapter":"B","heading":"2"},{"chapter":"A","heading":"3"}]` — pins collision-safe ids (`a`, `b`, `a-2`).
+- `legacy-sections.json` — a ledger carrying ALL eight typed sections (meta/slides/findings/liveRun/decision/win/phaseTracker/comparison/dashboard) so every template runs against one fixture.
 
-- [ ] **Step 1: Failing test**: for every fixture × every applicable type (`planDeck`, plus `findings`/`liveRun`/`decisionCard`/`brief` against the reference ledger which carries those sections), call the template and `toMarkdown` — assert no throw, non-empty output, `class="nav"` present, and no `NaN|Infinity|undefined` in HTML.
+Test `references/backcompat.test.mjs` (new); Script `references/backcompat-sweep.mjs` (new — NOT a test).
+
+- [ ] **Step 1: Failing test**: for every fixture × every applicable type, call the template and `toMarkdown` — assert no throw, non-empty output, `class="nav"` present, no `NaN|Infinity|undefined` in HTML, and for `legacy-dup-chapters.json` the three section ids are unique.
 - [ ] **Step 2: Run → FAIL** only if Tasks 6–11 left a legacy gap (this test EXISTS to catch that; if it passes immediately, verify it by temporarily breaking a fallback, watch it fail, restore).
-- [ ] **Step 3/4: Fix any gaps → PASS.**
-- [ ] **Step 5: Commit**: `git add -A && git commit -m "test: legacy-ledger back-compat corpus renders under the Gate Board"`
+- [ ] **Step 3: Write `backcompat-sweep.mjs`** — a LOCAL verification script (machine-specific, so not part of `node --test`): globs `~/.claude/the-foreman/**/*.json`, and for each file that parses as an object with `meta`, tries every template whose section is present, IN MEMORY ONLY — writes nothing, prints ONLY `path: OK` or `path: FAIL <error message>` (never ledger content). Exit non-zero if any FAIL.
+- [ ] **Step 4: Run the suite → PASS; run `node references/backcompat-sweep.mjs` → every available real ledger OK** (Task 14 re-runs this as final verification).
+- [ ] **Step 5: Commit**: `git add -A && git commit -m "test: legacy-ledger back-compat corpus + local read-only sweep"`
 
 ### Task 13: Schema docs, authoring contract, de-brand
 
@@ -600,13 +733,17 @@ Changes: `head(meta)` gains, after the crumb: `meta.verdict ?? meta.subtitle` as
 - [ ] **Step 2: Run → FAIL.** - [ ] **Step 3: Edit the four files.** - [ ] **Step 4: Run → PASS.**
 - [ ] **Step 5: Commit**: `git add -A && git commit -m "docs: Gate Board schema, authoring contract, full de-brand"`
 
-### Task 14: Full verification + rendered artifact check
+### Task 14: Enriched reference ledger + full verification
 
-- [ ] **Step 1:** `node --test plugin/skills/the-foreman/references/` → ALL PASS, zero skips.
-- [ ] **Step 2:** Render the reference ledger for real:
-  `node plugin/skills/the-foreman/references/render.mjs docs/initiatives/2026-08-26-neumorphic-gate-board/reference-ledger.json planDeck /tmp/gate-board-out.html` → exits 0, prints the JSON result; open the HTML and compare against `gate-board-reference.html` (rail, hero, all figures, drawers, both themes). Fix visual gaps; re-run tests.
-- [ ] **Step 3:** Render every other type from the same ledger (`brief`, `decisionCard`, `liveRun`, `findings`) → all exit 0, each page carries the rail + its ask.
-- [ ] **Step 4: Commit** any fixes: `git add -A && git commit -m "fix: visual parity with the Gate Board reference"`
+**Files:** Create `docs/initiatives/2026-08-26-neumorphic-gate-board/gate-board-ledger.json` — a MIGRATED copy of `reference-ledger.json` that exercises every new capability: `meta.verdict` ("4 rounds, 8-7-8-7 flat…" moved from subtitle), `meta.lede` (the findings summary rewritten plain), `meta.keyStats` (the five hero numbers), `meta.ask` (headline + recommendation + recommendedBy), and per-slide `statement`, `lead`, and explicit `figure` blocks — each of the six new types used at least once (`deltaRow` on the complaint slide, `topo` on root-cause, `duel` + the decision on the final chapter, `verdictFan` on gate-round-1, `dotMatrix` on ADR-1, `ladder` on honest-limits) with the same real numbers. The ORIGINAL `reference-ledger.json` stays untouched as the legacy fixture.
+
+- [ ] **Step 1:** Author `gate-board-ledger.json` per the mapping above (values verbatim from `reference-ledger.json` — nothing invented).
+- [ ] **Step 2:** `node --test plugin/skills/the-foreman/references/` → ALL PASS, zero skips.
+- [ ] **Step 3:** Render both ledgers for real:
+  `node plugin/skills/the-foreman/references/render.mjs docs/initiatives/2026-08-26-neumorphic-gate-board/gate-board-ledger.json planDeck /tmp/gate-board-out.html` and the same for `reference-ledger.json` → both exit 0; open the enriched render and compare against `gate-board-reference.html` (rail, hero tiles, ask strip, EVERY figure family, drawers, both themes, no external requests in devtools network). Fix visual gaps; re-run tests.
+- [ ] **Step 4:** Render every other type from `legacy-sections.json` (`brief`, `decisionCard`, `liveRun`, `phaseTracker`, `findings`, `comparison`, `dashboard`) → all exit 0, each page carries the rail + its ask with primary facts visible.
+- [ ] **Step 5:** `node plugin/skills/the-foreman/references/backcompat-sweep.mjs` → every real local ledger OK.
+- [ ] **Step 6: Commit**: `git add -A && git commit -m "feat: enriched Gate Board reference ledger; full-engine verification"`
 
 ---
 

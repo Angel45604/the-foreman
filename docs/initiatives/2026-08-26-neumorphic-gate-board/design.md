@@ -42,9 +42,11 @@ interactive runtime beyond the small page script described in §3. No new hostin
   text variants (`--okq/--warnq/--errq`) — darkened on the light fill, lifted on Blue Graphite —
   exactly the values proven in the reference mockup. Shape and position carry state first; color
   confirms it.
-- **Typography**: Sora 700–800 display / Nunito Sans 400–800 body via Google Fonts links with
-  real fallback stacks (artifacts render hosted and from `file://`; the fallback must hold
-  offline).
+- **Typography**: Sora 700–800 display / Nunito Sans 400–800 body — **embedded as data-URI
+  `@font-face` woff2 subsets** (the same OFL-licensed latin subsets the portfolio ships), with
+  real system fallback stacks. No external font links: ADR-003's self-containment guarantee
+  (no external references; identical rendering from `file://`, offline) stays enforced by the
+  existing tests. The ~200KB size cost per artifact is accepted.
 - **Theming contract** (unchanged mechanics, restated): full light palette on bare `:root`; dark
   under `@media (prefers-color-scheme: dark)` guarded `:root:not([data-theme="light"])`; dark
   again under `:root[data-theme="dark"]`; explicit `body{background:var(--bg);color:var(--tx)}`.
