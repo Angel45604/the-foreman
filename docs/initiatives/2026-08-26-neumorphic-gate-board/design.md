@@ -60,8 +60,9 @@ One scaffold for all eight artifact types. Structure, top to bottom:
 
 1. **Sticky chapter rail** — carved track pinned to the viewport top; one raised-on-active chip
    per chapter plus `Top` and the final ask chapter; scrollspy (IntersectionObserver, mid-band
-   rootMargin) highlights the live chapter; number keys `1..N` jump to chapters, `Home`/`End` to
-   top/ask; below ~700px the rail wraps to a second chip row so every chapter stays one tap away
+   rootMargin) highlights the live chapter; digit keys `1..9` jump to the first nine rail
+   entries (chapters beyond nine are reached by rail click — the hint advertises only what
+   works), `Home`/`End` to top/ask; below ~700px the rail wraps to a second chip row so every chapter stays one tap away
    on phones; anchor `scroll-margin-top` is measured from the rail's real height by the script
    (CSS fallback for no-JS). Chips derive from the chapters actually present in the ledger.
 2. **Verdict hero** — crumb row (+ Expand/Collapse-all, JS-only), title, verdict line,
@@ -145,7 +146,10 @@ is always fully present in the twin, per the existing doctrine.
 All eight types render into the one scaffold; `deck()` and `slide-engine.js` are deleted.
 
 - `planDeck` → full Gate Board: hero from `meta`, chapters from `slides[]` (each slide one
-  unit), ask chapter from `decision` when present in the same ledger, else from `meta.ask`.
+  unit), ask chapter from `effectiveAsk = meta.ask ?? derived-from-decision` — an explicit
+  `meta.ask` is the author's intent and wins; decision options still render as evidence in the
+  ask chapter, but the single recommendation strip carries the effective ask's recommendation
+  exactly once.
 - `brief` → hero + win unit (verified/claimed pills) + ask strip; the win's evidence in a drawer.
 - `decisionCard` → hero + ask chapter (option cards + recommendation strip).
 - `liveRun` → hero + one unit (what/cost/blast-radius as tiles + drawer) + the live-run gate ask.

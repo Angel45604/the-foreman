@@ -319,7 +319,7 @@ Append `'dotMatrix', 'ladder'` to the `EXPECTED_BLOCK_TYPES` oracle (all six fig
   },
 ```
 
-(`.mx` uses `grid-template-columns: 1fr repeat(var(--mxcols), 96px)` in Task 8's CSS, so column count comes from the safeguarded integer `cols.length`, never ledger text.)
+(`.mx` sets `--mxcols` from the safeguarded integer `cols.length`; Task 8's `.mx__r` grid rule consumes the inherited var — the reference's `.mx` itself is a flex column, so the grid rule must sit on the rows.)
 
 - [ ] **Step 4: Run → PASS.**  - [ ] **Step 5: Commit**: `git add -A && git commit -m "feat(blocks): add dotMatrix and ladder figure blocks"`
 
@@ -436,12 +436,19 @@ Markup and classes lift from `gate-board-reference.html`: rail lines ~612–622,
 ```js
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { gateBoard, unit, drawer, slugify, allocateIds } from './scaffold.mjs';
+import { gateBoard, unit, drawer, slugify, allocateIds, firstClause } from './scaffold.mjs';
 
 test('slugify is stable and safe', () => {
   assert.equal(slugify('Decision record'), 'decision-record');
   assert.equal(slugify('<script>'), 'script');
   assert.equal(slugify('!!!'), 'section');
+});
+
+test('firstClause is decimal-safe and capped', () => {
+  assert.equal(firstClause('$0.12 per call \u00b7 no DB writes'), '$0.12 per call');
+  assert.equal(firstClause('Reads v1.2 manifest. Then stops.'), 'Reads v1.2 manifest.');
+  assert.equal(firstClause('touches diff.mjs only'), 'touches diff.mjs only');
+  assert.equal(firstClause('x'.repeat(120)).length, 80);
 });
 
 test('allocateIds is collision-safe and reserves top', () => {
@@ -489,6 +496,15 @@ export function slugify(label) {
   return s || 'section';
 }
 
+// decimal-safe first clause: split at ' \u00b7 ' or at .!? followed by whitespace/end
+// (never a bare dot, so $0.12 / v1.2 / diff.mjs survive); cap 80 chars with an ellipsis.
+export function firstClause(text) {
+  const t = String(text ?? '');
+  const m = t.match(/^(.*?)(\s\u00b7\s|[.!?](?=\s|$))/);
+  const clause = m ? (m[1] + (/[.!?]/.test(m[2]) ? m[2].trim() : '')) : t;
+  return clause.length > 80 ? clause.slice(0, 79) + '\u2026' : clause;
+}
+
 export function drawer(label, innerHtml) {
   if (!innerHtml) return '';
   return `<details class="dw"><summary>${esc(label)} <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 6l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></summary><div class="drawer">${innerHtml}</div></details>`;
@@ -517,7 +533,7 @@ export function gateBoard({ crumb = '', title = '', verdict = '', lede = '', key
   const chips = [{ id: 'top', label: 'Top' }, ...chs]
     .map((c, i) => `<a class="nav__chip${i === 0 ? ' is-live' : ''}" href="#${c.id}" data-sec="${c.id}"${i === 0 ? ' aria-current="true"' : ''}><span class="nav__n" aria-hidden="true">${i + 1}</span>${esc(c.label)}</a>`)
     .join('');
-  const nav = `<nav class="nav" aria-label="Chapters"><div class="nav__track" id="navtrack">${chips}<span class="nav__hint" aria-hidden="true">1&ndash;${chs.length + 1} jump &middot; Home / End</span></div></nav>`;
+  const nav = `<nav class="nav" aria-label="Chapters"><div class="nav__track" id="navtrack">${chips}<span class="nav__hint" aria-hidden="true">1&ndash;${Math.min(9, chs.length + 1)} jump &middot; Home / End</span></div></nav>`;
   const tiles = keyStats.length
     ? `<div class="tiles" role="list" aria-label="The numbers that matter">${keyStats.map((s) => `<div class="tile" role="listitem"><b>${esc(s?.value)}</b><span>${esc(s?.label)}</span></div>`).join('')}</div>` : '';
   // headline / note / recommendation / attribution each render independently — no field gates another
@@ -548,12 +564,12 @@ export function gateBoard({ crumb = '', title = '', verdict = '', lede = '', key
 **Files:** rewrite `references/templates.mjs` top half; update `references/templates.test.mjs`.
 
 **Interfaces:**
-- Consumes: `gateBoard/unit/drawer/slugify/allocateIds` (Task 5 signatures), `renderBlocks` (blocks registry incl. Tasks 1–4b).
+- Consumes: `gateBoard/unit/drawer/slugify/allocateIds/firstClause` (Task 5 signatures), `renderBlocks` (blocks registry incl. Tasks 1–4b).
 - Produces: `planDeck(ledger) => { title, favicon, bodyHtml }` (same external contract `render.mjs` uses). Shared helpers the other templates reuse (Task 7): `const fav`, `const crumbOf` (default now `'THE-FOREMAN · DEV WORKFLOW'`), `function heroOf(meta, fallbackVerdict)`, `function askOf(ledger)`, `function figureSplit(blocks, explicitFigure)` → `{figureHtml, drawerBlocks}` where the figure is `explicitFigure ?? first block whose type ∈ FIGURE_TYPES` (`['statRow','bar','donut','phaseSteps','topo','deltaRow','duel','verdictFan','dotMatrix','ladder']`).
 
 Behavior: hero from `meta.title/verdict(??subtitle)/lede`; tiles from `meta.keyStats`; chapters group consecutive slides by `chapter ?? 'Board'`; each slide renders as `unit({kicker, statement: s.statement ?? s.heading, lead: s.lead, figureHtml, pillsHtml: <pillRow blocks stay outside the drawer>, drawerHtml: bullets+cards+callout+remaining blocks})`.
 
-**Ask resolution (single source of truth):** the template builds the FULL chapter-label list first — content chapters, plus an appended ask chapter labeled `Your call` whenever `ledger.decision` OR `meta.ask` exists — then calls `allocateIds` ONCE on that list; the ask strip's `targetId` is the allocated id of that appended chapter (never a raw label, never synthesized elsewhere). Ask-strip fields: `effectiveAsk = meta.ask ?? derived-from-decision` (`headline: decision.question, recommendation, recommendedBy`) — Task 7's effective-ask rule, computed once and driving BOTH strip and target. The ask CHAPTER always opens with the effectiveAsk's headline/note/recommendation/attribution VISIBLE; when `decision` exists, the option cards follow as evidence (reference lines ~1161–1229: letter well, risk chip allowlist `low|med|high`→`--low/--med/--high` else `--med`, recommended marker on `decision.recommendation` match, gist = first sentence of pros ≤ 140 chars via `firstClause`, collapsed verbatim pros/cons in `<details class="optpc">`) + `.rec` strip. `sources` from `ledger.findings?.sources`. Tests: a ledger with `meta.ask` and NO `decision` renders a `Your call` section whose id the ask strip links to; a ledger with BOTH shows `meta.ask`'s headline in strip AND target while the options still render.
+**Ask resolution (single source of truth):** the template builds the FULL chapter-label list first — content chapters, plus an appended ask chapter labeled `Your call` whenever `ledger.decision` OR `meta.ask` exists — then calls `allocateIds` ONCE on that list; the ask strip's `targetId` is the allocated id of that appended chapter (never a raw label, never synthesized elsewhere). Ask-strip fields: `effectiveAsk = meta.ask ?? derived-from-decision` (`headline: decision.question, recommendation, recommendedBy`) — Task 7's effective-ask rule (authoritative; meta.ask wins), computed once and driving strip, target header, and the single `.rec` strip. The ask CHAPTER always opens with the effectiveAsk's headline/note/recommendation/attribution VISIBLE; when `decision` exists, the option cards follow as evidence (reference lines ~1161–1229: letter well, risk chip allowlist `low|med|high`→`--low/--med/--high` else `--med`, recommended marker on `decision.recommendation` match, gist = first sentence of pros ≤ 140 chars via `firstClause`, collapsed verbatim pros/cons in `<details class="optpc">`) + `.rec` strip. `sources` from `ledger.findings?.sources`. Tests: a ledger with `meta.ask` and NO `decision` renders a `Your call` section whose id the ask strip links to; a ledger with BOTH shows `meta.ask`'s headline in strip AND target while the options still render.
 
 - [ ] **Step 1: Failing tests** — replace the deck-era assertions in `templates.test.mjs` for planDeck with:
 
@@ -587,9 +603,9 @@ test('planDeck escapes ledger text and tolerates a minimal legacy ledger', () =>
 
 **Interfaces:** unchanged external signatures for `brief/decisionCard/liveRun/phaseTracker/findings/comparison/dashboard`. Composition per spec §6, using the same helpers.
 
-**First-clause helper — DEFINED IN TASK 5** (exported from `references/test-helpers.mjs`'s sibling `scaffold.mjs` alongside `slugify`, with its RED-first unit tests in `scaffold.test.mjs`; Tasks 6 and 7 only consume it): `firstClause(text)` = the substring up to the first ` · ` (space-dot-space) OR the first `.`/`!`/`?` that is followed by whitespace or end-of-string — never a bare `.` (so `$0.12`, `v1.2`, and `diff.mjs` survive intact) — then capped at 80 chars with `…`. Unit tests: `firstClause('$0.12 per call · no DB writes')` → `'$0.12 per call'`; `firstClause('Reads v1.2 manifest. Then stops.')` → `'Reads v1.2 manifest.'`-minus-trailing-period handling as implemented (pin the exact form); `firstClause('touches diff.mjs only')` → unchanged.
+**First-clause helper:** `firstClause` is implemented AND unit-tested in Task 5 (scaffold.mjs + scaffold.test.mjs, above); this task only consumes it.
 
-**Effective-ask rule (every template, one computation):** `effectiveAsk = meta.ask ?? derivedAsk` where `derivedAsk` is the type's natural ask defined below. The SAME `effectiveAsk` drives BOTH the strip and the target chapter's visible content — the target always shows the effective headline, note, recommendation, and attribution (type-specific bodies like decision options render there as additional evidence beneath it). Test: a ledger with a conflicting `meta.ask` AND a `decision` shows `meta.ask`'s headline in the strip AND at the target, with the options still rendered.
+**Effective-ask rule (every template, one computation — AUTHORITATIVE; design.md §6 is amended to match):** `effectiveAsk = meta.ask ?? derivedAsk` — an explicit `meta.ask` is the author's intent and wins over any derived ask. The SAME `effectiveAsk` drives the strip, the target chapter's visible header, AND the single `.rec` recommendation strip: the `.rec` strip renders `effectiveAsk.recommendation`/`recommendedBy` exactly once; when `meta.ask` overrides a `decision`, the decision's own recommendation/recommendedBy lines are NOT separately rendered (the options remain as evidence, including their per-option 'Recommended' marker which keys off `decision.recommendation` matching an option — that marker is data about the options, not a second ask). Twin follows identically. Tests: conflicting `meta.ask` + `decision` shows `meta.ask`'s headline and recommendation in strip, target header, and `.rec` — with `decision.recommendation`'s text appearing ONLY inside the options evidence, in both HTML and twin.
 
 **Ask-target + rail contract (per design.md §6: a single-section type's rail is `Top` + ONE chapter — never a separate content chip and ask chip):** each single-section type renders exactly ONE chapter; when the type has an `effectiveAsk`, that chapter is labeled `Your call` and contains BOTH the type's visible primary content AND the ask; when the ask source is absent, the chapter keeps its content label and no ask strip renders (never a dead link). `planDeck` keeps its multi-chapter form with the appended `Your call` chapter. Ids resolve ONCE via `allocateIds`; the strip's `targetId` is the resolved id. Pin exact rail-chip counts: planDeck(reference ledger) = Top + Diagnosis + Experiment + Decision + Plan + Your call; each single-section type with an ask = Top + Your call (2 chips); without = Top + content chapter (2 chips).
 
@@ -616,8 +632,8 @@ The CSS is an extraction, not an invention: take the CONTENT of the `<style>` bl
 1. Keep class names as-is (blocks/scaffold from Tasks 1–7 emit them; Task 4b moved donut/bar/table/pillRow/statRow/phaseSteps onto these families already).
 2. **Replace the Google Fonts `<link>`s with embedded `@font-face` data-URI declarations** at the top of style.css: base64-encode `sora-latin.woff2` and `nunito-sans-latin.woff2` (copy the two files from the portfolio repo `/Users/angel/Desktop/portfolio/design-system/fonts/` into `references/fonts/`, committed) as `src:url(data:font/woff2;base64,…) format('woff2')` with the same weight ranges the portfolio declares (Sora 700–800, Nunito Sans 400–800), `font-display:swap`, and full system fallback stacks in the family rules. Rendered artifacts make ZERO external requests (ADR-003). **License compliance:** create `references/fonts/OFL.txt` carrying both faces' authoritative copyright lines and the full SIL OFL 1.1 text, plus the source (Google Fonts), subset description, and each file's sha256; AND place a short comment block ABOVE the `@font-face` rules in style.css — `/* Sora © … · Nunito Sans © … · Licensed under the SIL Open Font License 1.1 — full text: scripts.sil.org/OFL (embedded subsets) */` — so every standalone rendered artifact distributes the notice with the embedded font software (a comment is not an external reference; the secret-scan and no-external-refs tests are unaffected).
 3. Style the still-legacy emitters: `.flow/.step(.gate|.go)/.arw`, `.relrow .k/.v`, `pre/code` + `.diff-add/.diff-del/.diff-ctx`, `.sparkwrap` — ported to the neumorphic idiom; define `--accent:var(--ac)` and `--line:var(--sd)` alias tokens in `:root` ONLY for lineSpark's SVG strokes (the one remaining SVG emitter).
-4. Add `.mx{grid-template-columns:1fr repeat(var(--mxcols,2),96px)}` (Task 3), `.track` var-driven `--a/--b` positioning (Task 1), `.wells` (Task 4b statRow), and `.optpc` option-card drawer styles (Task 6).
-5. Add the `.t` native-table skin (Task 4b): `caption`, `th[scope=col]`, engraved `--lineH` td separators — ported from the Gate Brief exploration variant's table styling (no borders); and the `.sr` visually-hidden utility (absolute 1px clip pattern) used by dotMatrix marks.
+4. Add `.mx__r{grid-template-columns:1fr repeat(var(--mxcols,2),96px)}` (Task 3 — the reference's `.mx` is a flex column; `.mx__r` is the grid row, and it inherits `--mxcols` set on the `.mx` container), `.track` var-driven `--a/--b` positioning (Task 1), `.wells` (Task 4b statRow), and `.optpc` option-card drawer styles (Task 6).
+5. Add the `.t` native-table skin (Task 4b) — defined here, in full (no external source needed): `.t{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}` · `.t caption{caption-side:top;text-align:left;font-size:10.5px;font-weight:800;letter-spacing:.2em;text-transform:uppercase;color:var(--sb);padding-bottom:12px}` · `.t th{text-align:left;font-size:10px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:var(--sb);padding:6px 16px 10px 0;white-space:nowrap}` · `.t td{font-size:12.5px;line-height:1.5;color:var(--sb);padding:11px 16px 11px 0;vertical-align:top;background-image:var(--lineH);background-size:100% 3px;background-repeat:no-repeat;background-position:top}` · `.t td:first-child{color:var(--tx);font-weight:700}`; and the `.sr` visually-hidden utility `.sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}` used by dotMatrix marks.
 6. **The `--user-ac` accent source token lands HERE (CSS side of the pair Task 10 completes):** `:root{ --ac: var(--user-ac, #5b7cfa); }` and both dark carriers declare `--ac: var(--user-ac, #6687ff);`. With no producer the fallbacks apply, so this task's commit stays green on its own; Task 10 adds the `render.mjs` producer and the cross-file integration test. `style.test.mjs` asserts all three `--ac` declarations reference `var(--user-ac`.
 
 - [ ] **Step 1: Failing test** (`style.test.mjs`):
@@ -670,10 +686,13 @@ test('the one rule: no visible borders, no second surface fills, engraved divide
   const offenders = [];
   for (const r of rules) for (const d of r.declarations) {
     if (!/^background(-color|-image)?$/.test(d.prop)) continue;
+    // ANCHORED whole-value patterns — a value must BE one of these, not merely contain one
+    const SURFACE_VALUES = /^(var\(--bg\)|var\(--lineV\)|var\(--lineH\)|transparent|none)$/;
     const MARKER_VALUES = /^(var\(--(ac|acq|ok|warn|err|sb|sd|bg)\)|currentColor|transparent|none)$/;
-    const ok = /var\(--bg\)|var\(--lineV\)|var\(--lineH\)|transparent|none/.test(d.value)
-      || (r.selector.split(',').every((s) => MARKER_SELECTORS.has(s.trim()))
-          && MARKER_VALUES.test(d.value.trim()));   // a marker may ONLY use allowlisted tokens — #ff0000 on .ring__t.on fails
+    const v = d.value.trim();
+    const ok = SURFACE_VALUES.test(v)
+      || (r.selector.split(',').every((s) => MARKER_SELECTORS.has(s.trim())) && MARKER_VALUES.test(v));
+    // radial-gradient(var(--bg),#ff0000) fails: it is not an anchored allowed value
     if (!ok) offenders.push(`${r.selector} → ${d.prop}:${d.value}`);
   }
   assert.deepEqual(offenders, []);
@@ -689,6 +708,7 @@ test('one-rule oracle mutation checks: forbidden fills and borders are caught', 
   assert.ok(oracleBadBorders(css + '\n.evil{border:0.5px solid var(--sd);}').length > 0);
   assert.ok(oracleBadBorders(css + '\n.evil{border-block-start:1px solid red;}').length > 0);
   assert.ok(oracleOffenders(css + '\n.ring__t.on{background:#ff0000;}').length > 0);
+  assert.ok(oracleOffenders(css + '\n.evil{background:radial-gradient(var(--bg),#ff0000);}').length > 0);
 });
 ```
 
@@ -697,9 +717,12 @@ test('one-rule oracle mutation checks: forbidden fills and borders are caught', 
 ```js
 
 test('rail, unit, drawer, and every figure family have styles', () => {
-  for (const cls of ['.nav__track', '.nav__chip', '.tiles', '.ask', '.unit', '.dw', '.drawer',
-    '.deltas', '.topo', '.duel', '.verdict', '.matrix', '.ladder', '.stops', '.bars', '.ring', '.t', '.sr', '.wells', '.optpc']) {
-    assert.ok(css.includes(cls), cls);
+  const selectors = parseRules(css).map((r) => r.selector.trim());
+  for (const cls of ['.nav__track', '.nav__chip', '.tiles', '.ask', '.unit', '.drawer',
+    '.deltas', '.topo', '.duel', '.verdict', '.matrix', '.ladder', '.stops', '.bars', '.ring',
+    '.t', '.sr', '.wells', '.optpc']) {
+    // selector-parsed, not substring: '.t' must exist as its own rule head — '.topo' does not satisfy it
+    assert.ok(selectors.some((s) => s === cls || s.startsWith(cls + ' ') || s.startsWith(cls + '{') || s.startsWith(cls + ',') || s.startsWith(cls + ':') || s.startsWith(cls + '.')), cls);
   }
 });
 ```
@@ -720,6 +743,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 const js = readFileSync(new URL('./gate-board.js', import.meta.url), 'utf8');
+
+test('page script parses as valid JavaScript', () => {
+  assert.doesNotThrow(() => new Function(js));   // a syntax error can no longer ship
+});
 
 test('page script derives chapters from the rail, no hardcoded ids anywhere', () => {
   assert.match(js, /querySelectorAll\('\.nav__chip'\)/);
