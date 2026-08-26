@@ -387,15 +387,16 @@ Twin: keep today's lines, appending `${Array.isArray(b?.tags) && b.tags.length ?
 **Files:** `blocks.mjs` (`donut`, `phaseSteps`, `table`, `pillRow`, `statRow` html renderers — ledger shapes and md() untouched), `blocks.test.mjs`.
 
 **Interfaces:** every emitted class pairs with a styled selector in Task 8's CSS:
-- `donut` → the tick-ring: `.ringwrap/.ring/.ring__t(.on)/.ring__c/.ring__legend` (reference ~857–866). Ticks: 13 when `max<=24` use `max` ticks else 24; lit count = `round(value/max*ticks)`; angles are `round(i*360/ticks)` degrees via `--r`; center shows `value / max` (or `pct%` when max is 100) + esc'd label. All numbers through `safeNum` first.
-- `phaseSteps` → the stops track: `.stops/.stop/.stop__mark/.stop__n/.stop__body/.stop__sign` (reference ~1030–1036); status renders as the `.stop__sign` text (`done ✓` / `active ▸` / `pending`), detail as the body `<p>`.
-- `table` → `.scrollx` + `.gt/.gt__r(.gt__r--h)/.gt__num` raised rows with `--cols: repeat(N, 1fr)` where N = columns.length (an integer, never ledger text); caption becomes an esc'd `<h4>` above.
-- `pillRow` → `.pill--ok/.pill--warn` (BEM double-dash replaces the legacy `pill ok` space form) with the `<i>` dot.
+- `donut` → the tick-ring: `.ringwrap/.ring/.ring__t(.on)/.ring__c/.ring__legend` (reference ~857–866); the `.ring` carries `role="img"` + an esc'd `aria-label` stating the computed `value / max` and label (the ticks are `aria-hidden` decoration). Center shows `value / max` (or `pct%` when max is 100) + esc'd label. All numbers through `safeNum` first; tick/lit counts per the numeric contract below.
+- `phaseSteps` → the stops track: `.stops/.stop/.stop__mark/.stop__n/.stop__body/.stop__sign` (reference ~1030–1036); status renders as the `.stop__sign` text (`done ✓` / `active ▸` / `pending`), detail as the body `<p>`; the `.stops` container is a `<ol class="stops">` with `<li class="stop">` children (native list semantics preserved).
+- `table` → **KEEPS native `<table>` semantics** (the existing renderer's accessible structure must not regress): `<div class="scrollx"><table class="t">` with `<caption>` (esc'd), `<thead><th scope="col">`, `<tbody><td>` — styled per the Gate Brief pattern (engraved `--lineH` row separators via td background-image, no borders). The `.gt` div-grid form is NOT used for the table block.
+- `pillRow` → `.pill--ok/.pill--warn` (BEM double-dash replaces the legacy `pill ok` space form) with the `<i>` dot (`aria-hidden`), label text carrying the meaning.
 - `statRow` → `.wells/.well/.well__v(.is-ok|.is-warn)/.well__l` carved wells (reference ~386–395).
+- `dotMatrix` (Task 3 markup, a11y hardened here): the matrix carries `role="table"`, header row `role="row"` with `role="columnheader"` spans, body rows `role="row"` with the label as `role="rowheader"` and each mark cell `role="cell"` containing the dot (`aria-hidden`) PLUS `<span class="sr">yes</span>` / `<span class="sr">no</span>` so assistive tech hears every mark; the `.sr` visually-hidden class ships in Task 8's CSS.
 
 **Tick-ring numeric contract (donut):** `max = safeNum(block.max ?? 100, {min: 0, fallback: 100})`; `ticks = max > 0 ? Math.min(24, Math.max(4, Math.round(max <= 24 ? max : 24))) : 13` (always a positive integer); `lit = max > 0 ? Math.round((safeNum(value,{min:0,max}) / max) * ticks) : 0` (0 when max is 0 — an all-off ring, never a division). Tick angles `round(i * 360 / ticks)`. Repetition counts are these integers only — never ledger values.
 
-- [ ] **Step 1: Failing tests**: for each of the five, assert the new class family appears, the old one (`donutwrap`, `phaseflow`, `<table`, `"pill ok"`, `statrow`) does NOT, escaping holds, and donut/table numeric/column counts are guard-derived. Donut edge matrix: `{value:1e999}` → 0 lit; `{max:0}` → 13 unlit ticks, 0 lit, no NaN; `{max:-3}` → same as 0; `{max:2.6}` → integer ticks (4); `{max:1e308}` → 24 ticks; `table` `--cols` equals columns.length.
+- [ ] **Step 1: Failing tests**: for each renderer, assert the new class family appears, the retired markup (`donutwrap`, `phaseflow`, `"pill ok"`, `statrow`, `.gt` for tables) does NOT, escaping holds, and numeric counts are guard-derived. Donut edge matrix: `{value:1e999}` → 0 lit; `{max:0}` → 13 unlit ticks, 0 lit, no NaN; `{max:-3}` → same as 0; `{max:2.6}` → integer ticks (4); `{max:1e308}` → 24 ticks. A11y pins: table output CONTAINS `<table class="t"`, `<caption>`, `scope="col"`; dotMatrix output contains `role="table"`, `role="columnheader"`, `role="rowheader"`, and one `class="sr">yes<`/`no<` per mark; donut `.ring` has `role="img"` with a computed aria-label; phaseSteps renders `<ol class="stops">`.
 - [ ] **Step 2: Run → FAIL.** - [ ] **Step 3: Implement the five renderers.** - [ ] **Step 4: Run the FULL suite** — update every `templates.test.mjs` / `render.test.mjs` / `markdown.test.mjs` assertion that pinned the old class markup for these five blocks in this same task → PASS (md() outputs byte-identical — pin one md() case per block).
 - [ ] **Step 5: Commit**: `git add -A && git commit -m "feat(blocks): legacy renderers emit the Gate Board class families"`
 
@@ -549,7 +550,7 @@ export function gateBoard({ crumb = '', title = '', verdict = '', lede = '', key
 
 Behavior: hero from `meta.title/verdict(??subtitle)/lede`; tiles from `meta.keyStats`; chapters group consecutive slides by `chapter ?? 'Board'`; each slide renders as `unit({kicker, statement: s.statement ?? s.heading, lead: s.lead, figureHtml, pillsHtml: <pillRow blocks stay outside the drawer>, drawerHtml: bullets+cards+callout+remaining blocks})`.
 
-**Ask resolution (single source of truth):** the template builds the FULL chapter-label list first — content chapters, plus an appended ask chapter labeled `Your call` whenever `ledger.decision` OR `meta.ask` exists — then calls `allocateIds` ONCE on that list; the ask strip's `targetId` is the allocated id of that appended chapter (never a raw label, never synthesized elsewhere). Ask-strip fields: `meta.ask` wins when present; else derived from `decision` (`headline: decision.question, recommendation, recommendedBy`). The ask CHAPTER's content: with `decision`, the option cards (reference lines ~1161–1229: letter well, risk chip allowlist `low|med|high`→`--low/--med/--high` else `--med`, recommended marker on `decision.recommendation` match, gist = first sentence of pros ≤ 140 chars, collapsed verbatim pros/cons in `<details class="optpc">`) + `.rec` strip; with only `meta.ask`, a single unit restating headline/note/recommendation so the jump target always lands on real content. `sources` from `ledger.findings?.sources`. Add a test: a ledger with `meta.ask` and NO `decision` still renders a `Your call` section whose id the ask strip links to.
+**Ask resolution (single source of truth):** the template builds the FULL chapter-label list first — content chapters, plus an appended ask chapter labeled `Your call` whenever `ledger.decision` OR `meta.ask` exists — then calls `allocateIds` ONCE on that list; the ask strip's `targetId` is the allocated id of that appended chapter (never a raw label, never synthesized elsewhere). Ask-strip fields: `effectiveAsk = meta.ask ?? derived-from-decision` (`headline: decision.question, recommendation, recommendedBy`) — Task 7's effective-ask rule, computed once and driving BOTH strip and target. The ask CHAPTER always opens with the effectiveAsk's headline/note/recommendation/attribution VISIBLE; when `decision` exists, the option cards follow as evidence (reference lines ~1161–1229: letter well, risk chip allowlist `low|med|high`→`--low/--med/--high` else `--med`, recommended marker on `decision.recommendation` match, gist = first sentence of pros ≤ 140 chars via `firstClause`, collapsed verbatim pros/cons in `<details class="optpc">`) + `.rec` strip. `sources` from `ledger.findings?.sources`. Tests: a ledger with `meta.ask` and NO `decision` renders a `Your call` section whose id the ask strip links to; a ledger with BOTH shows `meta.ask`'s headline in strip AND target while the options still render.
 
 - [ ] **Step 1: Failing tests** — replace the deck-era assertions in `templates.test.mjs` for planDeck with:
 
@@ -585,17 +586,18 @@ test('planDeck escapes ledger text and tolerates a minimal legacy ledger', () =>
 
 **First-clause helper (shared):** `firstClause(text)` = the substring up to the first ` · ` (space-dot-space) OR the first `.`/`!`/`?` that is followed by whitespace or end-of-string — never a bare `.` (so `$0.12`, `v1.2`, and `diff.mjs` survive intact) — then capped at 80 chars with `…`. Unit tests: `firstClause('$0.12 per call · no DB writes')` → `'$0.12 per call'`; `firstClause('Reads v1.2 manifest. Then stops.')` → `'Reads v1.2 manifest.'`-minus-trailing-period handling as implemented (pin the exact form); `firstClause('touches diff.mjs only')` → unchanged.
 
-**Ask-target contract (every type):** each template builds its COMPLETE chapter-label list — its content chapter(s) plus a final ask chapter labeled `Your call` — resolves ids ONCE via `allocateIds`, renders the ACTUAL ask content (headline + the type's ask body, visible, outside any drawer) inside that final chapter, and passes that chapter's resolved id as the ask strip's `targetId`. No type may emit an ask strip whose jump target is missing or whose target section lacks the ask.
+**Effective-ask rule (every template, one computation):** `effectiveAsk = meta.ask ?? derivedAsk` where `derivedAsk` is the type's natural ask defined below. The SAME `effectiveAsk` drives BOTH the strip and the target chapter's visible content — the target always shows the effective headline, note, recommendation, and attribution (type-specific bodies like decision options render there as additional evidence beneath it). Test: a ledger with a conflicting `meta.ask` AND a `decision` shows `meta.ask`'s headline in the strip AND at the target, with the options still rendered.
 
-**Visible-content contract (test-pinned): a gate's decision-critical facts are NEVER inside `<details>`.** Drawers hold supporting evidence and long verbatim prose only. Per type (chapter lists in order):
-- `brief` — chapters `Board`, `Your call`. Board unit: statement `'What landed'`, **`win.landed` VISIBLE as the unit's `.co` callout**, status pill (`Verified` ok / `Claimed` warn) visible; drawer holds `win.evidence` verbatim. `Your call` chapter: a unit restating `win.next` visibly. Ask strip: headline `win.next`, target = the `Your call` id.
-- `decisionCard` — chapters `Your call` only: exactly planDeck's decision chapter (option cards visible with gists + risk chips; only verbatim pros/cons collapsed). Ask strip from the question, target = that chapter.
-- `liveRun` — chapters `The run`, `Your call`. **`keyStats` synthesized VISIBLY: `{value: firstClause(lr.cost), label: 'cost'}`, `{value: firstClause(lr.blastRadius), label: 'blast radius'}`**. `The run` unit: statement `'Live-run gate — authorize before anything runs'`, **What / Cost / Blast radius / Cleanup as four VISIBLE `.co` callouts**. `Your call` chapter: the authorize ask restated visibly with the cleanup proof. Ask strip: headline `'Authorize this live run?'`, note `firstClause(lr.what)`, target = `Your call`.
-- `phaseTracker` — chapters `Progress`, plus `Your call` only when `pt.note` exists (the note IS the ask, rendered visibly there). Figure = `phaseSteps` stops track visible; optional `donut` beside it.
-- `findings` — chapters `Findings`, plus `Your call` when `f.summary` exists (summary rendered visibly there as the ask). **Figure = the findings `table` VISIBLE**; `statRow` wells from `f.sources` visible above when present; sources → chips.
-- `comparison` — chapters `Comparison`, plus `Your call` when `c.recommendation` exists (recommendation + attribution visible there). **Figure = the options × criteria `table` VISIBLE.**
-- `dashboard` — chapters `Dashboard`, plus `Your call` when `d.ask` exists (the ask text visible there). keyStats = `d.stats` tiles; figure = `d.chart` visible; rows → `rankedRows` visible.
-- A type whose optional ask source is absent renders NO ask strip and NO `Your call` chapter — and the rail simply has fewer chips (never a dead link).
+**Ask-target + rail contract (per design.md §6: a single-section type's rail is `Top` + ONE chapter — never a separate content chip and ask chip):** each single-section type renders exactly ONE chapter; when the type has an `effectiveAsk`, that chapter is labeled `Your call` and contains BOTH the type's visible primary content AND the ask; when the ask source is absent, the chapter keeps its content label and no ask strip renders (never a dead link). `planDeck` keeps its multi-chapter form with the appended `Your call` chapter. Ids resolve ONCE via `allocateIds`; the strip's `targetId` is the resolved id. Pin exact rail-chip counts: planDeck(reference ledger) = Top + Diagnosis + Experiment + Decision + Plan + Your call; each single-section type with an ask = Top + Your call (2 chips); without = Top + content chapter (2 chips).
+
+**Visible-content contract (test-pinned): a gate's decision-critical facts are NEVER inside `<details>`.** Drawers hold supporting evidence and long verbatim prose only. Per type (single chapter each, composed top-to-bottom):
+- `brief` — chapter `Your call`: statement `'What landed'`, **`win.landed` VISIBLE as the unit's `.co` callout**, status pill (`Verified` ok / `Claimed` warn) visible, the effective ask (`derivedAsk.headline = win.next`) visible beneath; drawer holds `win.evidence` verbatim.
+- `decisionCard` — chapter `Your call`: the effective ask (question) visible up top, then planDeck's option cards (gists + risk chips visible; only verbatim pros/cons collapsed) + `.rec` strip.
+- `liveRun` — chapter `Your call`. **`keyStats` synthesized VISIBLY: `{value: firstClause(lr.cost), label: 'cost'}`, `{value: firstClause(lr.blastRadius), label: 'blast radius'}`**. Unit: statement `'Live-run gate — authorize before anything runs'`, **What / Cost / Blast radius / Cleanup as four VISIBLE `.co` callouts**, the effective ask (`derivedAsk.headline = 'Authorize this live run?'`, note `firstClause(lr.what)`) visible.
+- `phaseTracker` — chapter `Your call` when `pt.note` exists (derivedAsk.headline = `pt.note`), else `Progress`. Figure = `phaseSteps` stops track visible; optional `donut` beside it.
+- `findings` — chapter `Your call` when `f.summary` exists (derivedAsk.headline = `f.summary`), else `Findings`. **Figure = the findings `table` VISIBLE**; `statRow` wells from `f.sources` visible above when present; sources → chips.
+- `comparison` — chapter `Your call` when `c.recommendation` exists (derivedAsk `{headline: 'Pick an option', recommendation, recommendedBy}`), else `Comparison`. **Figure = the options × criteria `table` VISIBLE.**
+- `dashboard` — chapter `Your call` when `d.ask` exists (derivedAsk.headline = `d.ask`), else `Dashboard`. keyStats = `d.stats` tiles; figure = `d.chart` visible; rows → `rankedRows` visible.
 
 **Test helper `stripDetails(html)`** (in a shared `references/test-helpers.mjs`): scans the string for `<details` / `</details>` tags tracking nesting depth and returns only the content at depth 0. Helper self-test: a fixture with a fact ONLY inside `<details>` must NOT appear in the stripped output (negative control), and nested details are handled.
 
@@ -612,6 +614,7 @@ The CSS is an extraction, not an invention: take the `<style>` block of `docs/in
 2. **Replace the Google Fonts `<link>`s with embedded `@font-face` data-URI declarations** at the top of style.css: base64-encode `sora-latin.woff2` and `nunito-sans-latin.woff2` (copy the two files from the portfolio repo `/Users/angel/Desktop/portfolio/design-system/fonts/` into `references/fonts/`, committed) as `src:url(data:font/woff2;base64,…) format('woff2')` with the same weight ranges the portfolio declares (Sora 700–800, Nunito Sans 400–800), `font-display:swap`, and full system fallback stacks in the family rules. Rendered artifacts make ZERO external requests (ADR-003). **License compliance:** create `references/fonts/OFL.txt` carrying both faces' authoritative copyright lines and the full SIL OFL 1.1 text, plus the source (Google Fonts), subset description, and each file's sha256; AND place a short comment block ABOVE the `@font-face` rules in style.css — `/* Sora © … · Nunito Sans © … · Licensed under the SIL Open Font License 1.1 — full text: scripts.sil.org/OFL (embedded subsets) */` — so every standalone rendered artifact distributes the notice with the embedded font software (a comment is not an external reference; the secret-scan and no-external-refs tests are unaffected).
 3. Style the still-legacy emitters: `.flow/.step(.gate|.go)/.arw`, `.relrow .k/.v`, `pre/code` + `.diff-add/.diff-del/.diff-ctx`, `.sparkwrap` — ported to the neumorphic idiom; define `--accent:var(--ac)` and `--line:var(--sd)` alias tokens in `:root` ONLY for lineSpark's SVG strokes (the one remaining SVG emitter).
 4. Add `.mx{grid-template-columns:1fr repeat(var(--mxcols,2),96px)}` (Task 3), `.track` var-driven `--a/--b` positioning (Task 1), `.wells` (Task 4b statRow), and `.optpc` option-card drawer styles (Task 6).
+5. **The `--user-ac` accent source token lands HERE (CSS side of the pair Task 10 completes):** `:root{ --ac: var(--user-ac, #5b7cfa); }` and both dark carriers declare `--ac: var(--user-ac, #6687ff);`. With no producer the fallbacks apply, so this task's commit stays green on its own; Task 10 adds the `render.mjs` producer and the cross-file integration test. `style.test.mjs` asserts all three `--ac` declarations reference `var(--user-ac`.
 
 - [ ] **Step 1: Failing test** (`style.test.mjs`):
 
@@ -632,29 +635,57 @@ test('css carries Blue Graphite in both dark carriers and no old brand', () => {
 });
 
 test('the one rule: no visible borders, no second surface fills, engraved dividers only', () => {
-  const borders = css.match(/border(-\w+)?\s*:\s*(?!0|none)[^;]+;/g) || [];
-  assert.deepEqual(borders.filter((b) => !/border-radius|border-collapse/.test(b)), []);
+  // brace-aware scanner: walks the sheet tracking depth so rules inside @media
+  // blocks are captured with their own selectors (a naive split('}') skips the
+  // first nested rule and would let a media-query fill through).
+  const rules = parseRules(css); // -> [{selector, declarations:[{prop, value}]}], @media descends
+  // borders: only complete 0/none resets pass — '0.5px solid x' must fail
+  const badBorders = [];
+  for (const r of rules) for (const d of r.declarations) {
+    if (/^border(-(top|right|bottom|left|width|style|color))?$/.test(d.prop)
+        && !/^(0|none)$/.test(d.value.trim())) badBorders.push(`${r.selector} → ${d.prop}:${d.value}`);
+  }
+  assert.deepEqual(badBorders, []);
   // gradients exist ONLY as the two engraved token DEFINITIONS
-  const gradientDecls = css.match(/[^;{}]*linear-gradient[^;}]*/g) || [];
-  assert.deepEqual(gradientDecls.filter((d) => !/^\s*--line[VH]\s*:/.test(d.trim())), []);
-  assert.equal(gradientDecls.length, 2);
-  // selector-aware surface check: split into rules, allow non---bg backgrounds ONLY
-  // on the documented dot/tick/marker/scrollbar selectors
-  const DOT_SELECTORS = /(\bi\b|\bem\b|::after|::before|__t\b|__dots|scrollbar-thumb|seclab span|rec__dot|nav__chip)/;
-  const rules = css.split('}').map((r) => r.split('{')).filter((p) => p.length === 2);
+  const grads = rules.flatMap((r) => r.declarations.filter((d) => d.value.includes('linear-gradient')).map((d) => d.prop));
+  assert.deepEqual(grads.sort(), ['--lineH', '--lineV']);
+  // exact documented marker allowlist — selectors whose fills are dots/ticks/meter
+  // cores/scrollbar thumbs; everything else must be var(--bg)/engraved/transparent/none
+  const MARKER_SELECTORS = new Set([
+    '.track b', '.track i.now::after', '.track i::after', '.brow__rail i', '.pmeter i',
+    '.seclab span', '.rec__dot::after', '.stop__mark i::after', '.mx__d i::after',
+    '.ring__t', '.ring__t.on', '.ring__legend i', '.ring__legend span + span i',
+    '.fate--ok .fate__dots i::after', '.fate--warn .fate__dots i::after', '.fate--x .fate__dots i::after',
+    '.pill i.is-ok', '.pill i.is-warn', '.pill--ok i', '.pill--warn i', '.arm i', '.arm--bad i',
+    '.tag i', '.tag--spawn i', '.tag--code i', '.opt__rec i', '.opt__risk i',
+    '.opt__risk--low i', '.opt__risk--med i', '.opt__risk--high i',
+    '.lrow__v i', '.lrow__v--ok i', '.lrow__v--mid i', '.lrow__v--no i',
+    '.blt i', '.chip crumb', '.scrollx::-webkit-scrollbar-thumb', '.flatline i',
+  ]);
   const offenders = [];
-  for (const [sel, body] of rules) {
-    for (const m of body.match(/background(-color)?\s*:\s*[^;]+/g) || []) {
-      const ok = /var\(--bg\)|var\(--lineV\)|var\(--lineH\)|transparent|none/.test(m)
-        || (DOT_SELECTORS.test(sel) && /var\(--(ac|acq|ok|warn|err|sb|sd)\)|currentColor/.test(m));
-      if (!ok) offenders.push(`${sel.trim()} → ${m.trim()}`);
-    }
+  for (const r of rules) for (const d of r.declarations) {
+    if (!/^background(-color|-image)?$/.test(d.prop)) continue;
+    const ok = /var\(--bg\)|var\(--lineV\)|var\(--lineH\)|transparent|none/.test(d.value)
+      || r.selector.split(',').every((s) => MARKER_SELECTORS.has(s.trim()));
+    if (!ok) offenders.push(`${r.selector} → ${d.prop}:${d.value}`);
   }
   assert.deepEqual(offenders, []);
   assert.ok(!/url\(\s*['"]?https?:/.test(css));                  // no external requests (ADR-003)
   assert.match(css, /data:font\/woff2;base64,/);                 // fonts embedded
   assert.match(css, /SIL OPEN FONT LICENSE|OFL/);                // license notice rides in the stylesheet
 });
+
+test('one-rule oracle mutation checks: forbidden fills and borders are caught', () => {
+  // the oracle itself is tested: each mutation of the real sheet must produce offenders
+  assert.ok(oracleOffenders(css + '\n.evil{background:#ff0000;}').length > 0);
+  assert.ok(oracleOffenders(css + '\n@media (min-width:600px){.evil{background:var(--sd);}}').length > 0);
+  assert.ok(oracleBadBorders(css + '\n.evil{border:0.5px solid var(--sd);}').length > 0);
+});
+```
+
+(`parseRules`, `oracleOffenders`, `oracleBadBorders` live in `references/test-helpers.mjs` beside `stripDetails` — `parseRules` is a ~30-line brace-depth walker that records each rule's full selector and semicolon-split declarations, descending into `@media`/`@supports` bodies; the two oracle helpers are the loops above extracted so the mutation test can reuse them. Adjust MARKER_SELECTORS only by ADDING an exact selector that is genuinely a dot/tick/thumb — the review gate sees any diff to this set.)
+
+```js
 
 test('rail, unit, drawer, and every figure family have styles', () => {
   for (const cls of ['.nav__track', '.nav__chip', '.tiles', '.ask', '.unit', '.dw', '.drawer',
@@ -692,6 +723,12 @@ test('keyboard, scrollspy, offsets, expand-all are wired', () => {
   for (const needle of ['IntersectionObserver', "e.key === 'Home'", "e.key === 'End'",
     'scrollMarginTop', 'exp-all', 'col-all', 'prefers-reduced-motion']) assert.ok(js.includes(needle), needle);
 });
+test('number keys cover 1..9 bounded by the derived chapter count', () => {
+  assert.ok(js.includes("e.key >= '1' && e.key <= '9'"));       // not the reference's 1..6
+  assert.ok(!js.includes("e.key <= '6'"));                       // hardcoded bound must not survive
+  assert.match(js, /parseInt\(e\.key, 10\) - 1/);
+  assert.match(js, /< ids\.length|ids\.length >/);               // index bounded by the derived array
+});
 test('script never references deck-era elements', () => {
   assert.ok(!/#dots|#prev|#next|#crumb|\.slide\b/.test(js));
 });
@@ -706,9 +743,9 @@ test('script never references deck-era elements', () => {
 
 **Interfaces:** `lintLedger(ledger, type) => string[]` — pure, no IO. Rules (each returns a `lint: …` string): statement/heading > 12 words in a statement slot; `` ` `` or `@` inside a statement (code-token smell); gate types (`planDeck/brief/decisionCard/liveRun`) missing BOTH `meta.verdict` and `meta.subtitle`, or missing any ask source; `meta.keyStats` present with length outside 3..5.
 
-`render.mjs` changes: read `gate-board.js` instead of `slide-engine.js`; remove the `SYMBOLS` const and its interpolation; after `make(ledger)`, `for (const w of lintLedger(ledger, type)) console.error('[gate-board lint]', w);` — before the secret scan, never throwing.
+`render.mjs` changes: read `gate-board.js` instead of `slide-engine.js`; remove the `SYMBOLS` const and its interpolation. **Lint output contract:** lint messages are RULE + LOCATION ONLY — e.g. `lint: statement-too-long slides[3]`, `lint: code-token-in-statement slides[0]`, `lint: missing-verdict meta`, `lint: keystats-count meta` — NEVER any ledger text (a secret-shaped statement must not leak to stderr). Emission ORDER: run `lintLedger` early but BUFFER the warnings; print them only AFTER both renderings pass the secret scan, immediately before the writes — a scan-rejected render prints nothing but the scan error. Regression test: capture stderr while rendering (a) a ledger whose over-long statement contains a fake secret → render throws, stderr contains NO fragment of the statement; (b) a clean ledger with a lint violation → renders fine, stderr carries the rule+location line only.
 
-**Accent override — the `--user-ac` source token.** Task 8's tokens change to consume an inherited source: `:root{ --ac: var(--user-ac, #5b7cfa); }` and BOTH dark carriers use `--ac: var(--user-ac, #6687ff);` (the fallback differs per theme; an override wins in all three host states because the var reference, not the literal, is what the carriers redefine). `render.mjs`'s override emits `<style>:root{--user-ac:${accent}}</style>` (strict 6-hex validation unchanged). **Accent normalization policy (OWNER-DECIDED, gate round 1, 2026-08-26): legacy-default normalization.** `meta.accent` equal to the legacy or current house default (case-insensitive) is treated as "house default — no override emitted", preserving the field's original semantics; any OTHER valid hex emits the `--user-ac` override verbatim. The 89 legacy ledgers carrying the old default therefore render with the neumorphic accent automatically. **De-brand-compliant representation:** the legacy value NEVER appears as a `#`-hex literal in engine sources — `render.mjs` compares numerically: `const HOUSE_DEFAULT_ACCENTS = new Set([0x009acc, 0x5b7cfa]); const n = parseInt(accent.slice(1), 16); const isDefault = HOUSE_DEFAULT_ACCENTS.has(n);` (the strict `/^#[0-9a-fA-F]{6}$/` validation runs first, unchanged). The `#009ACC`-bearing test ledger lives in `references/fixtures/legacy-accent.json` (fixtures are outside Task 13's scan scope). Tests: theme-matrix (override visible in auto-dark, forced-light, forced-dark via string assertions on the emitted style + carrier var usage), the legacy-accent fixture emitting NO override, a current-default ledger emitting NO override, a genuinely custom hex (`#C85C3F`) emitting one — plus one test that runs Task 13's de-brand scan predicate over `render.mjs`'s source and asserts it passes alongside the normalization tests (the two ship together).
+**Accent override — the `--user-ac` producer (completing Task 8's CSS consumer).** Files for this piece: `render.mjs` (producer) + `render.test.mjs` (integration) — `style.css` itself changed in Task 8 adaptation #5 and is only ASSERTED here. `render.mjs`'s override emits `<style>:root{--user-ac:${accent}}</style>` (strict 6-hex validation unchanged). **Cross-file integration test (all three host states):** render a custom-accent ledger, then assert the chain end-to-end — the output contains the `--user-ac` override style, AND the inlined CSS's three `--ac` declarations (bare `:root`, media-guarded dark, stamped dark) each resolve through `var(--user-ac` — so the override controls `--ac` in auto, forced-light, and forced-dark; additionally assert the override style tag appears AFTER the main stylesheet in the document (cascade order). **Accent normalization policy (OWNER-DECIDED, gate round 1, 2026-08-26): legacy-default normalization.** `meta.accent` equal to the legacy or current house default (case-insensitive) is treated as "house default — no override emitted", preserving the field's original semantics; any OTHER valid hex emits the `--user-ac` override verbatim. The 89 legacy ledgers carrying the old default therefore render with the neumorphic accent automatically. **De-brand-compliant representation:** the legacy value NEVER appears as a `#`-hex literal in engine sources — `render.mjs` compares numerically: `const HOUSE_DEFAULT_ACCENTS = new Set([0x009acc, 0x5b7cfa]); const n = parseInt(accent.slice(1), 16); const isDefault = HOUSE_DEFAULT_ACCENTS.has(n);` (the strict `/^#[0-9a-fA-F]{6}$/` validation runs first, unchanged). The `#009ACC`-bearing test ledger lives in `references/fixtures/legacy-accent.json` (fixtures are outside Task 13's scan scope). Tests: theme-matrix (override visible in auto-dark, forced-light, forced-dark via string assertions on the emitted style + carrier var usage), the legacy-accent fixture emitting NO override, a current-default ledger emitting NO override, a genuinely custom hex (`#C85C3F`) emitting one — plus one test that runs Task 13's de-brand scan predicate over `render.mjs`'s source and asserts it passes alongside the normalization tests (the two ship together).
 
 - [ ] **Step 1: Failing tests**: lint unit tests (one per rule firing + one clean ledger → `[]`); render test updates asserting output contains `nav__track` and NOT `<svg width="0"`/`#i-cog`/`slide-engine`, plus the existing secret-scan fail-closed tests unchanged.
 - [ ] **Step 2: Run → FAIL.** - [ ] **Step 3: Implement; delete the two slide-engine files.** - [ ] **Step 4: Run full suite → PASS.**
@@ -742,7 +779,7 @@ Test `references/backcompat.test.mjs` (new); Script `references/backcompat-sweep
 
 - [ ] **Step 1: Failing test**: for every fixture × every applicable type, call the template and `toMarkdown` — assert no throw, non-empty output, `class="nav"` present, no `NaN|Infinity|undefined` in HTML, and for `legacy-dup-chapters.json` the three section ids are unique.
 - [ ] **Step 2: Run → FAIL** only if Tasks 6–11 left a legacy gap (this test EXISTS to catch that; if it passes immediately, verify it by temporarily breaking a fallback, watch it fail, restore).
-- [ ] **Step 3: Write `backcompat-sweep.mjs`** — a LOCAL verification script (machine-specific, so not part of `node --test`): globs `~/.claude/the-foreman/**/*.json`, and for each file that parses as an object with `meta`, tries every template whose section is present, IN MEMORY ONLY — writes nothing, prints ONLY `path: OK` or `path: FAIL <error message>` (never ledger content). Exit non-zero if any FAIL.
+- [ ] **Step 3: Write `backcompat-sweep.mjs`** — a LOCAL verification script (machine-specific, so not part of `node --test`): globs `~/.claude/the-foreman/**/*.json`, and for each file that parses as an object with `meta`, tries every template whose section is present, IN MEMORY ONLY — writes nothing. Output is `path: OK` or `path: FAIL <category>` where `<category>` is one of a FIXED set the script maps errors to (`parse-error`, `unknown-block`, `template-throw`, `twin-throw`) — NEVER `error.message` and never any ledger content (the engine's own errors embed ledger-derived strings like the unknown block type, so messages must not pass through). Exit non-zero if any FAIL. Sweep self-test (in `backcompat.test.mjs`, against a fixture path, not the home glob): a ledger whose unknown block type is a secret-shaped string produces `FAIL unknown-block` with the secret absent from captured output.
 - [ ] **Step 4: Run the suite → PASS; run `node references/backcompat-sweep.mjs` → every available real ledger OK** (Task 14 re-runs this as final verification).
 - [ ] **Step 5: Commit**: `git add -A && git commit -m "test: legacy-ledger back-compat corpus + local read-only sweep"`
 
