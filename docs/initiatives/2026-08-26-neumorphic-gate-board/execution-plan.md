@@ -410,6 +410,7 @@ Twin: keep today's lines, appending `${Array.isArray(b?.tags) && b.tags.length ?
 
 ```js
 export function slugify(label)                 // 'Decision record' -> 'decision-record'; alnum+dash, lowercase, never empty ('section')
+export function firstClause(text)              // decimal-safe first clause, cap 80 — full contract + tests defined in Task 7's helper note, IMPLEMENTED here
 export function allocateIds(labels)            // -> unique id per label, in order: slugify each; 'top' is RESERVED
                                                //    (a chapter slugifying to 'top' gets 'top-2'); any repeat gets -2/-3…
 export function drawer(label, innerHtml)       // native <details class="dw"><summary>… returns '' when innerHtml is falsy
@@ -531,10 +532,12 @@ export function gateBoard({ crumb = '', title = '', verdict = '', lede = '', key
   const head = `<section id="top" aria-label="Verdict"><header class="wrap crumbrow"><span class="chip crumb">${esc(crumb)}</span><div class="tools"><span class="chip">Gate artifact</span><button class="btn btn--sm jsonly" id="exp-all" type="button">Expand all</button><button class="btn btn--sm jsonly" id="col-all" type="button">Collapse all</button></div></header>`
     + `<div class="wrap hero"><h1>${esc(title)}</h1>${verdict ? `<p class="verdictline">${esc(verdict)}</p>` : ''}${lede ? `<p class="lede">${esc(lede)}</p>` : ''}</div>`
     + `<div class="wrap">${tiles}${askStrip}</div></section>`;
-  const sections = chs.map((c) => `<section class="chap" id="${c.id}" aria-label="${esc(c.label)}"><div class="wrap"><div class="seclab"><span></span><h2>${esc(c.label)}</h2></div>${c.unitsHtml}</div></section>`).join('');
-  const src = sources.length ? `<div class="wrap src" aria-label="Evidence base">${sources.map((s) => `<span class="chip"><b>${esc(s?.value)}</b>&nbsp;${esc(s?.label)}</span>`).join('')}</div>` : '';
+  // evidence-source chips render INSIDE the FINAL chapter section (the ask chapter
+  // when one exists) so they are part of the rail-addressable ask target (design §3.6)
+  const src = sources.length ? `<div class="src" aria-label="Evidence base">${sources.map((s) => `<span class="chip"><b>${esc(s?.value)}</b>&nbsp;${esc(s?.label)}</span>`).join('')}</div>` : '';
+  const sections = chs.map((c, i) => `<section class="chap" id="${c.id}" aria-label="${esc(c.label)}"><div class="wrap"><div class="seclab"><span></span><h2>${esc(c.label)}</h2></div>${c.unitsHtml}${i === chs.length - 1 ? src : ''}</div></section>`).join('');
   const footer = foot ? `<p class="wrap foot">${esc(foot)}</p>` : '';
-  return { bodyHtml: `${nav}\n${head}\n${sections}\n${src}\n${footer}`, ids };
+  return { bodyHtml: `${nav}\n${head}\n${sections}\n${footer}`, ids };
 }
 ```
 
@@ -584,7 +587,7 @@ test('planDeck escapes ledger text and tolerates a minimal legacy ledger', () =>
 
 **Interfaces:** unchanged external signatures for `brief/decisionCard/liveRun/phaseTracker/findings/comparison/dashboard`. Composition per spec §6, using the same helpers.
 
-**First-clause helper (shared):** `firstClause(text)` = the substring up to the first ` · ` (space-dot-space) OR the first `.`/`!`/`?` that is followed by whitespace or end-of-string — never a bare `.` (so `$0.12`, `v1.2`, and `diff.mjs` survive intact) — then capped at 80 chars with `…`. Unit tests: `firstClause('$0.12 per call · no DB writes')` → `'$0.12 per call'`; `firstClause('Reads v1.2 manifest. Then stops.')` → `'Reads v1.2 manifest.'`-minus-trailing-period handling as implemented (pin the exact form); `firstClause('touches diff.mjs only')` → unchanged.
+**First-clause helper — DEFINED IN TASK 5** (exported from `references/test-helpers.mjs`'s sibling `scaffold.mjs` alongside `slugify`, with its RED-first unit tests in `scaffold.test.mjs`; Tasks 6 and 7 only consume it): `firstClause(text)` = the substring up to the first ` · ` (space-dot-space) OR the first `.`/`!`/`?` that is followed by whitespace or end-of-string — never a bare `.` (so `$0.12`, `v1.2`, and `diff.mjs` survive intact) — then capped at 80 chars with `…`. Unit tests: `firstClause('$0.12 per call · no DB writes')` → `'$0.12 per call'`; `firstClause('Reads v1.2 manifest. Then stops.')` → `'Reads v1.2 manifest.'`-minus-trailing-period handling as implemented (pin the exact form); `firstClause('touches diff.mjs only')` → unchanged.
 
 **Effective-ask rule (every template, one computation):** `effectiveAsk = meta.ask ?? derivedAsk` where `derivedAsk` is the type's natural ask defined below. The SAME `effectiveAsk` drives BOTH the strip and the target chapter's visible content — the target always shows the effective headline, note, recommendation, and attribution (type-specific bodies like decision options render there as additional evidence beneath it). Test: a ledger with a conflicting `meta.ask` AND a `decision` shows `meta.ask`'s headline in the strip AND at the target, with the options still rendered.
 
@@ -609,12 +612,13 @@ test('planDeck escapes ledger text and tolerates a minimal legacy ledger', () =>
 
 **Files:** `references/style.css` (full rewrite), `references/style.test.mjs` (new).
 
-The CSS is an extraction, not an invention: take the `<style>` block of `docs/initiatives/2026-08-26-neumorphic-gate-board/gate-board-reference.html` (lines 5–609) verbatim as the base — it already contains tokens (light + Blue Graphite dark in both carriers), rail, hero/tiles/ask, units/drawers, and every figure family — then make exactly these adaptations:
+The CSS is an extraction, not an invention: take the CONTENT of the `<style>` block of `docs/initiatives/2026-08-26-neumorphic-gate-board/gate-board-reference.html` (lines 6–608 — EXCLUSIVE of the `<style>`/`</style>` tag lines themselves; copying the tags into style.css would corrupt the inlined sheet) verbatim as the base — it already contains tokens (light + Blue Graphite dark in both carriers), rail, hero/tiles/ask, units/drawers, and every figure family — then make exactly these adaptations:
 1. Keep class names as-is (blocks/scaffold from Tasks 1–7 emit them; Task 4b moved donut/bar/table/pillRow/statRow/phaseSteps onto these families already).
 2. **Replace the Google Fonts `<link>`s with embedded `@font-face` data-URI declarations** at the top of style.css: base64-encode `sora-latin.woff2` and `nunito-sans-latin.woff2` (copy the two files from the portfolio repo `/Users/angel/Desktop/portfolio/design-system/fonts/` into `references/fonts/`, committed) as `src:url(data:font/woff2;base64,…) format('woff2')` with the same weight ranges the portfolio declares (Sora 700–800, Nunito Sans 400–800), `font-display:swap`, and full system fallback stacks in the family rules. Rendered artifacts make ZERO external requests (ADR-003). **License compliance:** create `references/fonts/OFL.txt` carrying both faces' authoritative copyright lines and the full SIL OFL 1.1 text, plus the source (Google Fonts), subset description, and each file's sha256; AND place a short comment block ABOVE the `@font-face` rules in style.css — `/* Sora © … · Nunito Sans © … · Licensed under the SIL Open Font License 1.1 — full text: scripts.sil.org/OFL (embedded subsets) */` — so every standalone rendered artifact distributes the notice with the embedded font software (a comment is not an external reference; the secret-scan and no-external-refs tests are unaffected).
 3. Style the still-legacy emitters: `.flow/.step(.gate|.go)/.arw`, `.relrow .k/.v`, `pre/code` + `.diff-add/.diff-del/.diff-ctx`, `.sparkwrap` — ported to the neumorphic idiom; define `--accent:var(--ac)` and `--line:var(--sd)` alias tokens in `:root` ONLY for lineSpark's SVG strokes (the one remaining SVG emitter).
 4. Add `.mx{grid-template-columns:1fr repeat(var(--mxcols,2),96px)}` (Task 3), `.track` var-driven `--a/--b` positioning (Task 1), `.wells` (Task 4b statRow), and `.optpc` option-card drawer styles (Task 6).
-5. **The `--user-ac` accent source token lands HERE (CSS side of the pair Task 10 completes):** `:root{ --ac: var(--user-ac, #5b7cfa); }` and both dark carriers declare `--ac: var(--user-ac, #6687ff);`. With no producer the fallbacks apply, so this task's commit stays green on its own; Task 10 adds the `render.mjs` producer and the cross-file integration test. `style.test.mjs` asserts all three `--ac` declarations reference `var(--user-ac`.
+5. Add the `.t` native-table skin (Task 4b): `caption`, `th[scope=col]`, engraved `--lineH` td separators — ported from the Gate Brief exploration variant's table styling (no borders); and the `.sr` visually-hidden utility (absolute 1px clip pattern) used by dotMatrix marks.
+6. **The `--user-ac` accent source token lands HERE (CSS side of the pair Task 10 completes):** `:root{ --ac: var(--user-ac, #5b7cfa); }` and both dark carriers declare `--ac: var(--user-ac, #6687ff);`. With no producer the fallbacks apply, so this task's commit stays green on its own; Task 10 adds the `render.mjs` producer and the cross-file integration test. `style.test.mjs` asserts all three `--ac` declarations reference `var(--user-ac`.
 
 - [ ] **Step 1: Failing test** (`style.test.mjs`):
 
@@ -622,6 +626,7 @@ The CSS is an extraction, not an invention: take the `<style>` block of `docs/in
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { parseRules, oracleOffenders, oracleBadBorders } from './test-helpers.mjs';
 const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8');
 
 test('css carries Blue Graphite in both dark carriers and no old brand', () => {
@@ -642,7 +647,7 @@ test('the one rule: no visible borders, no second surface fills, engraved divide
   // borders: only complete 0/none resets pass — '0.5px solid x' must fail
   const badBorders = [];
   for (const r of rules) for (const d of r.declarations) {
-    if (/^border(-(top|right|bottom|left|width|style|color))?$/.test(d.prop)
+    if (/^border(-(top|right|bottom|left|width|style|color|block|inline)(-(start|end))?(-(width|style|color))?)?$/.test(d.prop)
         && !/^(0|none)$/.test(d.value.trim())) badBorders.push(`${r.selector} → ${d.prop}:${d.value}`);
   }
   assert.deepEqual(badBorders, []);
@@ -665,8 +670,10 @@ test('the one rule: no visible borders, no second surface fills, engraved divide
   const offenders = [];
   for (const r of rules) for (const d of r.declarations) {
     if (!/^background(-color|-image)?$/.test(d.prop)) continue;
+    const MARKER_VALUES = /^(var\(--(ac|acq|ok|warn|err|sb|sd|bg)\)|currentColor|transparent|none)$/;
     const ok = /var\(--bg\)|var\(--lineV\)|var\(--lineH\)|transparent|none/.test(d.value)
-      || r.selector.split(',').every((s) => MARKER_SELECTORS.has(s.trim()));
+      || (r.selector.split(',').every((s) => MARKER_SELECTORS.has(s.trim()))
+          && MARKER_VALUES.test(d.value.trim()));   // a marker may ONLY use allowlisted tokens — #ff0000 on .ring__t.on fails
     if (!ok) offenders.push(`${r.selector} → ${d.prop}:${d.value}`);
   }
   assert.deepEqual(offenders, []);
@@ -680,6 +687,8 @@ test('one-rule oracle mutation checks: forbidden fills and borders are caught', 
   assert.ok(oracleOffenders(css + '\n.evil{background:#ff0000;}').length > 0);
   assert.ok(oracleOffenders(css + '\n@media (min-width:600px){.evil{background:var(--sd);}}').length > 0);
   assert.ok(oracleBadBorders(css + '\n.evil{border:0.5px solid var(--sd);}').length > 0);
+  assert.ok(oracleBadBorders(css + '\n.evil{border-block-start:1px solid red;}').length > 0);
+  assert.ok(oracleOffenders(css + '\n.ring__t.on{background:#ff0000;}').length > 0);
 });
 ```
 
@@ -689,7 +698,7 @@ test('one-rule oracle mutation checks: forbidden fills and borders are caught', 
 
 test('rail, unit, drawer, and every figure family have styles', () => {
   for (const cls of ['.nav__track', '.nav__chip', '.tiles', '.ask', '.unit', '.dw', '.drawer',
-    '.deltas', '.topo', '.duel', '.verdict', '.matrix', '.ladder', '.stops', '.bars', '.ring']) {
+    '.deltas', '.topo', '.duel', '.verdict', '.matrix', '.ladder', '.stops', '.bars', '.ring', '.t', '.sr', '.wells', '.optpc']) {
     assert.ok(css.includes(cls), cls);
   }
 });
@@ -702,7 +711,7 @@ test('rail, unit, drawer, and every figure family have styles', () => {
 
 **Files:** Create `references/gate-board.js`; Test `references/gate-board.test.mjs` (new).
 
-Extraction: the reference mockup's `<script>` (lines 1244–1341) verbatim, with three generalizations: (a) `ids` is derived at runtime — `var ids = Array.prototype.map.call(document.querySelectorAll('.nav__chip'), function(a){ return a.getAttribute('data-sec'); });` — so any chapter set works; (b) number-key handling covers `1..9` bounded by `ids.length`; (c) **`Home` jumps to `ids[0]` and `End` to `ids[ids.length - 1]` — no hardcoded chapter id anywhere** (the reference's literal `'yourcall'` End target does not survive extraction; it would miss `your-call` and every non-decision page).
+Extraction: the CONTENT of the reference mockup's `<script>` block (lines 1245–1340 — EXCLUSIVE of the `<script>`/`</script>` tag lines) verbatim, with three generalizations: (a) `ids` is derived at runtime — `var ids = Array.prototype.map.call(document.querySelectorAll('.nav__chip'), function(a){ return a.getAttribute('data-sec'); });` — so any chapter set works; (b) number-key handling covers `1..9` bounded by `ids.length`; (c) **`Home` jumps to `ids[0]` and `End` to `ids[ids.length - 1]` — no hardcoded chapter id anywhere** (the reference's literal `'yourcall'` End target does not survive extraction; it would miss `your-call` and every non-decision page).
 
 - [ ] **Step 1: Failing test** (string-contract tests, mirroring how `slide-engine.test.mjs` pins behavior without a DOM):
 
@@ -743,7 +752,9 @@ test('script never references deck-era elements', () => {
 
 **Interfaces:** `lintLedger(ledger, type) => string[]` — pure, no IO. Rules (each returns a `lint: …` string): statement/heading > 12 words in a statement slot; `` ` `` or `@` inside a statement (code-token smell); gate types (`planDeck/brief/decisionCard/liveRun`) missing BOTH `meta.verdict` and `meta.subtitle`, or missing any ask source; `meta.keyStats` present with length outside 3..5.
 
-`render.mjs` changes: read `gate-board.js` instead of `slide-engine.js`; remove the `SYMBOLS` const and its interpolation. **Lint output contract:** lint messages are RULE + LOCATION ONLY — e.g. `lint: statement-too-long slides[3]`, `lint: code-token-in-statement slides[0]`, `lint: missing-verdict meta`, `lint: keystats-count meta` — NEVER any ledger text (a secret-shaped statement must not leak to stderr). Emission ORDER: run `lintLedger` early but BUFFER the warnings; print them only AFTER both renderings pass the secret scan, immediately before the writes — a scan-rejected render prints nothing but the scan error. Regression test: capture stderr while rendering (a) a ledger whose over-long statement contains a fake secret → render throws, stderr contains NO fragment of the statement; (b) a clean ledger with a lint violation → renders fine, stderr carries the rule+location line only.
+`render.mjs` changes: read `gate-board.js` instead of `slide-engine.js`; remove the `SYMBOLS` const and its interpolation. **CLI error sanitization:** the CLI catch no longer prints raw `e.message` (unknown-block errors interpolate ledger-derived type names, so a secret-shaped value could reach stderr pre-scan). It prints a fixed category — `usage` (code 2), `parse-error`, `unknown-block`, `unknown-type`, `scan-rejected`, `render-error` — plus, for `unknown-block`/`unknown-type`, an 8-char sha256 of the offending value so the ledger author can locate it without the value being echoed. Regression test: a secret-shaped unknown block type renders `unknown-block <sha8>` on stderr with the secret absent.
+
+**Lint output contract:** lint messages are RULE + LOCATION ONLY — e.g. `lint: statement-too-long slides[3]`, `lint: code-token-in-statement slides[0]`, `lint: missing-verdict meta`, `lint: keystats-count meta` — NEVER any ledger text (a secret-shaped statement must not leak to stderr). Emission ORDER: run `lintLedger` early but BUFFER the warnings; print them only AFTER both renderings pass the secret scan, immediately before the writes — a scan-rejected render prints nothing but the scan error. Regression test: capture stderr while rendering (a) a ledger whose over-long statement contains a fake secret → render throws, stderr contains NO fragment of the statement; (b) a clean ledger with a lint violation → renders fine, stderr carries the rule+location line only.
 
 **Accent override — the `--user-ac` producer (completing Task 8's CSS consumer).** Files for this piece: `render.mjs` (producer) + `render.test.mjs` (integration) — `style.css` itself changed in Task 8 adaptation #5 and is only ASSERTED here. `render.mjs`'s override emits `<style>:root{--user-ac:${accent}}</style>` (strict 6-hex validation unchanged). **Cross-file integration test (all three host states):** render a custom-accent ledger, then assert the chain end-to-end — the output contains the `--user-ac` override style, AND the inlined CSS's three `--ac` declarations (bare `:root`, media-guarded dark, stamped dark) each resolve through `var(--user-ac` — so the override controls `--ac` in auto, forced-light, and forced-dark; additionally assert the override style tag appears AFTER the main stylesheet in the document (cascade order). **Accent normalization policy (OWNER-DECIDED, gate round 1, 2026-08-26): legacy-default normalization.** `meta.accent` equal to the legacy or current house default (case-insensitive) is treated as "house default — no override emitted", preserving the field's original semantics; any OTHER valid hex emits the `--user-ac` override verbatim. The 89 legacy ledgers carrying the old default therefore render with the neumorphic accent automatically. **De-brand-compliant representation:** the legacy value NEVER appears as a `#`-hex literal in engine sources — `render.mjs` compares numerically: `const HOUSE_DEFAULT_ACCENTS = new Set([0x009acc, 0x5b7cfa]); const n = parseInt(accent.slice(1), 16); const isDefault = HOUSE_DEFAULT_ACCENTS.has(n);` (the strict `/^#[0-9a-fA-F]{6}$/` validation runs first, unchanged). The `#009ACC`-bearing test ledger lives in `references/fixtures/legacy-accent.json` (fixtures are outside Task 13's scan scope). Tests: theme-matrix (override visible in auto-dark, forced-light, forced-dark via string assertions on the emitted style + carrier var usage), the legacy-accent fixture emitting NO override, a current-default ledger emitting NO override, a genuinely custom hex (`#C85C3F`) emitting one — plus one test that runs Task 13's de-brand scan predicate over `render.mjs`'s source and asserts it passes alongside the normalization tests (the two ship together).
 
@@ -756,7 +767,7 @@ test('script never references deck-era elements', () => {
 **Files:** `references/markdown.mjs`, `references/markdown.test.mjs`.
 
 Changes — the twin mirrors EVERY content addition the HTML gained (ADR-003 portable-twin doctrine):
-1. `head(meta)` gains, after the crumb: `meta.verdict ?? meta.subtitle` as a bold line, `meta.lede` as a paragraph, `meta.keyStats` as a `- **value** — label` list, and a shared `askToMarkdown(ask)` serializer emitting `> **The ask:** headline` plus separate lines for note, `**Recommendation:** …`, and `(recommendedBy)` — each independently when present.
+1. `head(meta)` gains, after the crumb: `meta.verdict ?? meta.subtitle` as a bold line, `meta.lede` as a paragraph, `meta.keyStats` as a `- **value** — label` list, and a shared `askToMarkdown(effectiveAsk)` serializer emitting `> **The ask:** headline` plus separate lines for note, `**Recommendation:** …`, and `(recommendedBy)` — each independently when present. **Every type's twin computes the SAME `effectiveAsk = meta.ask ?? derivedAsk` the HTML template computes and calls `askToMarkdown` with it, REPLACING that type's old natural-ask lines** (e.g. brief's `**The ask / next:**` line and decisionCard's trailing recommendation line come from the shared serializer now) — so a conflicting `meta.ask` wins identically in HTML and twin. Test the conflict case in the twin too.
 2. planDeck slide headings become `## ${mdEsc(s?.kicker ?? '')} — ${mdEsc(s?.statement ?? s?.heading ?? '')}`; `s.lead` renders as a paragraph.
 3. **Figures**: when `s.figure` is present, serialize it via `blocksToMarkdown([s.figure])` BEFORE the slide's other content; when the figure was the FALLBACK (picked from `s.blocks`), do NOT serialize it twice — `blocksToMarkdown(s.blocks)` already covers it (test both cases).
 4. **Decision chapter**: planDeck with `ledger.decision` appends a `## Your call` section reusing the existing decisionCard twin body (question, per-option pros/cons/risk lines, attributed recommendation) — extract that body into a shared `decisionToMarkdown(d)` used by both planDeck and decisionCard.
