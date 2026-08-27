@@ -330,6 +330,12 @@ test('bar numeric guards survive the restyle', () => {
   assert.match(html, /--w:0/);                                 // non-finite → fallback 0; negative → clamped 0
 });
 
+test('bar declared max wins over the largest value as the denominator', () => {
+  const html = renderBlocks([{ type: 'bar', max: 10, bars: [{ label: 'a', value: 5 }, { label: 'b', value: 2 }] }]);
+  assert.match(html, /--w:50/);                                // 5/10, NOT 5/5
+  assert.match(html, /--w:20/);                                // 2/10
+});
+
 test('bar HTML survives NaN / Infinity / overflow / negative values (no NaN/Infinity, --w within [0,100])', () => {
   const html = BLOCKS.bar.html({ type: 'bar', bars: [
     { label: 'nan', value: NaN },
