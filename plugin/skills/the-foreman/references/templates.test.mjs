@@ -664,3 +664,30 @@ test('well-shaped meta.ask + malformed decision: options render ONCE as Your cal
   assert.match(h, /Approve\?/);
   assert.equal((h.match(/class="opts"/g) || []).length, 1);
 });
+
+// ---- prepr blocker: EVERY derived ask rides the askShape gate ----
+// A type's raw ask source used to reach the board verbatim: a whitespace
+// win.next, a numeric phaseTracker.note, or an object dashboard.ask won the
+// derived-ask slot and rendered a BLANK (or garbage) ask strip plus an empty
+// Your-call chapter. Each candidate now passes the SAME askShape gate as
+// meta.ask; a failing candidate means NO ask — content chapter label, no
+// strip, never a dead link.
+const DERIVED_ASK_CASES = [
+  ['brief', 'whitespace win.next', brief,
+    { meta: { title: 'B' }, win: { landed: 'L', verified: true, next: '   ' } }, 'what-landed'],
+  ['phaseTracker', 'numeric note', phaseTracker,
+    { meta: { title: 'P' }, phaseTracker: { phases: [{ label: 'P1', status: 'done' }], note: 42 } }, 'progress'],
+  ['findings', 'empty-string summary', findings,
+    { meta: { title: 'F' }, findings: { items: [{ title: 'T', confidence: 'High' }], summary: '' } }, 'findings'],
+  ['dashboard', 'object ask', dashboard,
+    { meta: { title: 'D' }, dashboard: { stats: [{ value: '1', label: 'x' }], ask: {} } }, 'dashboard'],
+];
+for (const [type, label, fn, l, contentId] of DERIVED_ASK_CASES) {
+  test(`${type} with a ${label}: the derived ask fails askShape — content label, NO blank strip`, () => {
+    const h = fn(l).bodyHtml;
+    assert.deepEqual(chipIds(h), ['top', contentId]);   // content label, never Your call
+    assert.doesNotMatch(h, /class="ask"/);              // no ask strip at all
+    assert.doesNotMatch(h, /<b><\/b>/);                 // never an empty headline anywhere
+    assert.doesNotMatch(h, /id="your-call"/);
+  });
+}

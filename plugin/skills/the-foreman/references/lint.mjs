@@ -54,8 +54,11 @@ export function lintLedger(ledger, type) {
 
   if (GATE_TYPES.has(type)) {
     if (!meta.verdict && !meta.subtitle) warnings.push('lint: missing-verdict meta');
-    // natural ask source per type, mirroring each template's derivedAsk input
-    const naturalAsk = type === 'brief' ? l.win?.next
+    // natural ask source per type, mirroring each template's derivedAsk input —
+    // and its GATE: brief's win.next candidate rides the same askShape predicate
+    // the renderers apply, so a whitespace / non-string next (which renders NO
+    // strip) counts as missing here too, never as present
+    const naturalAsk = type === 'brief' ? askShape({ headline: l.win?.next })
       : type === 'liveRun' ? l.liveRun
         : decisionShape(l.decision); // planDeck + decisionCard derive ONLY from a well-shaped decision
     if (!askShape(meta.ask) && !naturalAsk) warnings.push('lint: missing-ask meta');

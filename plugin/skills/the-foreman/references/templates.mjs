@@ -65,7 +65,10 @@ function askOf(ledger) {
   const shaped = askShape(ledger?.meta?.ask);
   if (shaped) return shaped;
   const d = decisionShape(ledger?.decision); // decisionShape guarantees a non-empty question
-  if (d) return { headline: d.question, recommendation: d.recommendation, recommendedBy: d.recommendedBy };
+  // the derived CANDIDATE rides the same askShape gate as meta.ask (every
+  // derived ask does — see singleBoard); here it is defense-in-depth, since
+  // decisionShape already pinned a non-empty string question
+  if (d) return askShape({ headline: d.question, recommendation: d.recommendation, recommendedBy: d.recommendedBy });
   return null;
 }
 
@@ -191,7 +194,12 @@ const heroTakenBy = (ledger) => Array.isArray(ledger?.meta?.keyStats);
 function singleBoard(ledger, { fallbackTitle, contentLabel, unitHtml, derivedAsk = null, decision = null, keyStats = null, sources = [] }) {
   const meta = ledger?.meta ?? {};
   const title = String(meta.title ?? fallbackTitle);
-  const effectiveAsk = askShape(meta.ask) ?? derivedAsk; // the author's meta.ask wins ONLY when well-shaped (design §6; askShape is the single gate)
+  // BOTH candidates ride the ONE askShape gate (design §6): the author's
+  // meta.ask wins only when well-shaped, and a type's derived candidate (built
+  // from a raw ledger field — win.next, pt.note, f.summary, d.ask) counts only
+  // when well-shaped too. A whitespace / non-string / object source used to
+  // reach the board verbatim and render a BLANK ask strip; now it means NO ask.
+  const effectiveAsk = askShape(meta.ask) ?? askShape(derivedAsk);
   const label = effectiveAsk ? 'Your call' : contentLabel;
   const [targetId] = allocateIds([label]);
   const unitsHtml = `${unitHtml}${effectiveAsk ? askChapterHtml(effectiveAsk, decision) : ''}`;
@@ -287,7 +295,7 @@ export function brief(ledger) {
     fallbackTitle: 'Brief',
     contentLabel: 'What landed',
     unitHtml,
-    derivedAsk: win.next ? { headline: win.next } : null,
+    derivedAsk: { headline: win.next }, // singleBoard askShape-gates the candidate (absent/blank/non-string => no ask)
   });
 }
 
@@ -356,7 +364,7 @@ export function phaseTracker(ledger) {
     fallbackTitle: 'Phase tracker',
     contentLabel: 'Progress',
     unitHtml: unit({ kicker: 'Phase tracker', statement: 'Where the work stands', figureHtml }),
-    derivedAsk: pt.note ? { headline: pt.note } : null,
+    derivedAsk: { headline: pt.note }, // askShape-gated in singleBoard
   });
 }
 
@@ -378,7 +386,7 @@ export function findings(ledger) {
     fallbackTitle: 'Findings',
     contentLabel: 'Findings',
     unitHtml: unit({ kicker: 'Findings', statement: 'What the evidence shows', figureHtml }),
-    derivedAsk: f.summary ? { headline: f.summary } : null,
+    derivedAsk: { headline: f.summary }, // askShape-gated in singleBoard
     sources,
   });
 }
@@ -438,7 +446,7 @@ export function dashboard(ledger) {
     fallbackTitle: 'Dashboard',
     contentLabel: 'Dashboard',
     unitHtml: unit({ kicker: 'Dashboard', statement: 'The numbers right now', figureHtml }),
-    derivedAsk: d.ask ? { headline: d.ask } : null,
+    derivedAsk: { headline: d.ask }, // askShape-gated in singleBoard
     keyStats: stats,
   });
 }

@@ -114,6 +114,16 @@ test('malformed-decision never fires for a well-shaped or absent decision, and f
     ['lint: malformed-decision decision']);
 });
 
+// ---- prepr blocker: lint's brief ask source rides the same askShape gate the
+// renderers ride — a win.next that fails it is NOT an ask, so missing-ask fires
+// exactly when the board renders no strip (lint and render agree).
+test('brief missing-ask fires when win.next fails askShape (whitespace / non-string)', () => {
+  const meta = { title: 't', verdict: 'v' };
+  assert.deepEqual(lintLedger({ meta, win: { landed: 'x', next: '   ' } }, 'brief'), ['lint: missing-ask meta']);
+  assert.deepEqual(lintLedger({ meta, win: { landed: 'x', next: 42 } }, 'brief'), ['lint: missing-ask meta']);
+  assert.deepEqual(lintLedger({ meta, win: { landed: 'x', next: 'ship it' } }, 'brief'), []); // a real ask still counts
+});
+
 test('keystats-count fires when meta.keyStats is present with length outside 3..5', () => {
   const mk = (n) => ({ meta: { ...clean.meta, keyStats: Array.from({ length: n }, (_, i) => ({ value: String(i), label: 'l' })) }, slides: [] });
   assert.deepEqual(lintLedger(mk(2), 'planDeck'), ['lint: keystats-count meta']);

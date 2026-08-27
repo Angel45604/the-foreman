@@ -534,6 +534,23 @@ test('twin options-only decision (planDeck): Decision-headed evidence chapter, n
   assert.match(md, /^- \*\*Option A\*\*/m);
 });
 
+// ---- prepr blocker parity: the twin gates EVERY derived ask through askShape ----
+// The same raw sources that used to blank the board's strip used to serialize a
+// blank/garbage `> **The ask:**` line here. A failing candidate now means NO
+// ask lines at all — identical to the board.
+for (const [type, label, l] of [
+  ['brief', 'whitespace win.next', { meta: META, win: { landed: 'L', verified: true, next: '   ' } }],
+  ['phaseTracker', 'numeric note', { meta: META, phaseTracker: { phases: [{ label: 'P1', status: 'done' }], note: 42 } }],
+  ['findings', 'empty-string summary', { meta: META, findings: { items: [{ title: 'T', confidence: 'High' }], summary: '' } }],
+  ['dashboard', 'object ask', { meta: META, dashboard: { stats: [{ value: '1', label: 'x' }], ask: {} } }],
+]) {
+  test(`twin ${type} with a ${label}: the derived ask fails askShape — no ask lines serialize`, () => {
+    const md = toMarkdown(l, type).markdown;
+    assert.doesNotMatch(md, /\*\*The ask:\*\*/);
+    assert.doesNotMatch(md, /^> /m);        // no orphan blockquote ask fragment rides along
+  });
+}
+
 test('twin escapes injection in verdict/lede/keyStats/ask fields', () => {
   const md = toMarkdown({
     meta: {

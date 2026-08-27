@@ -104,7 +104,7 @@ export function toMarkdown(ledger, type) {
     const d = ledger?.decision;
     const shapedD = decisionShape(d);
     const effectiveAsk = askShape(meta.ask)
-      ?? (shapedD ? { headline: shapedD.question, recommendation: shapedD.recommendation, recommendedBy: shapedD.recommendedBy } : null);
+      ?? (shapedD ? askShape({ headline: shapedD.question, recommendation: shapedD.recommendation, recommendedBy: shapedD.recommendedBy }) : null);
     lines = head(meta, effectiveAsk);
     const slides = Array.isArray(ledger?.slides) ? ledger.slides : [];
     for (const s of slides) {
@@ -146,7 +146,10 @@ export function toMarkdown(ledger, type) {
     }
   } else if (type === 'brief') {
     const win = ledger?.win ?? {};
-    const effectiveAsk = askShape(meta.ask) ?? (win.next ? { headline: win.next } : null);
+    // EVERY derived ask rides the same askShape gate as meta.ask (parity with
+    // templates.mjs singleBoard): the candidate object is built from the raw
+    // source, then gated — absent/blank/non-string means NO ask lines.
+    const effectiveAsk = askShape(meta.ask) ?? askShape({ headline: win.next });
     lines = head(meta, effectiveAsk);
     lines.push('', `**Status:** ${win.verified ? 'Verified ✅' : 'Claimed (not yet verified) ⚠️'}`);
     if (win.landed) lines.push('', `**What landed:** ${mdEsc(win.landed)}`);
@@ -155,7 +158,7 @@ export function toMarkdown(ledger, type) {
     const d = ledger?.decision ?? null;
     const shapedD = decisionShape(d);
     const effectiveAsk = askShape(meta.ask)
-      ?? (shapedD ? { headline: shapedD.question, recommendation: shapedD.recommendation, recommendedBy: shapedD.recommendedBy } : null);
+      ?? (shapedD ? askShape({ headline: shapedD.question, recommendation: shapedD.recommendation, recommendedBy: shapedD.recommendedBy }) : null);
     lines = head(meta, effectiveAsk);
     // Evidence serializes for a well-shaped decision, or for a malformed one
     // that still carries options (nothing lost, no orphan empty block).
@@ -163,7 +166,7 @@ export function toMarkdown(ledger, type) {
   } else if (type === 'liveRun') {
     const lr = ledger?.liveRun ?? {};
     const effectiveAsk = askShape(meta.ask)
-      ?? { headline: 'Authorize this live run?', note: firstClause(lr.what) };
+      ?? askShape({ headline: 'Authorize this live run?', note: firstClause(lr.what) }); // engine literal — always passes; gated for uniformity
     lines = head(meta, effectiveAsk);
     lines.push('', `**What it does:** ${mdEsc(lr.what ?? '')}`);
     lines.push('', `**Cost / blast radius:** ${mdEsc(lr.cost ?? '—')} · ${mdEsc(lr.blastRadius ?? '—')}`);
@@ -178,7 +181,7 @@ export function toMarkdown(ledger, type) {
       { type: 'phaseSteps', steps: phases },
       progress && { type: 'donut', value: progress.value, max: progress.max, label: progress.label },
     ].filter(Boolean);
-    const effectiveAsk = askShape(meta.ask) ?? (pt.note ? { headline: pt.note } : null);
+    const effectiveAsk = askShape(meta.ask) ?? askShape({ headline: pt.note }); // derived candidate gated like meta.ask
     lines = head(meta, effectiveAsk);
     const md = blocksToMarkdown(blocks);
     if (md) lines.push('', md);
@@ -194,7 +197,7 @@ export function toMarkdown(ledger, type) {
       },
       sources && { type: 'rankedRows', rows: sources },
     ].filter(Boolean);
-    const effectiveAsk = askShape(meta.ask) ?? (f.summary ? { headline: f.summary } : null);
+    const effectiveAsk = askShape(meta.ask) ?? askShape({ headline: f.summary }); // derived candidate gated like meta.ask
     lines = head(meta, effectiveAsk);
     const md = blocksToMarkdown(blocks);
     if (md) lines.push('', md);
@@ -220,7 +223,7 @@ export function toMarkdown(ledger, type) {
     ];
     const effectiveAsk = askShape(meta.ask)
       ?? (c.recommendation != null
-        ? { headline: 'Pick an option', recommendation: c.recommendation, recommendedBy: c.recommendedBy }
+        ? askShape({ headline: 'Pick an option', recommendation: c.recommendation, recommendedBy: c.recommendedBy })
         : null);
     lines = head(meta, effectiveAsk);
     const md = blocksToMarkdown(blocks);
@@ -234,7 +237,7 @@ export function toMarkdown(ledger, type) {
       d.chart, // straight through => an unknown chart type FAILS CLOSED (parity with the template)
       rows && { type: 'rankedRows', rows },
     ].filter(Boolean);
-    const effectiveAsk = askShape(meta.ask) ?? (d.ask ? { headline: d.ask } : null);
+    const effectiveAsk = askShape(meta.ask) ?? askShape({ headline: d.ask }); // derived candidate gated like meta.ask
     lines = head(meta, effectiveAsk);
     const md = blocksToMarkdown(blocks);
     if (md) lines.push('', md);
