@@ -6,7 +6,7 @@ import { BLOCKS, BLOCK_TYPES, renderBlocks, blocksToMarkdown } from './blocks.mj
 // A literal expected list, independent of the module — a new block type added
 // WITHOUT both an html + md renderer fails this, and a coordinated edit can't
 // silently widen the set without updating the oracle here too.
-const EXPECTED_BLOCK_TYPES = ['table', 'rankedRows', 'statRow', 'donut', 'bar', 'lineSpark', 'flow', 'phaseSteps', 'code', 'diff', 'pillRow'];
+const EXPECTED_BLOCK_TYPES = ['table', 'rankedRows', 'statRow', 'donut', 'bar', 'lineSpark', 'flow', 'phaseSteps', 'code', 'diff', 'pillRow', 'topo', 'deltaRow'];
 
 test('BLOCK_TYPES is exactly the closed expected set (literal oracle)', () => {
   assert.deepEqual([...BLOCK_TYPES].sort(), [...EXPECTED_BLOCK_TYPES].sort());
@@ -831,4 +831,43 @@ test('renderBlocks dispatches the three new code/annotation blocks without throw
     { type: 'diff', lines: [{ op: '-', text: 'y' }] },
     { type: 'pillRow', pills: [{ label: 'b' }] },
   ]));
+});
+
+// ============================================================================
+// Gate Board figure blocks — topo, deltaRow (neumorphic Gate Board, Task 1)
+// ============================================================================
+
+test('topo renders root, children, aside with escaping', () => {
+  const html = renderBlocks([{ type: 'topo', root: { title: '<r>', note: 'n' },
+    children: [{ title: 'impl_audit', note: 'auto' }], aside: { value: '0 → 1,060', note: '<x>' } }]);
+  assert.match(html, /class="topo"/);
+  assert.match(html, /&lt;r&gt;/);
+  assert.match(html, /impl_audit/);
+  assert.match(html, /&lt;x&gt;/);
+  assert.ok(!html.includes('<r>'));
+  const md = blocksToMarkdown([{ type: 'topo', root: { title: 'R' }, children: [{ title: 'C1', note: 'n1' }] }]);
+  assert.match(md, /R/); assert.match(md, /C1/);
+});
+
+test('deltaRow clamps positions, renders endpoints, never emits NaN', () => {
+  const html = renderBlocks([{ type: 'deltaRow', items: [
+    { label: 'approve', from: '36%', to: '0%', fromPos: 36, toPos: 1e308, min: '0%', max: '100%' },
+    { label: 'bad', from: 'x', to: 'y', fromPos: 'junk', toPos: -5 },
+    { label: 'inf', from: 'a', to: 'b', fromPos: 1e999, toPos: Infinity }] }]);
+  assert.match(html, /class="deltas"/);
+  assert.ok(!/NaN|Infinity/.test(html));
+  assert.match(html, /--b:100/);           // finite over-range 1e308 clamps to 100
+  assert.match(html, /--a:0/);             // 'junk' falls back to 0
+  assert.match(html, /style="--a:0;--b:0"/); // non-finite 1e999/Infinity => fallback 0, both
+  assert.match(html, /class="delta__f"><span>0%<\/span><span>100%<\/span>/); // min/max endpoints render
+  const md = blocksToMarkdown([{ type: 'deltaRow', items: [{ label: 'L', from: '1', to: '2', min: 'lo', max: 'hi' }] }]);
+  assert.match(md, /L.*1.*2/); assert.match(md, /lo.*hi/); // twin carries endpoints too
+});
+
+test('registry closed-set oracle includes the new figure blocks with html+md', () => {
+  for (const t of ['topo', 'deltaRow']) {
+    assert.ok(BLOCK_TYPES.includes(t), t);
+    assert.equal(typeof BLOCKS[t].html, 'function');
+    assert.equal(typeof BLOCKS[t].md, 'function');
+  }
 });

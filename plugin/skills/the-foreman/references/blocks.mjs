@@ -411,6 +411,56 @@ const BLOCKS = {
       return pills.map((p) => `\`${mdEsc(p?.label)}\``).join(' · ');
     },
   },
+
+  // ---- Gate Board figure blocks ----
+
+  // { type:'topo', root:{title,note?}, children:[{title,note?}], aside?:{value,note?} }
+  topo: {
+    html(block) {
+      const root = block?.root ?? {};
+      const kids = Array.isArray(block?.children) ? block.children : [];
+      const kidHtml = kids.map((k) =>
+        `<div class="topo__kid"><strong>${esc(k?.title)}</strong><span>${esc(k?.note ?? '')}</span></div>`).join('');
+      const aside = block?.aside
+        ? `<div class="topo__aside"><b>${esc(block.aside.value)}</b><p>${esc(block.aside.note ?? '')}</p></div>` : '';
+      return `<div class="topo"><div class="topo__root"><b>${esc(root.title)}</b><span>${esc(root.note ?? '')}</span></div>`
+        + `<div class="topo__link" aria-hidden="true"></div><div class="topo__kids">${kidHtml}</div>${aside}</div>`;
+    },
+    md(block) {
+      const root = block?.root ?? {};
+      const kids = Array.isArray(block?.children) ? block.children : [];
+      const lines = [`**${mdEsc(root.title)}**${root.note ? ` — ${mdEsc(root.note)}` : ''}`];
+      for (const k of kids) lines.push(`  - ${mdEsc(k?.title)}${k?.note ? ` — ${mdEsc(k.note)}` : ''}`);
+      if (block?.aside) lines.push(`  - **${mdEsc(block.aside.value)}**${block.aside.note ? ` — ${mdEsc(block.aside.note)}` : ''}`);
+      return lines.join('\n');
+    },
+  },
+
+  // { type:'deltaRow', items:[{label, from, to, fromPos?, toPos?, min?, max?}] } — from/to and
+  // min/max are DISPLAY strings; fromPos/toPos are 0..100 track positions (safeNum-clamped;
+  // non-finite => fallback 0 per the existing safeNum contract).
+  deltaRow: {
+    html(block) {
+      const items = Array.isArray(block?.items) ? block.items : [];
+      const rows = items.map((it) => {
+        const a = round(safeNum(it?.fromPos, { min: 0, max: 100, fallback: 0 }));
+        const b = round(safeNum(it?.toPos, { min: 0, max: 100, fallback: 0 }));
+        const ends = (it?.min != null || it?.max != null)
+          ? `<div class="delta__f"><span>${esc(it?.min ?? '')}</span><span>${esc(it?.max ?? '')}</span></div>` : '';
+        return `<div class="delta"><span class="delta__k">${esc(it?.label)}</span>`
+          + `<span class="delta__v">${esc(it?.from)}<small>→</small><span class="to">${esc(it?.to)}</span></span>`
+          + `<div class="track" aria-hidden="true" style="--a:${a};--b:${b}"><b></b><i class="was"></i><i class="now"></i></div>${ends}</div>`;
+      }).join('');
+      return `<div class="deltas">${rows}</div>`;
+    },
+    md(block) {
+      const items = Array.isArray(block?.items) ? block.items : [];
+      return items.map((it) => {
+        const ends = (it?.min != null || it?.max != null) ? ` (scale ${mdEsc(it?.min ?? '')}–${mdEsc(it?.max ?? '')})` : '';
+        return `- **${mdEsc(it?.label)}**: ${mdEsc(it?.from)} → ${mdEsc(it?.to)}${ends}`;
+      }).join('\n');
+    },
+  },
 };
 
 // The closed set — derived from the registry so it can never drift from BLOCKS.
