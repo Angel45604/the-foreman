@@ -136,6 +136,10 @@ section[id]{ scroll-margin-top: 86px; }
 .chip--warn{ color: var(--warnq); }
 .chip--err{ color: var(--errq); }
 .chip b{ color: var(--acq); font-weight: 800; }
+/* the crumb + evidence-source chips carry real ledger text — they wrap on
+   phones (the .ask__by pattern) instead of clipping against the body's
+   overflow-x:hidden; the base .chip stays nowrap for short engine chips */
+.crumb, .src .chip{ max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 
 .seclab{ display: flex; align-items: center; gap: 11px; margin-bottom: 26px; }
 .seclab span{ width: 9px; height: 9px; border-radius: 50%; background: var(--ac); flex: none; }

@@ -145,6 +145,24 @@ test('long liveRun stat values wrap: no nowrap remains on .tile b / .well__v (en
   }
 });
 
+// ---- prepr blocker: long chips wrap on phones instead of clipping ----
+// .chip forces white-space:nowrap; the crumb and the evidence-source chips
+// carry real ledger text, which on a phone would clip against the body's
+// overflow-x:hidden. Both get targeted wrapping overrides (the .ask__by
+// pattern); the base .chip stays nowrap for the short engine-authored chips.
+test('.crumb and .src .chip wrap: max-width 100%, white-space normal, overflow-wrap anywhere', () => {
+  const rules = parseRules(css);
+  for (const sel of ['.crumb', '.src .chip']) {
+    const decls = rules
+      .filter((r) => r.selector.split(',').map((s) => s.trim()).includes(sel))
+      .flatMap((r) => r.declarations);
+    const get = (prop) => decls.filter((d) => d.prop === prop).map((d) => d.value);
+    assert.deepEqual(get('max-width'), ['100%'], `${sel}: max-width pins to the container`);
+    assert.deepEqual(get('white-space'), ['normal'], `${sel}: long values wrap`);
+    assert.deepEqual(get('overflow-wrap'), ['anywhere'], `${sel}: even an unbroken token wraps`);
+  }
+});
+
 // ---- prepr blocker 2: the desktop stops track sizes from --stopcols ----
 // phaseSteps accepts any step count, so the desktop grid and the rail insets
 // derive from the renderer-emitted --stopcols var (fallback 5 = the reference
