@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import * as templates from './templates.mjs';
 import { planDeck, brief, decisionCard, liveRun, phaseTracker, findings, comparison, dashboard } from './templates.mjs';
+import { toMarkdown } from './markdown.mjs';
 import { stripDetails, FORBIDDEN_BRAND_RE } from './test-helpers.mjs';
 
 // ---- shared Gate Board test helpers ----
@@ -519,6 +520,52 @@ test('dashboard escapes a malicious stat value (no raw tag) and ask', () => {
   assert.doesNotMatch(h, /<img src=x onerror/);
   assert.doesNotMatch(h, /<img onerror=ask>/);
   assert.match(h, /&lt;img/);
+});
+
+// ---- prepr blocker: option-label robustness (the label never splits) ----
+// The FULL label ALWAYS renders as the visible .opt__t title; the 38px letter
+// well derives independently — a recognized single-character prefix (first char
+// when the label opens "X<sep>", sep ∈ space/·/—/:/./-) else the option's
+// 1-based index letter. A legacy 'A · Title' or a plain descriptive label must
+// never dump the whole label into the well and lose its title.
+const OPT_LEDGER = (labels, recommendation) => ({
+  meta: { title: 'D' },
+  decision: { question: 'Pick?', options: labels.map((label) => ({ label, pros: 'p' })), recommendation },
+});
+test('option label "A — build it": the FULL label is the .opt__t title, the well shows the A prefix', () => {
+  const h = decisionCard(OPT_LEDGER(['A — build it'])).bodyHtml;
+  assert.match(h, /<b class="opt__t">A — build it<\/b>/);
+  assert.match(h, /<span class="opt__ltr">A<\/span>/);
+  assert.match(h, /aria-label="Option A"/);
+});
+test('option label "A · build it" (legacy separator): full label titled, prefix well — never the whole label in the well', () => {
+  const h = decisionCard(OPT_LEDGER(['A · build it'], 'A · build it')).bodyHtml;
+  assert.match(h, /<b class="opt__t">A · build it<\/b>/);
+  assert.match(h, /<span class="opt__ltr">A<\/span>/);
+  assert.doesNotMatch(h, /<span class="opt__ltr">A · build it<\/span>/);
+  assert.match(h, /class="opt opt--rec"/); // recommended marker still keys off the FULL label
+});
+test('descriptive labels with no prefix: full label titled, wells fall back to the index letters A, B', () => {
+  const h = decisionCard(OPT_LEDGER(['Just build it', 'Do nothing'])).bodyHtml;
+  assert.match(h, /<b class="opt__t">Just build it<\/b>/);
+  assert.match(h, /<b class="opt__t">Do nothing<\/b>/);
+  assert.match(h, /<span class="opt__ltr">A<\/span>/);
+  assert.match(h, /<span class="opt__ltr">B<\/span>/);
+  assert.doesNotMatch(h, /<span class="opt__ltr">Just build it<\/span>/);
+});
+test('the markdown twin is unaffected: the FULL option label serializes untouched', () => {
+  const { markdown } = toMarkdown(OPT_LEDGER(['A · build it', 'Just build it']), 'decisionCard');
+  assert.match(markdown, /\*\*Option A · build it\*\*/);
+  assert.match(markdown, /\*\*Option Just build it\*\*/);
+});
+test('legacy-plandeck fixture: every decision option renders a TITLED card (no title-less letter dump)', () => {
+  const fixture = JSON.parse(readFileSync(new URL('./fixtures/legacy-plandeck.json', import.meta.url), 'utf8'));
+  const h = decisionCard(fixture).bodyHtml;
+  const cards = (h.match(/<section class="opt[ "]/g) || []).length;
+  const titles = (h.match(/<b class="opt__t">/g) || []).length;
+  assert.equal(cards, 4, 'the fixture carries four options');
+  assert.equal(titles, cards, 'every option card carries a visible .opt__t title');
+  assert.match(h, /<b class="opt__t">A — build the manifest, gate the CODE<\/b>/);
 });
 
 // ---- askShape: malformed meta.ask never silently drops content (wave-B review P2/P3) ----

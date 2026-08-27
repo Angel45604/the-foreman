@@ -92,13 +92,24 @@ const riskLevel = (r) => (RISK_LEVELS.has(r) ? r : 'med');
 // marker (keyed off decision.recommendation matching the option label — data
 // about the options, never a second ask), allowlisted risk chip, one-line gist
 // via firstClause, and the verbatim pros/cons collapsed in <details class="optpc">.
+//
+// Label robustness (prepr blocker): the label NEVER splits — the FULL label is
+// always the visible .opt__t title, so a legacy 'A · Title' / a plain
+// descriptive label can never dump itself into the 38px letter well and lose
+// its title. The well derives independently: a recognized single-character
+// prefix (first char when the label opens "X<sep>" — X alphanumeric, sep one
+// of space/·/—/:/./-) else the option's 1-based index letter (A, B, C, …; the
+// index is engine-derived, wrapped mod 26 so it stays a single letter).
+const wellLetter = (label, index) =>
+  (/^[A-Za-z0-9][\s·—:.-]/.test(label) ? label[0] : String.fromCharCode(65 + (index % 26)));
+
 function optionCards(d) {
   const options = Array.isArray(d?.options) ? d.options : [];
   if (!options.length) return '';
-  const cards = options.map((o) => {
+  const cards = options.map((o, i) => {
     const label = String(o?.label ?? '');
-    const [ltr, ...restParts] = label.split(' — ');
-    const optTitle = restParts.length ? `<b class="opt__t">${esc(restParts.join(' — '))}</b>` : '';
+    const ltr = wellLetter(label, i);
+    const optTitle = label ? `<b class="opt__t">${esc(label)}</b>` : '';
     const recommended = d?.recommendation != null && label === d.recommendation;
     const recMark = recommended ? '<span class="opt__rec"><i></i>Recommended</span>' : '';
     const risk = o?.risk != null && o.risk !== ''
