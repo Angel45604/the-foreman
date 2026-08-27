@@ -65,7 +65,7 @@ export function gateBoard({ crumb = '', title = '', verdict = '', lede = '', key
   const askBits = ask
     ? [ask.note ? esc(ask.note) : '',
        ask.recommendation ? `<strong>${esc(ask.recommendation)}</strong>` : '',
-       ask.recommendedBy ? `<span class="chip">${esc(ask.recommendedBy)}</span>` : ''].filter(Boolean).join(' ')
+       ask.recommendedBy ? `<span class="ask__by">${esc(ask.recommendedBy)}</span>` : ''].filter(Boolean).join(' ')
     : '';
   const askTarget = ask?.targetId && (ask.targetId === 'top' || ids.includes(ask.targetId)) ? ask.targetId : null;
   const askStrip = ask

@@ -28,6 +28,13 @@ test('ask strip renders recommendation without a note, and note without recommen
   assert.match(b.bodyHtml, /just a note/);
 });
 
+test('ask attribution renders in .ask__by (the wrapping chip), never the generic nowrap .chip', () => {
+  const long = 'Claude — on the repo record, and it is the remedy applied to its own successor';
+  const { bodyHtml } = gateBoard({ title: 't', ask: { headline: 'H', recommendedBy: long }, chapters: [] });
+  assert.match(bodyHtml, new RegExp(`<span class="ask__by">${long}</span>`));
+  assert.doesNotMatch(bodyHtml, new RegExp(`<span class="chip">${long}</span>`)); // the clipping chip form is retired here
+});
+
 test('gateBoard renders rail chips for Top + every chapter, with matching section ids', () => {
   const { bodyHtml, ids } = gateBoard({ crumb: 'C', title: 'T', verdict: 'V', lede: 'L',
     keyStats: [{ value: '1', label: 'one' }],

@@ -218,7 +218,8 @@ section[id]{ scroll-margin-top: 86px; }
 .tile{ background: var(--bg); box-shadow: var(--out); border-radius: 18px; padding: 17px 10px 15px; text-align: center; }
 .tile b{
   display: block; font-family: 'Sora', system-ui, sans-serif; font-weight: 800;
-  font-size: clamp(19px, 2vw, 22px); letter-spacing: -0.01em; color: var(--ac); white-space: nowrap;
+  font-size: clamp(19px, 2vw, 22px); letter-spacing: -0.01em; color: var(--ac);
+  overflow-wrap: anywhere; text-wrap: balance; /* long synthesized values wrap, never clip */
 }
 .tile span{ display: block; margin-top: 7px; font-size: 10px; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; color: var(--sb); line-height: 1.5; }
 /* allowlisted keyStats variants — color the value via the status TEXT tokens only (no fills) */
@@ -234,6 +235,15 @@ section[id]{ scroll-margin-top: 86px; }
 .ask__txt b{ font-size: 15.5px; font-weight: 800; line-height: 1.45; }
 .ask__txt p{ font-size: 12.5px; line-height: 1.6; color: var(--sb); text-wrap: pretty; }
 .ask .btn{ flex: none; }
+/* the ask attribution — the chip's carved look, but WRAPPING: a long
+   recommendedBy must never clip against the body's overflow-x hidden */
+.ask__by{
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 6px 11px; border-radius: 9px;
+  background: var(--bg); box-shadow: var(--inm);
+  font-size: 9.5px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--sb); white-space: normal; overflow-wrap: anywhere;
+}
 
 /* ============================================================
    UNITS — poster figure + carved detail drawer, in flow
@@ -647,7 +657,7 @@ section[id]{ scroll-margin-top: 86px; }
 /* statRow — carved stat wells */
 .wells{ width: 100%; max-width: 860px; display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
 .well{ padding: 16px 12px 14px; border-radius: 16px; background: var(--bg); box-shadow: var(--ins); display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; }
-.well__v{ font-family: 'Sora', system-ui, sans-serif; font-size: clamp(18px, 2.4vw, 24px); font-weight: 800; letter-spacing: -0.01em; color: var(--ac); white-space: nowrap; }
+.well__v{ font-family: 'Sora', system-ui, sans-serif; font-size: clamp(18px, 2.4vw, 24px); font-weight: 800; letter-spacing: -0.01em; color: var(--ac); overflow-wrap: anywhere; text-wrap: balance; }
 .well__v.is-ok{ color: var(--okq); }
 .well__v.is-warn{ color: var(--warnq); }
 .well__l{ font-size: 10px; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; color: var(--sb); line-height: 1.5; }

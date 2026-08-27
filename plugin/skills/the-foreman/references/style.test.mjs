@@ -15,6 +15,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { parseRules, oracleOffenders, oracleBadBorders } from './test-helpers.mjs';
+import { liveRun } from './templates.mjs';
 const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8');
 
 // The seven-token Blue Graphite dark map, plus the status-token overrides the
@@ -111,6 +112,36 @@ test('keyStats tile variants color the value via the status TEXT tokens only (do
     assert.equal(rs.length, 1, `exactly one ${sel} rule`);
     assert.deepEqual(rs[0].declarations, [{ prop: 'color', value: token }],
       `${sel} sets color only — no fills, the one-rule oracle stays untouched`);
+  }
+});
+
+test('.ask__by wraps: white-space normal + overflow-wrap anywhere on the carved inline-flex chip', () => {
+  const rs = parseRules(css).filter((r) => r.selector === '.ask__by');
+  assert.equal(rs.length, 1, 'exactly one .ask__by rule');
+  const decls = Object.fromEntries(rs[0].declarations.map((d) => [d.prop, d.value]));
+  assert.equal(decls['white-space'], 'normal', 'a long attribution wraps instead of clipping');
+  assert.equal(decls['overflow-wrap'], 'anywhere', 'even an unbroken token wraps');
+  assert.equal(decls.display, 'inline-flex');
+  assert.equal(decls.background, 'var(--bg)', 'the chip carved look — a one-rule surface value');
+  assert.equal(decls['box-shadow'], 'var(--inm)');
+});
+
+// Long stat values must WRAP, not clip: liveRun synthesizes up-to-80-char
+// firstClause values into stat surfaces — with meta.keyStats present (the
+// enriched ledger) they land as .well__v wells while the hero .tile b carries
+// meta.keyStats — so neither selector may force nowrap.
+test('long liveRun stat values wrap: no nowrap remains on .tile b / .well__v (enriched-ledger render)', () => {
+  const ledger = JSON.parse(readFileSync(new URL('../../../../docs/initiatives/2026-08-26-neumorphic-gate-board/gate-board-ledger.json', import.meta.url), 'utf8'));
+  const { bodyHtml } = liveRun(ledger);
+  assert.match(bodyHtml, /class="well__v"[^>]*>One bundle round per arm at the tier/); // the ~80-char firstClause cost value in a well
+  assert.match(bodyHtml, /class="tile[^"]*" role="listitem"><b>36% → 0%</);           // hero tiles carry meta.keyStats
+  const rules = parseRules(css);
+  for (const sel of ['.tile b', '.well__v']) {
+    const rs = rules.filter((r) => r.selector === sel);
+    assert.ok(rs.length > 0, `${sel} rule exists`);
+    const decls = rs.flatMap((r) => r.declarations);
+    assert.ok(!decls.some((d) => d.prop === 'white-space'), `${sel}: no nowrap declaration remains`);
+    assert.ok(decls.some((d) => d.prop === 'overflow-wrap' && d.value === 'anywhere'), `${sel} wraps anywhere`);
   }
 });
 
