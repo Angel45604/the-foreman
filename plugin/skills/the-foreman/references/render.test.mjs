@@ -4,15 +4,20 @@ import { render, cli } from './render.mjs';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 
 function fixture(ledger){ const d=mkdtempSync(join(tmpdir(),'foreman-')); const lp=join(d,'ledger.json'); writeFileSync(lp,JSON.stringify(ledger)); return {dir:d,ledgerPath:lp,out:join(d,'artifact.html')}; }
-const base = { meta:{ title:'T', crumb:'C', favicon:'🛠️', accent:'#009ACC' }, slides:[{ kicker:'K', heading:'H', cards:[] }] };
+const base = { meta:{ title:'T', crumb:'C', favicon:'🛠️' }, slides:[{ kicker:'K', heading:'H', cards:[] }] };
 
 test('renders a self-contained HTML file with style + engine inlined; no external refs', async () => {
   const f = fixture(base); await render(f.ledgerPath,'planDeck',f.out);
   const html = readFileSync(f.out,'utf8');
   assert.match(html, /<title>T<\/title>/); assert.match(html, /--ac: var\(--user-ac, #5b7cfa\)/); // the sheet is inlined (house-default accent chain)
   assert.match(html, /addEventListener\('keydown'/);
+  assert.match(html, /id="navtrack"/);                              // the Gate Board rail is on the page
+  assert.doesNotMatch(html, /<svg width="0"|#i-cog|slide-engine/);  // deck-era icon sprite + engine retired
   assert.doesNotMatch(html, /<link|<script src=|https?:\/\//);
 });
 test('escapes <title> (no injection via meta.title)', async () => {
@@ -84,17 +89,108 @@ test('a dark deck STILL has no external refs (inline <script> theme init only) a
   await assert.rejects(() => render(fs.ledgerPath,'planDeck',fs.out), /secret|fail.?closed/i);
   assert.equal(existsSync(fs.out), false);
 });
-test('honors meta.accent (strict hex) by overriding the CSS accent variable', async () => {
+test('honors meta.accent (strict hex) by emitting a --user-ac override', async () => {
   const f = fixture({ ...base, meta:{ ...base.meta, accent:'#FF0000' } });
   await render(f.ledgerPath,'planDeck',f.out);
-  assert.match(readFileSync(f.out,'utf8'), /--accent:#FF0000/);
+  assert.match(readFileSync(f.out,'utf8'), /<style>:root\{--user-ac:#FF0000\}<\/style>/);
 });
 test('ignores a non-hex accent (no CSS injection; the house-default accent chain stands)', async () => {
   const f = fixture({ ...base, meta:{ ...base.meta, accent:'red;}body{display:none}' } });
   await render(f.ledgerPath,'planDeck',f.out); const html = readFileSync(f.out,'utf8');
   assert.doesNotMatch(html, /body\{display:none\}/);
-  assert.doesNotMatch(html, /<style>:root\{--accent:/);            // no override style emitted
+  assert.doesNotMatch(html, /<style>:root\{--user-ac:/);           // no override style emitted
   assert.match(html, /--ac: var\(--user-ac, #5b7cfa\)/);           // the sheet's default chain stands
+});
+// ---- Task 10: the --user-ac producer, accent normalization, buffered lint, sanitized CLI ----
+test('accent override chain end-to-end: a custom hex controls --ac in all three host states', async () => {
+  for (const theme of [undefined, 'light', 'dark']) {
+    const meta = theme ? { ...base.meta, accent:'#C85C3F', theme } : { ...base.meta, accent:'#C85C3F' };
+    const f = fixture({ ...base, meta });
+    await render(f.ledgerPath,'planDeck',f.out);
+    const html = readFileSync(f.out,'utf8');
+    const override = '<style>:root{--user-ac:#C85C3F}</style>';
+    assert.ok(html.includes(override), `override emitted (theme=${theme})`);
+    // all three --ac carriers resolve through var(--user-ac …) — auto, forced-light, forced-dark
+    assert.match(html, /:root\{[^}]*--ac: var\(--user-ac, #5b7cfa\)/);                                    // bare :root
+    assert.match(html, /:root:not\(\[data-theme="light"\]\)\s*\{[^}]*--ac: var\(--user-ac, #6687ff\)/);   // media-guarded dark
+    assert.match(html, /:root\[data-theme="dark"\]\s*\{[^}]*--ac: var\(--user-ac, #6687ff\)/);            // stamped dark
+    // cascade order: the override style tag rides AFTER the main stylesheet
+    assert.ok(html.indexOf(override) > html.indexOf('--ac: var(--user-ac, #5b7cfa)'), 'override after the sheet');
+    if (theme) assert.match(html, new RegExp(`dataset\\.theme=${JSON.stringify(theme)}`)); // host state stamped where forced
+  }
+});
+test('legacy-default accent (fixtures/legacy-accent.json) emits NO override — normalized to the house default', async () => {
+  const lp = fileURLToPath(new URL('./fixtures/legacy-accent.json', import.meta.url));
+  const out = join(mkdtempSync(join(tmpdir(),'foreman-')), 'artifact.html');
+  await render(lp,'planDeck',out);
+  const html = readFileSync(out,'utf8');
+  assert.doesNotMatch(html, /<style>:root\{--user-ac:/);           // the 89 legacy ledgers re-key automatically
+  assert.match(html, /--ac: var\(--user-ac, #5b7cfa\)/);           // the neumorphic default governs
+});
+test('current-default accent emits NO override, case-insensitively', async () => {
+  for (const accent of ['#5b7cfa', '#5B7CFA']) {
+    const f = fixture({ ...base, meta:{ ...base.meta, accent } });
+    await render(f.ledgerPath,'planDeck',f.out);
+    assert.doesNotMatch(readFileSync(f.out,'utf8'), /<style>:root\{--user-ac:/, accent);
+  }
+});
+test('de-brand: render.mjs source passes the scan predicate (defaults held numerically)', () => {
+  const src = readFileSync(fileURLToPath(new URL('./render.mjs', import.meta.url)),'utf8');
+  assert.doesNotMatch(src, /MindCloud|#009acc/i);
+});
+test('lint warnings are BUFFERED: a scan-rejected render prints nothing at all', async () => {
+  const statement = 'this statement runs far past the twelve word cap and carries token sk-ant-api03-deadbeefdeadbeefdead too';
+  const f = fixture({ meta:{ title:'T' }, slides:[{ statement, heading:'H' }] });
+  const orig = console.error; const lines = [];
+  console.error = (...a) => { lines.push(a.join(' ')); };
+  try {
+    await assert.rejects(() => render(f.ledgerPath,'planDeck',f.out), /secret|fail.?closed/i);
+  } finally { console.error = orig; }
+  assert.deepEqual(lines, []);                                     // no lint line beat the scan to stderr
+  assert.equal(existsSync(f.out), false);
+});
+test('a clean ledger with a lint violation renders fine; stderr carries rule + location ONLY', async () => {
+  const wordy = 'one two three four five six seven eight nine ten eleven twelve thirteen';
+  const f = fixture({ meta:{ title:'T', verdict:'v', ask:{ headline:'H' } }, slides:[{ statement: wordy }] });
+  const orig = console.error; const lines = [];
+  console.error = (...a) => { lines.push(a.join(' ')); };
+  try {
+    await render(f.ledgerPath,'planDeck',f.out);
+  } finally { console.error = orig; }
+  assert.deepEqual(lines, ['lint: statement-too-long slides[0]']); // the render still proceeded
+  assert.ok(!lines.join('\n').includes('thirteen'));               // never any ledger text
+  assert.equal(existsSync(f.out), true);
+});
+const RENDER_CLI = fileURLToPath(new URL('./render.mjs', import.meta.url));
+const sha8 = (v) => createHash('sha256').update(String(v)).digest('hex').slice(0, 8);
+const runCli = (args) => spawnSync(process.execPath, [RENDER_CLI, ...args], { encoding: 'utf8' });
+test('CLI sanitization: a secret-shaped unknown block type prints unknown-block <sha8>, never the value', () => {
+  const secretType = 'sk-ant-api03-deadbeefdeadbeefdead';
+  const f = fixture({ ...base, slides:[{ kicker:'K', heading:'H', blocks:[{ type: secretType }] }] });
+  const r = runCli([f.ledgerPath,'planDeck',f.out]);
+  assert.equal(r.status, 1);
+  assert.equal(r.stderr.trim(), `unknown-block ${sha8(secretType)}`); // locator only
+  assert.ok(!r.stderr.includes('sk-ant'));                            // the secret is absent
+  assert.equal(existsSync(f.out), false);
+});
+test('CLI category matrix: usage / parse-error / unknown-type / scan-rejected / render-error', () => {
+  let r = runCli([]);
+  assert.equal(r.status, 2); assert.equal(r.stderr.trim(), 'usage');
+  const d = mkdtempSync(join(tmpdir(),'foreman-'));
+  const badLedger = join(d,'bad.json'); writeFileSync(badLedger, '{nope');
+  r = runCli([badLedger,'planDeck',join(d,'o.html')]);
+  assert.equal(r.status, 1); assert.equal(r.stderr.trim(), 'parse-error');
+  const f = fixture(base);
+  r = runCli([f.ledgerPath,'bogusType',f.out]);
+  assert.equal(r.status, 1);
+  assert.equal(r.stderr.trim(), `unknown-type ${sha8('bogusType')}`); // value not echoed, sha8 locator instead
+  assert.ok(!r.stderr.includes('bogusType'));
+  const fs2 = fixture({ ...base, slides:[{ kicker:'K', heading:'token sk-ant-api03-deadbeefdeadbeefdead', cards:[] }] });
+  r = runCli([fs2.ledgerPath,'planDeck',fs2.out]);
+  assert.equal(r.status, 1); assert.equal(r.stderr.trim(), 'scan-rejected');
+  assert.ok(!r.stderr.includes('sk-ant'));                            // the raw scan message never prints
+  r = runCli([join(d,'missing.json'),'planDeck',join(d,'o2.html')]);
+  assert.equal(r.status, 1); assert.equal(r.stderr.trim(), 'render-error');
 });
 test('FAILS CLOSED on a modern token format (sk-proj) in the ledger', async () => {
   const f = fixture({ ...base, slides:[{ kicker:'K', heading:'key sk-proj-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', cards:[] }] });
