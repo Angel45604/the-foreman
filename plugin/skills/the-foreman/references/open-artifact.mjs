@@ -12,12 +12,15 @@ import { platform as osPlatform } from 'node:os';
 // Prefer the `.local.html` sibling render.mjs writes next to the shell-less
 // hosted variant: it is the complete standards-mode document (doctype, charset,
 // viewport), which a local browser needs for correct parsing — the shell-less
-// outPath exists for the hosted publish contract. Falls back to the given path
-// when no sibling exists (e.g. a pre-dual-output render). `exists` is
-// injectable so tests never touch the filesystem.
+// outPath exists for the hosted publish contract. ALWAYS probe for the
+// renderer-derived sibling (<input minus .html>.local.html) — an outPath that
+// itself ends in .local.html is legal, and its sibling is deck.local.local.html;
+// bypassing the probe for such inputs opened the shell-less hosted file. Falls
+// back to the given path only when no sibling exists (e.g. a pre-dual-output
+// render, or the input already IS the local document). `exists` is injectable
+// so tests never touch the filesystem.
 export function resolveLocalPath(path, exists = existsSync) {
   const p = String(path);
-  if (p.endsWith('.local.html')) return p; // already the local document
   const sibling = `${p.endsWith('.html') ? p.slice(0, -5) : p}.local.html`;
   return exists(sibling) ? sibling : p;
 }
