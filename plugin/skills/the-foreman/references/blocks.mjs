@@ -49,11 +49,11 @@ const STAT_VARIANTS = new Set(['ok', 'warn']);
 // (incl. an injection smuggled through `kind`) falls back to the bare `.step`.
 const FLOW_KINDS = new Set(['gate', 'go']);
 
-// Phase-step status allowlist + per-status HTML marker. Anything else (incl. an
-// injection smuggled through `status`) is coerced to 'pending'. The markers are
+// Phase-step status allowlist + per-status sign text. Anything else (incl. an
+// injection smuggled through `status`) is coerced to 'pending'. The signs are
 // static literals I author — never ledger text — so they're safe to emit raw.
 const PHASE_STATUSES = new Set(['done', 'active', 'pending']);
-const PHASE_MARKER = { done: '✓', active: '▸', pending: '○' };
+const STOP_SIGN = { done: 'done ✓', active: 'active ▸', pending: 'pending' };
 const PHASE_MD_MARK = { done: '[x]', active: '[~]', pending: '[ ]' };
 const phaseStatus = (s) => (PHASE_STATUSES.has(s) ? s : 'pending');
 
@@ -116,11 +116,13 @@ const BLOCKS = {
       const rows = Array.isArray(block?.rows) ? block.rows : [];
       const width = columns.length;
       const caption = block?.caption ? `<caption>${esc(block.caption)}</caption>` : '';
-      const thead = `<thead><tr>${columns.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead>`;
+      // Gate Board .t skin — native <table> semantics KEPT (caption, th[scope=col]);
+      // the .gt div-grid form is NOT used for the table block.
+      const thead = `<thead><tr>${columns.map((c) => `<th scope="col">${esc(c)}</th>`).join('')}</tr></thead>`;
       const tbody = `<tbody>${rows
         .map((r) => `<tr>${normalizeRow(r, width).map((cell) => `<td>${esc(cell)}</td>`).join('')}</tr>`)
         .join('')}</tbody>`;
-      return `<div class="scroll"><table>${caption}${thead}${tbody}</table></div>`;
+      return `<div class="scrollx"><table class="t">${caption}${thead}${tbody}</table></div>`;
     },
     md(block) {
       const columns = Array.isArray(block?.columns) ? block.columns : [];
@@ -164,15 +166,17 @@ const BLOCKS = {
   // safeNum() BEFORE it reaches an attribute. role="img" + an esc'd aria-label.
 
   // { type:'statRow', stats:[{ value:string, label:string, variant?:''|'ok'|'warn' }] }
-  // A row of big-number stat blocks (HTML only — NOT a chart). `value` is a
-  // pre-formatted DISPLAY string ("$0.12", "70/70"); both value + label escaped.
+  // A row of carved stat wells (HTML only — NOT a chart; Gate Board restyle).
+  // `value` is a pre-formatted DISPLAY string ("$0.12", "70/70"); both value +
+  // label escaped. `variant` is allowlisted and only ever PICKS the static
+  // `is-ok`/`is-warn` modifier on the value — never interpolated raw.
   statRow: {
     html(block) {
       const stats = Array.isArray(block?.stats) ? block.stats : [];
-      return `<div class="statrow">${stats
+      return `<div class="wells">${stats
         .map((s) => {
-          const variant = STAT_VARIANTS.has(s?.variant) ? ` ${s.variant}` : '';
-          return `<div class="stat${variant}"><span class="stat-value">${esc(s?.value)}</span><span class="stat-label">${esc(s?.label)}</span></div>`;
+          const variant = STAT_VARIANTS.has(s?.variant) ? ` is-${s.variant}` : '';
+          return `<div class="well"><span class="well__v${variant}">${esc(s?.value)}</span><span class="well__l">${esc(s?.label)}</span></div>`;
         })
         .join('')}</div>`;
     },
@@ -183,32 +187,43 @@ const BLOCKS = {
   },
 
   // { type:'donut', value:number, max?:number (default 100), label?:string }
-  // A ring: a full-circle track + an arc drawn via stroke-dasharray for
-  // safeNum(value,{min:0,max})/max. Centered text shows the COMPUTED percentage
-  // (not ledger text) + an optional esc'd label.
+  // The tick-ring dial (Gate Board restyle — HTML, no SVG): a ring of `.ring__t`
+  // ticks (lit `.on` vs unlit) around a raised `.ring__c` center disc. The .ring
+  // carries role="img" + an esc'd aria-label stating the COMPUTED value / max
+  // (+ label); the ticks are aria-hidden decoration. Center shows `value / max`
+  // (or `pct%` when max is 100) + the esc'd label.
+  //
+  // Tick-ring numeric contract: tick/lit REPETITION COUNTS are guard-derived
+  // integers ONLY — never ledger values. max=0 (or clamped-negative) yields an
+  // all-off 13-tick ring with NO division; ticks always land in [4, 24].
   donut: {
     html(block) {
       const max = safeNum(block?.max ?? 100, { min: 0, fallback: 100 });
       const value = safeNum(block?.value, { min: 0, max: max > 0 ? max : 0, fallback: 0 });
       const pct = max > 0 ? Math.round((value / max) * 100) : 0;
-      // geometry: a 120x120 viewBox, r=52, stroke=12 (fits inside the box).
-      const r = 52;
-      const circ = round(2 * Math.PI * r); // circumference (literal-ish; derived from a literal r)
-      const arc = max > 0 ? round((value / max) * circ) : 0; // <= circ by construction
-      const label = block?.label ? `<text x="60" y="78" text-anchor="middle" class="donut-label">${esc(block.label)}</text>` : '';
-      const aria = esc(`${pct}%${block?.label ? ` ${block.label}` : ''}`);
-      return `<div class="donutwrap"><svg viewBox="0 0 120 120" width="120" height="120" role="img" aria-label="${aria}">`
-        + `<circle cx="60" cy="60" r="${r}" fill="none" stroke="var(--line)" stroke-width="12"/>`
-        + `<circle cx="60" cy="60" r="${r}" fill="none" stroke="var(--accent)" stroke-width="12" stroke-linecap="round" stroke-dasharray="${arc} ${circ}" transform="rotate(-90 60 60)"/>`
-        + `<text x="60" y="${block?.label ? 58 : 66}" text-anchor="middle" class="donut-pct">${pct}%</text>`
-        + `${label}</svg></div>`;
+      const ticks = max > 0 ? Math.min(24, Math.max(4, Math.round(max <= 24 ? max : 24))) : 13; // positive integer
+      const lit = max > 0 ? Math.round((value / max) * ticks) : 0; // 0 when max is 0 — never a division
+      const tickHtml = Array.from({ length: ticks }, (_, i) =>
+        `<i class="ring__t${i < lit ? ' on' : ''}" aria-hidden="true" style="--r:${round((i * 360) / ticks)}deg"></i>`).join('');
+      const center = max === 100
+        ? `<b><em>${pct}</em><small>%</small></b>`
+        : `<b><em>${esc(value)}</em><small> / ${esc(max)}</small></b>`;
+      const label = block?.label ? `<span>${esc(block.label)}</span>` : '';
+      const aria = esc(`${value} / ${max}${block?.label ? `, ${block.label}` : ''}`);
+      return `<div class="ringwrap"><div class="ring" role="img" aria-label="${aria}">${tickHtml}`
+        + `<div class="ring__c">${center}${label}</div></div></div>`;
     },
+    // MIRRORS the ring center display (the only md() change in the Gate Board
+    // reskin of the legacy blocks): `**pct%**` when max is 100, else
+    // `**value / max** (pct%)` — zero max yields `**0 / 0** (0%)`, never NaN.
     md(block) {
       const max = safeNum(block?.max ?? 100, { min: 0, fallback: 100 });
       const value = safeNum(block?.value, { min: 0, max: max > 0 ? max : 0, fallback: 0 });
       const pct = max > 0 ? Math.round((value / max) * 100) : 0;
       const label = block?.label ? ` — ${mdEsc(block.label)}` : '';
-      return `**${pct}%**${label}`;
+      return max === 100
+        ? `**${pct}%**${label}`
+        : `**${mdEsc(value)} / ${mdEsc(max)}** (${pct}%)${label}`;
     },
   },
 
@@ -331,21 +346,25 @@ const BLOCKS = {
   },
 
   // { type:'phaseSteps', steps:[{ label:string, status?:'done'|'active'|'pending', detail?:string }] }
-  // Phase-progression chips. `status` is allowlisted (default/unknown => pending)
-  // and only ever indexes the static marker maps + emits an allowlisted class.
-  // Optional `detail` renders a muted sub-line under the label (HTML: a .phase-detail
-  // <span>; twin: ` — detail` after the label). Absent detail => byte-identical to before.
+  // The stops track (Gate Board restyle): a native `<ol class="stops">` of
+  // `<li class="stop">` items — list semantics preserved. `status` is allowlisted
+  // (default/unknown => pending) and only ever indexes the static STOP_SIGN map,
+  // rendered as the `.stop__sign` text. Optional `detail` renders as the body
+  // <p>; absent detail => byte-identical stop. The `.stop__mark` spine dot is
+  // aria-hidden decoration; `.stop__n` is the engine-derived 1-based step index.
   phaseSteps: {
     html(block) {
       const steps = Array.isArray(block?.steps) ? block.steps : [];
-      const chips = steps
-        .map((s) => {
+      const items = steps
+        .map((s, i) => {
           const status = phaseStatus(s?.status); // always one of the allowlist
-          const detail = s?.detail != null && s.detail !== '' ? `<span class="phase-detail">${esc(s.detail)}</span>` : '';
-          return `<span class="phasestep ${status}"><span class="phase-mark">${PHASE_MARKER[status]}</span>${esc(s?.label)}${detail}</span>`;
+          const detail = s?.detail != null && s.detail !== '' ? `<p>${esc(s.detail)}</p>` : '';
+          return `<li class="stop"><span class="stop__mark" aria-hidden="true"><i></i><u></u></span>`
+            + `<div class="stop__body"><span class="stop__n">${i + 1}</span><b>${esc(s?.label)}</b>${detail}`
+            + `<span class="stop__sign">${STOP_SIGN[status]}</span></div></li>`;
         })
         .join('');
-      return `<div class="phaseflow">${chips}</div>`;
+      return `<ol class="stops">${items}</ol>`;
     },
     md(block) {
       const steps = Array.isArray(block?.steps) ? block.steps : [];
@@ -407,7 +426,8 @@ const BLOCKS = {
   },
 
   // { type:'pillRow', pills:[{ label:string, variant?:''|'ok'|'warn' }] }
-  // A row of pill chips reusing the EXISTING .pill / .pill.ok / .pill.warn styles.
+  // A row of pill chips in the Gate Board BEM form: .pill / .pill--ok /
+  // .pill--warn with an aria-hidden <i> dot (the label text carries the meaning).
   // `variant` is allowlisted (else bare). HTML escapes the label. Twin: a SINGLE
   // inert line of mdEsc'd labels (single-line => mdEsc is correct, and the blanket
   // no-raw-HTML twin assertion applies here, unlike code/diff).
@@ -416,8 +436,8 @@ const BLOCKS = {
       const pills = Array.isArray(block?.pills) ? block.pills : [];
       const inner = pills
         .map((p) => {
-          const variant = PILL_VARIANTS.has(p?.variant) ? ` ${p.variant}` : '';
-          return `<span class="pill${variant}">${esc(p?.label)}</span>`;
+          const variant = PILL_VARIANTS.has(p?.variant) ? ` pill--${p.variant}` : '';
+          return `<span class="pill${variant}"><i aria-hidden="true"></i>${esc(p?.label)}</span>`;
         })
         .join('');
       return `<div class="pillrow">${inner}</div>`;
@@ -519,17 +539,22 @@ const BLOCKS = {
   },
 
   // { type:'dotMatrix', columns:[string], rows:[{label, sub?, marks:[boolean]}] }
+  // A11y (Task 4b hardening): the .mx grid carries ARIA table semantics —
+  // role="table" / role="row" / role="columnheader" / role="rowheader" /
+  // role="cell" — and every mark cell holds the aria-hidden dot PLUS a
+  // visually-hidden `<span class="sr">yes|no</span>` so assistive tech hears
+  // every mark (the yes/no literals are engine-authored, never ledger text).
   dotMatrix: {
     html(block) {
       const cols = Array.isArray(block?.columns) ? block.columns : [];
       const rows = Array.isArray(block?.rows) ? block.rows : [];
-      const head = `<div class="mx__r mx__r--h"><span></span>${cols.map((c) => `<span>${esc(c)}</span>`).join('')}</div>`;
+      const head = `<div class="mx__r mx__r--h" role="row"><span role="columnheader"></span>${cols.map((c) => `<span role="columnheader">${esc(c)}</span>`).join('')}</div>`;
       const body = rows.map((r) => {
         const marks = Array.isArray(r?.marks) ? r.marks : [];
-        const dots = cols.map((_, i) => `<span class="mx__d${marks[i] ? '' : ' miss'}"><i></i></span>`).join('');
-        return `<div class="mx__r"><span class="mx__f">${esc(r?.label)}${r?.sub ? `<small>${esc(r.sub)}</small>` : ''}</span>${dots}</div>`;
+        const dots = cols.map((_, i) => `<span class="mx__d${marks[i] ? '' : ' miss'}" role="cell"><i aria-hidden="true"></i><span class="sr">${marks[i] ? 'yes' : 'no'}</span></span>`).join('');
+        return `<div class="mx__r" role="row"><span class="mx__f" role="rowheader">${esc(r?.label)}${r?.sub ? `<small>${esc(r.sub)}</small>` : ''}</span>${dots}</div>`;
       }).join('');
-      return `<div class="matrix"><div class="scrollx"><div class="mx" style="--mxcols:${cols.length}">${head}${body}</div></div></div>`;
+      return `<div class="matrix"><div class="scrollx"><div class="mx" role="table" style="--mxcols:${cols.length}">${head}${body}</div></div></div>`;
     },
     md(block) {
       const cols = Array.isArray(block?.columns) ? block.columns : [];

@@ -221,7 +221,7 @@ test('toMarkdown phaseTracker twin emits the phase checklist + donut + note, no 
   assert.match(md, /^# Run-timing fix$/m);
   assert.match(md, /^- \[x\] Design$/m);   // phaseSteps twin marker
   assert.match(md, /^- \[~\] Build$/m);
-  assert.match(md, /\*\*50%\*\* — phases/); // donut twin
+  assert.match(md, /\*\*1 \/ 2\*\* \(50%\) — phases/); // donut twin mirrors the ring display (max is not 100)
   assert.match(md, /^> on track$/m);        // note as blockquote
   assert.doesNotMatch(md, /<[a-zA-Z/]/);    // NO raw HTML tag
 });

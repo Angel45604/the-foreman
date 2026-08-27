@@ -19,13 +19,16 @@ test('every block type co-locates an html AND an md renderer (both functions)', 
   }
 });
 
-// ---- table: HTML ----
-test('table HTML wraps in .scroll and emits a table with thead/th + tbody/td', () => {
+// ---- table: HTML (Gate Board .t skin — native <table> semantics KEPT) ----
+test('table HTML wraps in .scrollx and emits <table class="t"> with thead/th[scope=col] + tbody/td', () => {
   const html = BLOCKS.table.html({ type: 'table', columns: ['Name', 'Spend'], rows: [['Tyler', '$10']] });
-  assert.match(html, /<div class="scroll">/);
-  assert.match(html, /<table>/);
-  assert.match(html, /<thead>[\s\S]*<th>Name<\/th>[\s\S]*<th>Spend<\/th>[\s\S]*<\/thead>/);
+  assert.match(html, /<div class="scrollx">/);
+  assert.match(html, /<table class="t">/);
+  assert.match(html, /<thead>[\s\S]*<th scope="col">Name<\/th>[\s\S]*<th scope="col">Spend<\/th>[\s\S]*<\/thead>/);
   assert.match(html, /<tbody>[\s\S]*<td>Tyler<\/td>[\s\S]*<td>\$10<\/td>[\s\S]*<\/tbody>/);
+  // retired forms: the bare .scroll wrapper and the .gt div-grid are NOT used for tables
+  assert.doesNotMatch(html, /class="scroll"/);
+  assert.doesNotMatch(html, /class="gt"/);
 });
 
 test('table HTML emits an escaped optional caption', () => {
@@ -157,12 +160,13 @@ const BAD_NUM = /NaN|Infinity/;
 // JSON.parse('1e999') === Infinity — the canonical ledger overflow vector.
 const OVERFLOW = JSON.parse('1e999');
 
-// ---- statRow (HTML row of big-number stats; NO SVG) ----
-test('statRow HTML emits a big value in --accent and a muted label', () => {
+// ---- statRow (carved stat wells; HTML, NO SVG — Gate Board restyle) ----
+test('statRow HTML emits carved .wells with a .well__v value and .well__l label per stat', () => {
   const html = BLOCKS.statRow.html({ type: 'statRow', stats: [{ value: '$0.12', label: 'Total spend' }] });
-  assert.match(html, /class="statrow"/);
-  assert.match(html, /class="stat-value"[^>]*>\$0\.12</);
-  assert.match(html, /class="stat-label"[^>]*>Total spend</);
+  assert.match(html, /class="wells"/);
+  assert.match(html, /class="well__v"[^>]*>\$0\.12</);
+  assert.match(html, /class="well__l"[^>]*>Total spend</);
+  assert.doesNotMatch(html, /statrow/); // retired markup
 });
 
 test('statRow HTML escapes a malicious value and label (no raw tag survives)', () => {
@@ -172,18 +176,18 @@ test('statRow HTML escapes a malicious value and label (no raw tag survives)', (
   assert.match(html, /&lt;img onerror=l&gt;/);
 });
 
-test('statRow HTML applies an allowlisted variant class (ok/warn)', () => {
+test('statRow HTML applies an allowlisted is-ok/is-warn variant class on the value', () => {
   const ok = BLOCKS.statRow.html({ type: 'statRow', stats: [{ value: '70/70', label: 'Pass', variant: 'ok' }] });
-  assert.match(ok, /class="stat ok"/);
+  assert.match(ok, /class="well__v is-ok"/);
   const warn = BLOCKS.statRow.html({ type: 'statRow', stats: [{ value: '2', label: 'Fail', variant: 'warn' }] });
-  assert.match(warn, /class="stat warn"/);
+  assert.match(warn, /class="well__v is-warn"/);
 });
 
 test('statRow HTML rejects an unexpected variant (no class/markup injection beyond allowlist)', () => {
   const html = BLOCKS.statRow.html({ type: 'statRow', stats: [{ value: '1', label: 'x', variant: 'err"><script>alert(1)</script>' }] });
   assert.doesNotMatch(html, /<script>alert\(1\)/);    // no markup smuggled via variant
-  assert.doesNotMatch(html, /stat err/);              // not an allowlisted class
-  assert.match(html, /class="stat"/);                 // falls back to the bare allowlisted class
+  assert.doesNotMatch(html, /is-err/);                // not an allowlisted class
+  assert.match(html, /class="well__v"/);              // falls back to the bare allowlisted class
 });
 
 test('statRow MD is an inert list of "- **value** — label" (escaped)', () => {
@@ -198,30 +202,64 @@ test('statRow MD escapes a malicious value and label', () => {
   assert.match(md, /&lt;img/);
 });
 
-// ---- donut (ring chart; SVG) ----
-test('donut HTML emits an inline svg with role=img, a track + arc circle, computed %', () => {
+// ---- donut (tick-ring dial; HTML, no SVG — Gate Board restyle) ----
+test('donut HTML renders the tick-ring: .ringwrap/.ring role=img + computed aria-label, guard-derived lit ticks, pct center', () => {
   const html = BLOCKS.donut.html({ type: 'donut', value: 25, max: 100, label: 'Used' });
-  assert.match(html, /<svg[^>]*role="img"/);
-  assert.match(html, /<circle/);
-  assert.match(html, /stroke-dasharray=/);
-  assert.match(html, />25%</);          // percentage is COMPUTED, not ledger text
-  assert.match(html, />Used</);         // optional label
+  assert.match(html, /<div class="ringwrap"><div class="ring" role="img" aria-label="25 \/ 100, Used">/);
+  assert.equal((html.match(/class="ring__t/g) || []).length, 24, 'max 100 => 24 ticks');
+  assert.equal((html.match(/class="ring__t on"/g) || []).length, 6, 'lit = round((25/100)*24)');
+  assert.match(html, /<em>25<\/em><small>%<\/small>/);   // max is 100 => pct center, COMPUTED
+  assert.match(html, /<span>Used<\/span>/);              // optional label in the center disc
+  assert.doesNotMatch(html, /donutwrap/);                // retired markup
+  assert.ok(!html.includes('<svg'), 'SVG donut retired');
 });
 
-test('donut HTML clamps value > max to 100%', () => {
+test('donut HTML centers value / max when max is not 100 (ticks floor at 4)', () => {
+  const html = BLOCKS.donut.html({ type: 'donut', value: 2, max: 3, label: 'coverage' });
+  assert.match(html, /<em>2<\/em><small> \/ 3<\/small>/);
+  assert.equal((html.match(/class="ring__t/g) || []).length, 4, 'small max floors at the 4-tick minimum');
+  assert.equal((html.match(/class="ring__t on"/g) || []).length, 3, 'lit = round((2/3)*4)');
+});
+
+test('donut .ring aria-label states the computed value / max; every tick is aria-hidden decoration', () => {
+  const html = BLOCKS.donut.html({ type: 'donut', value: 2, max: 3 });
+  assert.match(html, /class="ring" role="img" aria-label="2 \/ 3"/);
+  const ticks = html.match(/<i class="ring__t[^>]*>/g) || [];
+  assert.ok(ticks.length > 0, 'ticks present');
+  for (const t of ticks) assert.match(t, /aria-hidden="true"/);
+});
+
+test('donut HTML clamps value > max to a fully lit ring (100%)', () => {
   const html = BLOCKS.donut.html({ type: 'donut', value: 9999, max: 100 });
-  assert.match(html, />100%</);
+  assert.match(html, /<em>100<\/em><small>%<\/small>/);
+  assert.equal((html.match(/class="ring__t on"/g) || []).length, 24, 'all ticks lit');
   assert.doesNotMatch(html, BAD_NUM);
 });
 
-test('donut HTML survives NaN / Infinity / overflow / negative / absurd value (no NaN/Infinity, arc <= circumference)', () => {
+test('donut HTML survives NaN / Infinity / overflow / negative / absurd value (no NaN/Infinity, lit <= ticks)', () => {
   for (const bad of [NaN, Infinity, -Infinity, OVERFLOW, -50, 1e308]) {
     const html = BLOCKS.donut.html({ type: 'donut', value: bad, max: 100 });
     assert.doesNotMatch(html, BAD_NUM, `value=${bad}`);
-    // the emitted dash length must never exceed the full circumference
-    const m = html.match(/stroke-dasharray="([\d.]+) ([\d.]+)"/);
-    assert.ok(m, `dasharray present for value=${bad}`);
-    assert.ok(Number(m[1]) <= Number(m[2]) + 1e-6, `arc<=circumference for value=${bad}`);
+    const ticks = (html.match(/class="ring__t/g) || []).length;
+    const lit = (html.match(/class="ring__t on"/g) || []).length;
+    assert.equal(ticks, 24, `ticks stay guard-derived for value=${bad}`);
+    assert.ok(lit >= 0 && lit <= ticks, `lit within [0,ticks] for value=${bad}`);
+  }
+});
+
+test('donut edge matrix: overflow value + zero/negative/fractional/huge max => integer guard-derived counts, no NaN', () => {
+  const cases = [
+    { block: { type: 'donut', value: OVERFLOW }, ticks: 24, lit: 0 },      // non-finite value => fallback 0 => 0 lit
+    { block: { type: 'donut', value: 5, max: 0 }, ticks: 13, lit: 0 },     // zero max => 13 unlit ticks, never a division
+    { block: { type: 'donut', value: 5, max: -3 }, ticks: 13, lit: 0 },    // negative max clamps to 0 => same as zero
+    { block: { type: 'donut', value: 1, max: 2.6 }, ticks: 4, lit: 2 },    // fractional max => INTEGER ticks (4)
+    { block: { type: 'donut', value: 0, max: 1e308 }, ticks: 24, lit: 0 }, // huge finite max caps at 24 ticks
+  ];
+  for (const { block, ticks, lit } of cases) {
+    const html = BLOCKS.donut.html(block);
+    assert.doesNotMatch(html, BAD_NUM, JSON.stringify(block));
+    assert.equal((html.match(/class="ring__t/g) || []).length, ticks, `ticks for ${JSON.stringify(block)}`);
+    assert.equal((html.match(/class="ring__t on"/g) || []).length, lit, `lit for ${JSON.stringify(block)}`);
   }
 });
 
@@ -243,10 +281,18 @@ test('donut HTML escapes a malicious label', () => {
   assert.match(html, /&lt;img onerror=x&gt;/);
 });
 
-test('donut MD emits inert "**pct% — label**" with a computed pct', () => {
+test('donut MD emits inert "**pct%** — label" with a computed pct when max is 100', () => {
   const md = BLOCKS.donut.md({ type: 'donut', value: 25, max: 100, label: 'Used' });
   assert.match(md, /\*\*25%\*\* — Used/);
   assert.doesNotMatch(md, /<[a-zA-Z/]/);
+});
+
+test('donut MD MIRRORS the ring display: pct% for max-100, value / max (pct%) otherwise, 0 / 0 for zero max (no NaN)', () => {
+  assert.equal(BLOCKS.donut.md({ type: 'donut', value: 25, max: 100, label: 'Used' }), '**25%** — Used'); // max-100 case
+  assert.equal(BLOCKS.donut.md({ type: 'donut', value: 2, max: 3 }), '**2 / 3** (67%)');                  // non-100 case
+  const zero = BLOCKS.donut.md({ type: 'donut', value: 5, max: 0 });                                      // zero-max case
+  assert.equal(zero, '**0 / 0** (0%)');
+  assert.doesNotMatch(zero, BAD_NUM);
 });
 
 test('donut MD computes pct from a bad value without NaN/Infinity', () => {
@@ -495,22 +541,24 @@ test('flow HTML/MD render an empty-but-valid container for empty / non-array ste
   assert.equal(BLOCKS.flow.md({ type: 'flow' }), '');
 });
 
-// ---- phaseSteps (phase-progression chips; HTML, no SVG) ----
-test('phaseSteps HTML emits a labeled chip per step with an allowlisted status class + marker', () => {
+// ---- phaseSteps (the stops track; HTML, no SVG — Gate Board restyle) ----
+test('phaseSteps HTML emits an <ol class="stops"> of .stop items with the status as .stop__sign text', () => {
   const html = BLOCKS.phaseSteps.html({ type: 'phaseSteps', steps: [
     { label: 'Built', status: 'done' },
     { label: 'Testing', status: 'active' },
     { label: 'Ship', status: 'pending' },
   ] });
-  assert.match(html, /class="phasestep done"/);
-  assert.match(html, /class="phasestep active"/);
-  assert.match(html, /class="phasestep pending"/);
-  assert.match(html, />Built</);
-  assert.match(html, />Testing</);
-  assert.match(html, />Ship</);
-  assert.match(html, /✓/); // done marker
-  assert.match(html, /▸/); // active marker
-  assert.match(html, /○/); // pending marker
+  assert.match(html, /^<ol class="stops">/);
+  assert.match(html, /<\/ol>$/);
+  assert.equal((html.match(/<li class="stop">/g) || []).length, 3, 'one .stop li per step');
+  assert.equal((html.match(/class="stop__mark" aria-hidden="true"/g) || []).length, 3, 'a decorative mark per stop');
+  assert.match(html, /<span class="stop__sign">done ✓<\/span>/);
+  assert.match(html, /<span class="stop__sign">active ▸<\/span>/);
+  assert.match(html, /<span class="stop__sign">pending<\/span>/);
+  assert.match(html, /<b>Built<\/b>/);
+  assert.match(html, /<b>Testing<\/b>/);
+  assert.match(html, /<b>Ship<\/b>/);
+  assert.doesNotMatch(html, /phaseflow|phasestep/); // retired markup
 });
 
 test('phaseSteps HTML defaults an unknown / missing status to pending (no injection)', () => {
@@ -520,9 +568,9 @@ test('phaseSteps HTML defaults an unknown / missing status to pending (no inject
     { label: 'c', status: 'bogus' },
   ] });
   assert.doesNotMatch(html, /onmouseover/);              // no attribute smuggled via status
-  assert.doesNotMatch(html, /class="phasestep evil/);    // not an allowlisted class
-  assert.doesNotMatch(html, /class="phasestep bogus"/);  // not an allowlisted class
-  const pendings = html.match(/class="phasestep pending"/g) || [];
+  assert.doesNotMatch(html, /evil/);                     // status never reaches markup raw
+  assert.doesNotMatch(html, /bogus/);                    // not an allowlisted sign
+  const pendings = html.match(/<span class="stop__sign">pending<\/span>/g) || [];
   assert.equal(pendings.length, 3, 'missing + unknown statuses all fall back to pending');
 });
 
@@ -557,21 +605,21 @@ test('phaseSteps MD escapes a malicious label (inert, no raw tag)', () => {
   assert.match(md, /&lt;img/);
 });
 
-// ---- phaseSteps optional per-step `detail` (a muted sub-line under the label) ----
-test('phaseSteps HTML renders an escaped .phase-detail sub-line when a step has detail', () => {
+// ---- phaseSteps optional per-step `detail` (the stop body <p> under the label) ----
+test('phaseSteps HTML renders an escaped body <p> when a step has detail', () => {
   const html = BLOCKS.phaseSteps.html({ type: 'phaseSteps', steps: [
     { label: 'Built', status: 'done', detail: '6 files touched' },
   ] });
-  assert.match(html, /<span class="phase-detail">6 files touched<\/span>/);
-  // the detail sits INSIDE the .phasestep chip, after the label
-  assert.match(html, /Built<span class="phase-detail">6 files touched<\/span>/);
+  // the detail sits INSIDE .stop__body, between the label and the sign
+  assert.match(html, /<b>Built<\/b><p>6 files touched<\/p><span class="stop__sign">/);
 });
 
-test('phaseSteps HTML omits the .phase-detail sub-line when a step has no detail (byte-identical chip)', () => {
+test('phaseSteps HTML omits the body <p> when a step has no detail (byte-identical stop)', () => {
   const html = BLOCKS.phaseSteps.html({ type: 'phaseSteps', steps: [{ label: 'Ship', status: 'pending' }] });
-  assert.doesNotMatch(html, /phase-detail/);
-  // unchanged chip shape
-  assert.equal(html, '<div class="phaseflow"><span class="phasestep pending"><span class="phase-mark">○</span>Ship</span></div>');
+  assert.doesNotMatch(html, /<p>/);
+  // the exact stop shape (pins the full Gate Board markup for one pending step)
+  assert.equal(html, '<ol class="stops"><li class="stop"><span class="stop__mark" aria-hidden="true"><i></i><u></u></span>'
+    + '<div class="stop__body"><span class="stop__n">1</span><b>Ship</b><span class="stop__sign">pending</span></div></li></ol>');
 });
 
 test('phaseSteps HTML escapes a malicious detail (no raw tag survives)', () => {
@@ -781,16 +829,17 @@ test('diff twin contains injected text as literal (no real tag/link outside the 
   }
 });
 
-// ---- pillRow ----
-test('pillRow HTML reuses .pill / .pill.ok / .pill.warn with an escaped label', () => {
+// ---- pillRow (BEM .pill--ok/.pill--warn + aria-hidden dot — Gate Board restyle) ----
+test('pillRow HTML emits .pill / .pill--ok / .pill--warn with an aria-hidden dot + escaped label', () => {
   const html = BLOCKS.pillRow.html({ type: 'pillRow', pills: [
     { label: 'Plain' },
     { label: 'Good', variant: 'ok' },
     { label: 'Bad', variant: 'warn' },
   ] });
-  assert.match(html, /class="pill">Plain</);
-  assert.match(html, /class="pill ok">Good</);
-  assert.match(html, /class="pill warn">Bad</);
+  assert.match(html, /class="pill"><i aria-hidden="true"><\/i>Plain</);
+  assert.match(html, /class="pill pill--ok"><i aria-hidden="true"><\/i>Good</);
+  assert.match(html, /class="pill pill--warn"><i aria-hidden="true"><\/i>Bad</);
+  assert.doesNotMatch(html, /class="pill ok"|class="pill warn"/); // legacy space form retired
 });
 
 test('pillRow HTML rejects an unexpected variant (no class/attr injection beyond the allowlist)', () => {
@@ -936,6 +985,20 @@ test('dotMatrix renders marks as filled/miss dots with escaped labels', () => {
   assert.equal((html.match(/class="mx__d miss"/g) || []).length, 1);
   const md = blocksToMarkdown([{ type: 'dotMatrix', columns: ['A'], rows: [{ label: 'f', marks: [true] }] }]);
   assert.match(md, /\| yes \|/);
+});
+
+test('dotMatrix carries ARIA table semantics with an sr yes/no per mark (a11y hardening, Task 4b)', () => {
+  const html = BLOCKS.dotMatrix.html({ type: 'dotMatrix', columns: ['A', 'B'],
+    rows: [{ label: 'f1', marks: [true, false] }, { label: 'f2', marks: [false, true] }] });
+  assert.match(html, /class="mx" role="table"/);
+  assert.equal((html.match(/role="columnheader"/g) || []).length, 3, 'corner + one per column');
+  assert.equal((html.match(/role="rowheader"/g) || []).length, 2, 'the label of each body row');
+  assert.equal((html.match(/role="row"/g) || []).length, 3, 'header row + two body rows');
+  assert.equal((html.match(/role="cell"/g) || []).length, 4, 'one cell per mark');
+  assert.equal((html.match(/class="sr">yes</g) || []).length, 2, 'an sr "yes" per lit mark');
+  assert.equal((html.match(/class="sr">no</g) || []).length, 2, 'an sr "no" per miss');
+  // the dot itself is decoration
+  assert.match(html, /<i aria-hidden="true"><\/i>/);
 });
 
 test('ladder allowlists status', () => {

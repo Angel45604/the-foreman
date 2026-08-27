@@ -57,8 +57,8 @@ test('planDeck renders a per-slide table block (scroll wrapper + escaped cells)'
   const h = planDeck({ ...ledger, slides: [{ kicker: 'K', heading: 'H', blocks: [
     { type: 'table', columns: ['Name', 'Spend'], rows: [['<b>Tyler</b>', '$10']] },
   ] }] }).bodyHtml;
-  assert.match(h, /<div class="scroll"><table>/);
-  assert.match(h, /<th>Name<\/th>/);
+  assert.match(h, /<div class="scrollx"><table class="t">/);
+  assert.match(h, /<th scope="col">Name<\/th>/);
   assert.doesNotMatch(h, /<b>Tyler<\/b>/);     // cell value is escaped, not raw markup
   assert.match(h, /&lt;b&gt;Tyler/);
 });
@@ -76,7 +76,7 @@ test('planDeck: a block-less slide renders identically (no blocks markup leaks i
   const withKey = planDeck({ ...ledger, slides }).bodyHtml;
   const withUndef = planDeck({ ...ledger, slides: [{ ...slides[0], blocks: undefined }] }).bodyHtml;
   assert.equal(withKey, withUndef);             // omitting vs explicit-undefined are byte-identical
-  assert.doesNotMatch(withKey, /class="scroll"/); // no stray block scaffold
+  assert.doesNotMatch(withKey, /class="scrollx"/); // no stray block scaffold
 });
 
 // ---- Phase 3: four new artifact types, each composing already-built blocks ----
@@ -94,17 +94,17 @@ test('phaseTracker renders a phaseSteps block (+ progress donut + note)', () => 
     },
   });
   assert.match(r.title, /Phase 3 art/);
-  assert.match(r.bodyHtml, /class="phaseflow"/);   // phaseSteps signature
+  assert.match(r.bodyHtml, /class="stops"/);       // phaseSteps signature (the stops track)
   assert.match(r.bodyHtml, /Design/);
   assert.match(r.bodyHtml, /class="slide/);
-  assert.match(r.bodyHtml, /stroke-dasharray=/);    // donut rendered
+  assert.match(r.bodyHtml, /class="ring" role="img"/); // tick-ring donut rendered
   assert.match(r.bodyHtml, /class="callout"/);      // note callout
   assert.match(r.bodyHtml, /on track/);
 });
 test('phaseTracker omits the donut when no progress and omits callout when no note', () => {
   const h = phaseTracker({ meta: META3, phaseTracker: { phases: [{ label: 'P1', status: 'done' }] } }).bodyHtml;
-  assert.match(h, /class="phaseflow"/);
-  assert.doesNotMatch(h, /stroke-dasharray=/);  // no donut
+  assert.match(h, /class="stops"/);
+  assert.doesNotMatch(h, /class="ring"/);       // no donut
   assert.doesNotMatch(h, /class="callout"/);    // no note callout
 });
 test('phaseTracker escapes a malicious phase label (no raw tag) and a malicious note', () => {
@@ -127,9 +127,9 @@ test('findings renders a table with a finding title + sources + summary', () => 
       summary: 'root cause found',
     },
   });
-  assert.match(r.bodyHtml, /<table>/);
+  assert.match(r.bodyHtml, /<table class="t">/);
   assert.match(r.bodyHtml, /Cache miss/);
-  assert.match(r.bodyHtml, /<th>Finding<\/th>/);
+  assert.match(r.bodyHtml, /<th scope="col">Finding<\/th>/);
   assert.match(r.bodyHtml, /class="relrow"/);  // rankedRows sources
   assert.match(r.bodyHtml, /app\.log/);
   assert.match(r.bodyHtml, /class="callout"/); // summary
@@ -137,7 +137,7 @@ test('findings renders a table with a finding title + sources + summary', () => 
 });
 test('findings omits sources block when none and omits summary callout when none', () => {
   const h = findings({ meta: META3, findings: { items: [{ title: 'Only', confidence: 'Low' }] } }).bodyHtml;
-  assert.match(h, /<table>/);
+  assert.match(h, /<table class="t">/);
   assert.doesNotMatch(h, /class="relrow"/);  // no sources
   assert.doesNotMatch(h, /class="callout"/); // no summary
 });
@@ -162,10 +162,10 @@ test('comparison renders a table with an option label, criterion header + recomm
       recommendedBy: 'Codex',
     },
   });
-  assert.match(r.bodyHtml, /<table>/);
+  assert.match(r.bodyHtml, /<table class="t">/);
   assert.match(r.bodyHtml, /Option A/);     // option label
-  assert.match(r.bodyHtml, /<th>Cost<\/th>/); // criterion header
-  assert.match(r.bodyHtml, /<th>Option<\/th>/);
+  assert.match(r.bodyHtml, /<th scope="col">Cost<\/th>/); // criterion header
+  assert.match(r.bodyHtml, /<th scope="col">Option<\/th>/);
   assert.match(r.bodyHtml, /class="callout"/);
   assert.match(r.bodyHtml, /Option A/);
   assert.match(r.bodyHtml, /Codex/);          // attribution
@@ -175,7 +175,7 @@ test('comparison normalizes ragged scores (table block pads short rows; no throw
     meta: META3,
     comparison: { criteria: ['C1', 'C2', 'C3'], options: [{ label: 'O', scores: ['only one'] }] },
   }).bodyHtml;
-  assert.match(h, /<table>/);
+  assert.match(h, /<table class="t">/);
   assert.match(h, /only one/);
 });
 test('comparison escapes a malicious option label (no raw tag) and recommendation', () => {
@@ -198,7 +198,7 @@ test('comparison adds a trailing Notes column when ANY option has a note', () =>
       ],
     },
   }).bodyHtml;
-  assert.match(h, /<th>Notes<\/th>/);    // the trailing Notes header
+  assert.match(h, /<th scope="col">Notes<\/th>/);    // the trailing Notes header
   assert.match(h, /<td>preferred<\/td>/); // A's note cell
 });
 test('comparison OMITS the Notes column when no option has a note (table unchanged)', () => {
@@ -206,14 +206,14 @@ test('comparison OMITS the Notes column when no option has a note (table unchang
     meta: META3,
     comparison: { criteria: ['Cost'], options: [{ label: 'Option A', scores: ['low'] }] },
   }).bodyHtml;
-  assert.doesNotMatch(h, /<th>Notes<\/th>/);
+  assert.doesNotMatch(h, /<th scope="col">Notes<\/th>/);
 });
 test('comparison escapes a malicious note (no raw tag survives)', () => {
   const h = comparison({
     meta: META3,
     comparison: { criteria: ['C'], options: [{ label: 'O', scores: ['x'], note: '<img src=x onerror=note>' }] },
   }).bodyHtml;
-  assert.match(h, /<th>Notes<\/th>/);
+  assert.match(h, /<th scope="col">Notes<\/th>/);
   assert.doesNotMatch(h, /<img src=x onerror=note>/);
   assert.match(h, /&lt;img/);
 });
@@ -229,9 +229,9 @@ test('dashboard renders a statRow (+ chart + rows + ask)', () => {
       ask: 'approve budget?',
     },
   });
-  assert.match(r.bodyHtml, /class="statrow"/);   // statRow signature
+  assert.match(r.bodyHtml, /class="wells"/);     // statRow signature (carved wells)
   assert.match(r.bodyHtml, /\$0\.12/);
-  assert.match(r.bodyHtml, /stroke-dasharray=/);  // chart (donut) passthrough rendered
+  assert.match(r.bodyHtml, /class="ring" role="img"/); // chart (tick-ring donut) passthrough rendered
   assert.match(r.bodyHtml, /class="relrow"/);     // rankedRows
   assert.match(r.bodyHtml, /class="callout"/);    // ask
   assert.match(r.bodyHtml, /approve budget\?/);

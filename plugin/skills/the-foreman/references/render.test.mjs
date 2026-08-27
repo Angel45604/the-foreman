@@ -136,7 +136,7 @@ test('renders a per-slide table block in BOTH the HTML and the Markdown twin', a
   ] }] });
   await render(f.ledgerPath,'planDeck',f.out);
   const html = readFileSync(f.out,'utf8');
-  assert.match(html, /<div class="scroll"><table>/);
+  assert.match(html, /<div class="scrollx"><table class="t">/);
   assert.match(html, /<td>Tyler<\/td>/);
   const md = readFileSync(f.out.replace(/\.html$/, '.md'),'utf8');
   assert.match(md, /^\| Name \| Spend \|$/m);
@@ -152,9 +152,9 @@ test('renders metrics/chart blocks (donut + bar + lineSpark) with NO external re
   await render(f.ledgerPath,'planDeck',f.out);
   const html = readFileSync(f.out,'utf8');
   // the chart blocks rendered
-  assert.match(html, /class="statrow"/);
+  assert.match(html, /class="wells"/);
   assert.match(html, /<polyline/);
-  assert.match(html, /stroke-dasharray=/);
+  assert.match(html, /class="ring" role="img"/);
   // the existing no-external-refs invariant still holds for the whole page
   assert.doesNotMatch(html, /<link|<script src=|https?:\/\//);
   // NO chart SVG sinks leaked (the deck's own internal <use href="#i-..."> defs are NOT chart sinks)
@@ -186,7 +186,7 @@ test('renders code / diff / pillRow blocks in BOTH the HTML and the Markdown twi
   const html = readFileSync(f.out,'utf8');
   assert.match(html, /<pre><code/);            // code + diff use <pre><code>
   assert.match(html, /class="diff-add"/);
-  assert.match(html, /class="pill ok"/);
+  assert.match(html, /class="pill pill--ok"/);
   assert.doesNotMatch(html, /<div>/);          // the code body's <div> is escaped, not a real tag
   assert.match(html, /&lt;div&gt;/);
   assert.doesNotMatch(html, /<link|<script src=|https?:\/\//); // no-external-refs invariant holds
@@ -206,8 +206,8 @@ test('renders a phaseTracker end-to-end: self-contained, twin written, no extern
   const r = await render(f.ledgerPath, 'phaseTracker', f.out);
   const html = readFileSync(f.out, 'utf8');
   assert.match(html, /<title>PT<\/title>/);
-  assert.match(html, /class="phaseflow"/);                     // phaseSteps signature
-  assert.match(html, /stroke-dasharray=/);                     // donut
+  assert.match(html, /class="stops"/);                         // phaseSteps signature (the stops track)
+  assert.match(html, /class="ring" role="img"/);               // tick-ring donut
   assert.doesNotMatch(html, /<link|<script src=|https?:\/\//); // no external refs
   // the .md twin is written next to the HTML
   assert.equal(existsSync(r.mdPath), true);
@@ -227,8 +227,7 @@ test('phaseTracker renders an optional per-phase detail sub-line end-to-end (HTM
   });
   const r = await render(f.ledgerPath, 'phaseTracker', f.out);
   const html = readFileSync(f.out, 'utf8');
-  assert.match(html, /<span class="phase-detail">6 files touched<\/span>/); // detail sub-line in HTML
-  assert.match(html, /\.phase-detail\{/);                                   // the CSS rule is inlined
+  assert.match(html, /<b>Design<\/b><p>6 files touched<\/p>/);              // detail as the stop body <p>
   assert.doesNotMatch(html, /<img onerror=x>/);                             // malicious detail escaped
   assert.match(html, /&lt;img onerror=x&gt;/);
   const md = readFileSync(r.mdPath, 'utf8');
@@ -243,8 +242,8 @@ test('renders a comparison end-to-end: self-contained, twin GitHub table, no ext
   });
   const r = await render(f.ledgerPath, 'comparison', f.out);
   const html = readFileSync(f.out, 'utf8');
-  assert.match(html, /<div class="scroll"><table>/);
-  assert.match(html, /<th>Option<\/th>/);
+  assert.match(html, /<div class="scrollx"><table class="t">/);
+  assert.match(html, /<th scope="col">Option<\/th>/);
   assert.match(html, /Option A/);
   assert.doesNotMatch(html, /<link|<script src=|https?:\/\//);
   const md = readFileSync(r.mdPath, 'utf8');
