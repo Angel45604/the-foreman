@@ -7,11 +7,26 @@
   "verdict": "4 rounds, 8-7-8-7 flat. Every plan chain in this repo: 0 for 4. Every code chain: 1 for 1.",
   "lede": "The gate was not made stricter by design. On 2026-07-09 its reviewer moved to the ultra effort tier, which silently spawns ~3 sub-reviewers every round and copies the entire growing history into each. Under a zero-blocker approval rule, that is a loop that cannot terminate — and the model family is not what separates the eras. The effort dial is.",
   "keyStats": [
-   { "value": "36% → 0%", "label": "approve rate" },
-   { "value": "1 → 13", "label": "blockers / round" },
-   { "value": "154s → 815s", "label": "median round" },
-   { "value": "77% → 0%", "label": "chains converging" },
-   { "value": "0 → 1,060", "label": "hidden sub-reviewer spawns" }
+   {
+    "value": "36% → 0%",
+    "label": "approve rate"
+   },
+   {
+    "value": "1 → 13",
+    "label": "blockers / round"
+   },
+   {
+    "value": "154s → 815s",
+    "label": "median round"
+   },
+   {
+    "value": "77% → 0%",
+    "label": "chains converging"
+   },
+   {
+    "value": "0 → 1,060",
+    "label": "hidden sub-reviewer spawns"
+   }
   ],
   "ask": {
    "headline": "One call is open tonight: keep gating the Wave 2a plan, or change the artifact class and gate the code instead?",
@@ -144,14 +159,45 @@
    "heading": "The gate stopped helping and started costing",
    "statement": "The gate stopped helping and started costing",
    "lead": "It turned on 2026-07-09 — and the ultra effort dial is the culprit, not the model.",
-   "icon": "i-flag",
    "figure": {
     "type": "deltaRow",
     "items": [
-     { "label": "Approve rate", "from": "36%", "to": "0%", "fromPos": 36, "toPos": 2, "min": "0%", "max": "100%" },
-     { "label": "Blockers / round", "from": "1", "to": "13", "fromPos": 6.7, "toPos": 86.7, "min": "0", "max": "15" },
-     { "label": "Median round", "from": "154s", "to": "815s", "fromPos": 17, "toPos": 90.5, "min": "0s", "max": "900s" },
-     { "label": "Chains converging", "from": "77%", "to": "0%", "fromPos": 77, "toPos": 2, "min": "0%", "max": "100%" }
+     {
+      "label": "Approve rate",
+      "from": "36%",
+      "to": "0%",
+      "fromPos": 36,
+      "toPos": 2,
+      "min": "0%",
+      "max": "100%"
+     },
+     {
+      "label": "Blockers / round",
+      "from": "1",
+      "to": "13",
+      "fromPos": 6.7,
+      "toPos": 86.7,
+      "min": "0",
+      "max": "15"
+     },
+     {
+      "label": "Median round",
+      "from": "154s",
+      "to": "815s",
+      "fromPos": 17,
+      "toPos": 90.5,
+      "min": "0s",
+      "max": "900s"
+     },
+     {
+      "label": "Chains converging",
+      "from": "77%",
+      "to": "0%",
+      "fromPos": 77,
+      "toPos": 2,
+      "min": "0%",
+      "max": "100%"
+     }
     ]
    },
    "bullets": [
@@ -166,7 +212,6 @@
    "heading": "`ultra` silently turns one reviewer into an ensemble",
    "statement": "One effort setting silently turns a reviewer into an ensemble",
    "lead": "ultra spawns ~3 sub-reviewers per round, each re-copying the whole growing history.",
-   "icon": "i-search",
    "figure": {
     "type": "topo",
     "root": {
@@ -174,9 +219,18 @@
      "note": "“Maximum reasoning with automatic task delegation” — the model spawns, not the wrapper."
     },
     "children": [
-     { "title": "impl_audit", "note": "auto-spawned · inherits fork_turns=all" },
-     { "title": "contract_audit", "note": "auto-spawned · re-copies every packet + prior replies" },
-     { "title": "test_audit", "note": "auto-spawned · ~3 is a capped floor, not a ceiling" }
+     {
+      "title": "impl_audit",
+      "note": "auto-spawned · inherits fork_turns=all"
+     },
+     {
+      "title": "contract_audit",
+      "note": "auto-spawned · re-copies every packet + prior replies"
+     },
+     {
+      "title": "test_audit",
+      "note": "auto-spawned · ~3 is a capped floor, not a ceiling"
+     }
     ],
     "aside": {
      "value": "0 → 1,060",
@@ -247,7 +301,6 @@
    "heading": "Six arms, one packet — and two contamination events",
    "statement": "Six arms, one packet — and two contamination events",
    "lead": "A drift detector hashed the packet before every arm — and it earned its keep.",
-   "icon": "i-route",
    "bullets": [
     "`sol` × `terra` crossed with `ultra` / `max` / `xhigh`, fast mode held OFF throughout.",
     "Ran serially so wall-clock is a clean metric. Read-only; committed defaults untouched.",
@@ -261,7 +314,6 @@
    "heading": "Group B — identical packet, four arms",
    "statement": "Group B — identical packet, four arms",
    "lead": "Spawns happen only at ultra — same model, same packet: 949s → 543s → 288s.",
-   "icon": "i-chart",
    "figure": {
     "type": "bar",
     "max": 1000,
@@ -269,22 +321,58 @@
      {
       "label": "sol @ xhigh",
       "value": 555,
-      "tags": [ { "label": "14 blockers" }, { "label": "4 code", "kind": "code" } ]
+      "tags": [
+       {
+        "label": "14 blockers"
+       },
+       {
+        "label": "4 code",
+        "kind": "code"
+       }
+      ]
      },
      {
       "label": "terra @ ultra",
       "value": 949,
-      "tags": [ { "label": "13 blockers" }, { "label": "4 code", "kind": "code" }, { "label": "3 spawns", "kind": "spawn" } ]
+      "tags": [
+       {
+        "label": "13 blockers"
+       },
+       {
+        "label": "4 code",
+        "kind": "code"
+       },
+       {
+        "label": "3 spawns",
+        "kind": "spawn"
+       }
+      ]
      },
      {
       "label": "terra @ max",
       "value": 543,
-      "tags": [ { "label": "11 blockers" }, { "label": "0 code", "kind": "code" } ]
+      "tags": [
+       {
+        "label": "11 blockers"
+       },
+       {
+        "label": "0 code",
+        "kind": "code"
+       }
+      ]
      },
      {
       "label": "terra @ xhigh",
       "value": 288,
-      "tags": [ { "label": "11 blockers" }, { "label": "1 code", "kind": "code" } ]
+      "tags": [
+       {
+        "label": "11 blockers"
+       },
+       {
+        "label": "1 code",
+        "kind": "code"
+       }
+      ]
      }
     ]
    },
@@ -364,7 +452,6 @@
    "heading": "Only 4 of ~13 findings are about code at all",
    "statement": "Only 4 of ~13 findings are about code at all",
    "lead": "Every fix adds prose, and prose adds surface.",
-   "icon": "i-alert",
    "figure": {
     "type": "donut",
     "value": 4,
@@ -385,17 +472,61 @@
    "heading": "ADR-1 — `sol`@`xhigh`, as the best provisional tradeoff",
    "statement": "Turn the effort dial down — the best provisional tradeoff",
    "lead": "It misses two still-valid defects — that loss is an owner decision, not absorbed quietly.",
-   "icon": "i-check",
    "figure": {
     "type": "dotMatrix",
-    "columns": [ "sol@xhigh", "terra@ultra" ],
+    "columns": [
+     "sol@xhigh",
+     "terra@ultra"
+    ],
     "rows": [
-     { "label": "serialize.mjs:74", "sub": "timestamp guard", "marks": [ true, true ] },
-     { "label": "validate.mjs:119", "sub": "prototype-backed records", "marks": [ true, true ] },
-     { "label": "serialize.mjs:159", "sub": "sorts free-form attrs", "marks": [ true, false ] },
-     { "label": "validate.mjs:56", "sub": "parallel typed-edge ID collision", "marks": [ true, false ] },
-     { "label": "docs-contract.test.mjs:23", "sub": "guard silently skips", "marks": [ false, true ] },
-     { "label": "validate.mjs:391", "sub": "isArrayIndex 4294967295", "marks": [ false, true ] }
+     {
+      "label": "serialize.mjs:74",
+      "sub": "timestamp guard",
+      "marks": [
+       true,
+       true
+      ]
+     },
+     {
+      "label": "validate.mjs:119",
+      "sub": "prototype-backed records",
+      "marks": [
+       true,
+       true
+      ]
+     },
+     {
+      "label": "serialize.mjs:159",
+      "sub": "sorts free-form attrs",
+      "marks": [
+       true,
+       false
+      ]
+     },
+     {
+      "label": "validate.mjs:56",
+      "sub": "parallel typed-edge ID collision",
+      "marks": [
+       true,
+       false
+      ]
+     },
+     {
+      "label": "docs-contract.test.mjs:23",
+      "sub": "guard silently skips",
+      "marks": [
+       false,
+       true
+      ]
+     },
+     {
+      "label": "validate.mjs:391",
+      "sub": "isArrayIndex 4294967295",
+      "marks": [
+       false,
+       true
+      ]
+     }
     ]
    },
    "blocks": [
@@ -477,14 +608,33 @@
    "heading": "What this evidence does NOT establish",
    "statement": "What this evidence does NOT establish",
    "lead": "One round per arm, single samples — and Wave 1 is not a convergence fix.",
-   "icon": "i-alert",
    "figure": {
     "type": "ladder",
     "rows": [
-     { "claim": "hidden delegation", "cause": "the ultra effort tier", "status": "ok", "statusLabel": "settled" },
-     { "claim": "per-round latency", "cause": "model x effort configuration", "status": "ok", "statusLabel": "settled" },
-     { "claim": "finding volume", "cause": "broad recursive packet + zero-blocker policy", "status": "mid", "statusLabel": "indicated" },
-     { "claim": "non-convergence", "cause": "packet scope + lifecycle mechanics", "status": "no", "statusLabel": "not tested" }
+     {
+      "claim": "hidden delegation",
+      "cause": "the ultra effort tier",
+      "status": "ok",
+      "statusLabel": "settled"
+     },
+     {
+      "claim": "per-round latency",
+      "cause": "model x effort configuration",
+      "status": "ok",
+      "statusLabel": "settled"
+     },
+     {
+      "claim": "finding volume",
+      "cause": "broad recursive packet + zero-blocker policy",
+      "status": "mid",
+      "statusLabel": "indicated"
+     },
+     {
+      "claim": "non-convergence",
+      "cause": "packet scope + lifecycle mechanics",
+      "status": "no",
+      "statusLabel": "not tested"
+     }
     ]
    },
    "bullets": [
@@ -533,14 +683,25 @@
    "heading": "The plan bundle was gated and came back BLOCK",
    "statement": "The plan bundle was gated and came back BLOCK",
    "lead": "It even caught a real bug in codex-gate itself.",
-   "icon": "i-alert",
    "figure": {
     "type": "verdictFan",
     "verdict": "BLOCK",
     "fates": [
-     { "count": 6, "label": "agent-fixable — folded in", "variant": "ok" },
-     { "count": 3, "label": "decision-class — need you", "variant": "warn" },
-     { "count": 1, "label": "rejected with evidence", "variant": "x" }
+     {
+      "count": 6,
+      "label": "agent-fixable — folded in",
+      "variant": "ok"
+     },
+     {
+      "count": 3,
+      "label": "decision-class — need you",
+      "variant": "warn"
+     },
+     {
+      "count": 1,
+      "label": "rejected with evidence",
+      "variant": "x"
+     }
     ]
    },
    "bullets": [
@@ -554,7 +715,6 @@
    "chapter": "Plan",
    "kicker": "WAVE 1",
    "heading": "Five phases, contract altitude, TDD RED-first",
-   "icon": "i-route",
    "blocks": [
     {
      "type": "phaseSteps",
@@ -630,7 +790,6 @@
    "heading": "Three owner decisions before implementation",
    "statement": "Three owner decisions before implementation",
    "lead": "No push, no PR, no commit without your explicit say-so.",
-   "icon": "i-flag",
    "bullets": [
     "Worktree `fix/gate-effort-dial` off `origin/main`, outside your active clone — nothing in the cartographer tree is touched.",
     "No push, no PR, no commit without your explicit say-so.",
@@ -684,7 +843,12 @@
     },
     "flatline": {
      "label": "Blockers / round",
-     "values": [ "8", "7", "8", "7" ]
+     "values": [
+      "8",
+      "7",
+      "8",
+      "7"
+     ]
     }
    }
   }

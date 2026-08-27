@@ -201,8 +201,8 @@ a verdict hero (`meta.verdict` + `meta.lede` + `meta.keyStats` tiles), the ask s
 **`blocks[]`** array (tables, ranked rows, stat wells, dial/bar/line charts, gate-flow, the stops
 track, code/diff, pills — plus the six figure blocks `topo`, `deltaRow`, `duel`, `verdictFan`,
 `dotMatrix`, `ladder`). The full render catalog + every block/type ledger shape live in
-`references/ledger.schema.md` (and `gate-contract.mjs --print`). The renderer inlines the stylesheet
-+ the Gate Board page script into one CSP-safe page, **also writes the portable Markdown twin**
+`references/ledger.schema.md` (and `gate-contract.mjs --print`). The renderer inlines the stylesheet +
+the Gate Board page script into one CSP-safe page, **also writes the portable Markdown twin**
 (`<name>.md`, step 4), and prints `{outPath, bytes, mdPath, mdBytes}`.
 
 **Authoring contract** (design §7 — hard rules for the agent writing the ledger): statement
