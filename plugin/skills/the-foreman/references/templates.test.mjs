@@ -54,7 +54,7 @@ const ledger = {
 // ---- planDeck on the Gate Board (Task 6) ----
 
 test('planDeck renders a Gate Board: rail, hero fallbacks, chapters, decision chapter', () => {
-  const ref = JSON.parse(readFileSync(new URL('../../../../docs/initiatives/2026-08-26-neumorphic-gate-board/reference-ledger.json', import.meta.url), 'utf8'));
+  const ref = JSON.parse(readFileSync(new URL('./fixtures/legacy-plandeck.json', import.meta.url), 'utf8'));
   const { bodyHtml, title } = planDeck(ref);
   assert.equal(title, ref.meta.title);
   assert.match(bodyHtml, /class="nav"/);
@@ -176,7 +176,7 @@ test('planDeck escapes a malicious chapter label; its id stays slug-safe (no raw
 // deck()/slide()/card() are retired (Task 7): their chrome tests are replaced by
 // the Gate Board rail pins below (same property — navigable chapter chrome).
 test('planDeck(reference ledger) rail = Top + Diagnosis + Experiment + Decision + Plan + Your call', () => {
-  const ref = JSON.parse(readFileSync(new URL('../../../../docs/initiatives/2026-08-26-neumorphic-gate-board/reference-ledger.json', import.meta.url), 'utf8'));
+  const ref = JSON.parse(readFileSync(new URL('./fixtures/legacy-plandeck.json', import.meta.url), 'utf8'));
   const { bodyHtml } = planDeck(ref);
   assert.deepEqual(chipIds(bodyHtml), ['top', 'diagnosis', 'experiment', 'decision', 'plan', 'your-call']);
   assertAskVisible(bodyHtml, 'Change the artifact class rather than the scope?');

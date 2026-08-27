@@ -7,7 +7,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, readdirSync, statSync, chmodSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, readdirSync, statSync, chmodSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -214,5 +214,24 @@ test('sweep: recurses into subdirectories and PROVES no write — every swept by
   for (const [p, before] of snapshot) {
     assert.equal(Buffer.compare(readFileSync(p), before.bytes), 0, `${p}: byte-identical after the sweep`);
     assert.equal(statSync(p).mtimeMs, before.mtimeMs, `${p}: mtime untouched by the sweep`);
+  }
+});
+
+// The reference-ledger fixtures double as the install-portable test inputs; when
+// the initiative docs are present (repo checkout), the copies must be byte-identical
+// so fixture-based tests prove exactly what the docs-based originals proved.
+test('fixtures mirror the initiative reference ledgers byte-for-byte (repo checkouts)', () => {
+  const docs = new URL('../../../../docs/initiatives/2026-08-26-neumorphic-gate-board/', import.meta.url);
+  for (const [fixture, original] of [
+    ['legacy-plandeck.json', 'reference-ledger.json'],
+    ['gate-board-ledger.json', 'gate-board-ledger.json'],
+  ]) {
+    const docPath = new URL(original, docs);
+    if (!existsSync(docPath)) continue; // installed copy: docs absent by design
+    assert.equal(
+      readFileSync(new URL(`./fixtures/${fixture}`, import.meta.url), 'utf8'),
+      readFileSync(docPath, 'utf8'),
+      fixture,
+    );
   }
 });
