@@ -58,7 +58,7 @@ export async function render(ledgerPath, type, outPath) {
   // before the writes. A scan-rejected render therefore prints nothing here,
   // and the messages themselves are rule+location only (see lint.mjs).
   const lintWarnings = lintLedger(ledger, type);
-  const { title, bodyHtml } = make(ledger);
+  const { title, bodyHtml: contentHtml } = make(ledger);
   const css = await loadCss(); // style.css + the embedded font payloads (fail-loud)
   const js = await readFile(join(HERE, 'gate-board.js'), 'utf8');
   // Honor ledger.meta.accent — STRICT hex only (prevents CSS injection); a
@@ -77,21 +77,32 @@ export async function render(ledgerPath, type, outPath) {
   const m = ledger?.meta ?? {};
   const theme = (m.theme === 'light' || m.theme === 'dark') ? m.theme : null;
   const themeInit = theme ? `\n<script>document.documentElement.dataset.theme=${JSON.stringify(theme)}</script>` : '';
-  const html = `<title>${esc(title)}</title>\n<style>${css}</style>${accentOverride}${themeInit}\n${bodyHtml}\n<script>${js}</script>\n`;
+  // Shared assembly fragments (prepr blocker: head/body split). headHtml is the
+  // metadata half (title + inlined sheet + accent override + theme init);
+  // bodyHtml is the content half (the template's markup + the page script).
+  // BOTH outputs concatenate these SAME fragments in the SAME order — the
+  // hosted `html` joins them with the bare '\n' the pre-split assembly used
+  // (byte-identical to it, pinned by render.test.mjs), while the local shell
+  // slots headHtml into <head> and bodyHtml into <body>.
+  const headHtml = `<title>${esc(title)}</title>\n<style>${css}</style>${accentOverride}${themeInit}`;
+  const bodyHtml = `${contentHtml}\n<script>${js}</script>\n`;
+  const html = `${headHtml}\n${bodyHtml}`;
   // DUAL OUTPUT (prepr round 1). outPath stays SHELL-LESS — the hosted-Artifact
   // publish contract requires NO doctype/html/head/body wrapper (the host
   // supplies them). The local Chrome fallback needs a real standards-mode shell
   // for charset/viewport correctness, so a `.local.html` sibling wraps the SAME
-  // assembled content in a complete document. It goes through the SAME
-  // fail-closed gate, scanned ONCE via `html`: the local variant is a PURE
-  // WRAPPER of already-scanned content — its only additions are engine-authored
-  // shell literals plus esc(title), byte-identical to the <title> already
-  // inside the scanned `html` — so a second scan could catch nothing new.
+  // two fragments in a complete document — headHtml in <head> (one title,
+  // metadata only), bodyHtml in <body>. It goes through the SAME fail-closed
+  // gate, scanned ONCE via `html`: `html` IS headHtml + '\n' + bodyHtml, so
+  // every ledger-derived byte the local file carries sits inside a fragment the
+  // scan already covered contiguously — the local variant's only additions are
+  // engine-authored shell literals (doctype/meta/head/body tags), which no
+  // secret pattern can span — so a second scan could catch nothing new.
   const stem = outPath.endsWith('.html') ? outPath.slice(0, -5) : outPath;
   const localPath = `${stem}.local.html`;
   const localHtml = '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
     + '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
-    + `<title>${esc(title)}</title>\n</head>\n<body>\n${html}</body>\n</html>\n`;
+    + `${headHtml}\n</head>\n<body>\n${bodyHtml}</body>\n</html>\n`;
   // Portable Markdown twin: a parallel agent can read it from disk / be pasted it.
   const { markdown } = toMarkdown(ledger, type);
   const mdPath = `${stem}.md`;

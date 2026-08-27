@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { FORBIDDEN_BRAND_RE } from './test-helpers.mjs';
+import { planDeck } from './templates.mjs';
 
 function fixture(ledger){ const d=mkdtempSync(join(tmpdir(),'foreman-')); const lp=join(d,'ledger.json'); writeFileSync(lp,JSON.stringify(ledger)); return {dir:d,ledgerPath:lp,out:join(d,'artifact.html')}; }
 const base = { meta:{ title:'T', crumb:'C', favicon:'🛠️' }, slides:[{ kicker:'K', heading:'H', cards:[] }] };
@@ -46,6 +47,22 @@ test('same outPath overwrites in place (same-URL re-render)', async () => {
   assert.match(readFileSync(f.out,'utf8'), /<title>T2<\/title>/);
 });
 // ---- prepr round 1: dual output — shell-less outPath + a .local.html full document ----
+// The hosted assembly, pinned BYTE-FOR-BYTE (prepr blocker: head/body split).
+// The expected string is reconstructed here from the same inputs render.mjs
+// reads (templates + style.css + font payloads + gate-board.js), so any
+// refactor of the fragment assembly that changes even one hosted byte fails
+// this test — the publish contract keeps the same-URL re-render byte-stable.
+test('hosted outPath is EXACTLY title + inlined sheet + template body + page script', async () => {
+  const f = fixture(base); await render(f.ledgerPath,'planDeck',f.out);
+  const html = readFileSync(f.out,'utf8');
+  let css = readFileSync(fileURLToPath(new URL('./style.css', import.meta.url)),'utf8');
+  for (const [ph, file] of [['__FONT_SORA_B64__','sora-latin.woff2'],['__FONT_NUNITO_B64__','nunito-sans-latin.woff2']]) {
+    css = css.replace(ph, readFileSync(fileURLToPath(new URL(`./fonts/${file}`, import.meta.url))).toString('base64'));
+  }
+  const js = readFileSync(fileURLToPath(new URL('./gate-board.js', import.meta.url)),'utf8');
+  const { bodyHtml } = planDeck(base); // no accent/theme in `base` => no override/init fragments
+  assert.equal(html, `<title>T</title>\n<style>${css}</style>\n${bodyHtml}\n<script>${js}</script>\n`);
+});
 test('outPath stays SHELL-LESS: no doctype/html/head/body (the hosted-Artifact publish contract)', async () => {
   const f = fixture(base); await render(f.ledgerPath,'planDeck',f.out);
   const html = readFileSync(f.out,'utf8');
@@ -54,7 +71,20 @@ test('outPath stays SHELL-LESS: no doctype/html/head/body (the hosted-Artifact p
   assert.doesNotMatch(html, /<head[\s>]/i); // <header> is fine — this pins the literal head tag
   assert.doesNotMatch(html, /<body[\s>]/i);
 });
-test('writes a .local.html sibling: standards-mode shell wrapping the IDENTICAL assembled content', async () => {
+// Fragment extraction for the .local.html shell: the two engine fragments as
+// the local document carries them — headHtml after the shell's two meta lines,
+// bodyHtml between <body> and </body>.
+const SHELL_META = '<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n';
+function localFragments(local) {
+  const head = local.slice(local.indexOf('<head>\n') + '<head>\n'.length, local.indexOf('\n</head>'));
+  assert.ok(head.startsWith(SHELL_META), 'the shell metadata leads the <head>');
+  return {
+    head,
+    headHtml: head.slice(SHELL_META.length),
+    bodyHtml: local.slice(local.indexOf('<body>\n') + '<body>\n'.length, local.lastIndexOf('</body>')),
+  };
+}
+test('writes a .local.html sibling: proper head/body split of the SAME assembled fragments', async () => {
   const f = fixture(base);
   const r = await render(f.ledgerPath,'planDeck',f.out);
   const localPath = f.out.replace(/\.html$/, '.local.html');
@@ -62,14 +92,30 @@ test('writes a .local.html sibling: standards-mode shell wrapping the IDENTICAL 
   assert.equal(existsSync(localPath), true);
   const local = readFileSync(localPath,'utf8');
   assert.equal(r.localBytes, local.length);
-  assert.match(local, /^<!doctype html>\n<html lang="en">\n<head>/);          // standards mode
+  assert.match(local, /^<!doctype html>\n<html lang="en">\n<head>\n/);        // standards mode
   assert.match(local, /<meta charset="utf-8">/);                              // charset in <head>
   assert.match(local, /<meta name="viewport" content="width=device-width, initial-scale=1">/);
-  assert.match(local, /<head>[\s\S]*<title>T<\/title>[\s\S]*<\/head>/);       // the title in <head>
   assert.match(local, /<\/body>\n<\/html>\n$/);
-  // identical inner content: <body> wraps EXACTLY the shell-less outPath bytes
-  const inner = local.slice(local.indexOf('<body>\n') + '<body>\n'.length, local.lastIndexOf('</body>'));
-  assert.equal(inner, readFileSync(f.out,'utf8'));
+  // identical inner content, by FRAGMENT: the local head carries headHtml, the
+  // local body carries bodyHtml, and those SAME two fragments concatenate (in
+  // the same order, joined by the same newline) into the hosted outPath bytes.
+  const { head, headHtml, bodyHtml } = localFragments(local);
+  assert.equal(`${headHtml}\n${bodyHtml}`, readFileSync(f.out,'utf8'));
+  // exactly ONE title, and it lives in <head>; metadata-only elements never in <body>
+  assert.equal((local.match(/<title>/g) || []).length, 1);
+  assert.match(head, /<title>T<\/title>/);
+  assert.ok(!bodyHtml.includes('<title>'), 'no title in <body>');
+  assert.ok(!bodyHtml.includes('<style>'), 'no stylesheet in <body>');
+});
+test('local shell with accent + theme: the override style and theme init ride the HEAD; fragments still recombine', async () => {
+  const f = fixture({ ...base, meta:{ ...base.meta, accent:'#C85C3F', theme:'dark' } });
+  await render(f.ledgerPath,'planDeck',f.out);
+  const local = readFileSync(f.out.replace(/\.html$/, '.local.html'),'utf8');
+  const { head, headHtml, bodyHtml } = localFragments(local);
+  assert.equal(`${headHtml}\n${bodyHtml}`, readFileSync(f.out,'utf8'));       // same fragments, same order
+  assert.match(head, /<style>:root\{--user-ac:#C85C3F\}<\/style>/);           // accent override in <head>
+  assert.match(head, /<script>document\.documentElement\.dataset\.theme="dark"<\/script>/); // theme init in <head>
+  assert.equal((local.match(/<title>/g) || []).length, 1);                    // still exactly one title
 });
 test('FAILS CLOSED for the local variant too: a secret writes NONE of the three files', async () => {
   const f = fixture({ ...base, slides:[{ kicker:'K', heading:'token sk-ant-api03-deadbeefdeadbeefdead', cards:[] }] });
