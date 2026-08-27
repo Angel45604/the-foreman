@@ -95,6 +95,32 @@ export const MARKER_SELECTORS = new Set([
   '.ev__tog::before', '.ev__tog::after',
 ]);
 
+// ---- de-brand scan predicate (execution plan Task 13; Global Constraints) ----
+//
+// The forbidden legacy strings for shipping engine sources + engine-owned docs:
+// the old brand name (any casing), the old accent + canvas hex literals, and
+// the retired page-script name. Every alternative is assembled from split
+// halves at runtime, so this helper — which sits INSIDE the scan scope
+// (references/*.mjs) — can never trip its own scan; the same split-halves
+// technique is the sanctioned way for any test to write a NEGATIVE assertion
+// against one of these strings (never a per-file carve-out in the scan).
+// render.mjs holds the legacy accent NUMERICALLY (0x…), which the #-anchored
+// hex pattern deliberately does not match.
+export const FORBIDDEN_BRAND_RE = new RegExp(
+  ['Mind' + 'Cloud', '#009' + 'ACC', '#2d' + '323b', 'slide-' + 'engine'].join('|'),
+  'i',
+);
+
+// Every offending line of `text`, as "<lineNo>: <content>" — [] when clean.
+// Content is capped so a single-line data-URI can't flood a failure report.
+export function debrandOffenses(text) {
+  const out = [];
+  String(text ?? '').split('\n').forEach((line, i) => {
+    if (FORBIDDEN_BRAND_RE.test(line)) out.push(`${i + 1}: ${line.trim().slice(0, 100)}`);
+  });
+  return out;
+}
+
 // Borders: only complete 0/none resets pass — '0.5px solid x' must fail.
 export function oracleBadBorders(css) {
   const bad = [];

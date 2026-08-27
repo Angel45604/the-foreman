@@ -38,7 +38,8 @@ const applicableTypes = (ledger) =>
 // The corpus — each fixture is a REAL legacy shape (see execution plan Task 12):
 //   legacy-plandeck     — the full pre-redesign reference ledger (slides+chapters+
 //                         findings+liveRun+decision+win; statRow/table/pillRow/
-//                         phaseSteps/rankedRows blocks; the old #009ACC accent)
+//                         phaseSteps/rankedRows blocks; the legacy house accent
+//                         — held as a #-hex literal ONLY in the fixture itself)
 //   legacy-minimal      — the smallest ledger the engine ever accepted
 //   legacy-allblocks    — one slide per remaining legacy block type
 //   legacy-dup-chapters — NON-consecutive repeated chapter labels

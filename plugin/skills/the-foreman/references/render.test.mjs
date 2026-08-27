@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { FORBIDDEN_BRAND_RE } from './test-helpers.mjs';
 
 function fixture(ledger){ const d=mkdtempSync(join(tmpdir(),'foreman-')); const lp=join(d,'ledger.json'); writeFileSync(lp,JSON.stringify(ledger)); return {dir:d,ledgerPath:lp,out:join(d,'artifact.html')}; }
 const base = { meta:{ title:'T', crumb:'C', favicon:'🛠️' }, slides:[{ kicker:'K', heading:'H', cards:[] }] };
@@ -17,7 +18,8 @@ test('renders a self-contained HTML file with style + engine inlined; no externa
   assert.match(html, /<title>T<\/title>/); assert.match(html, /--ac: var\(--user-ac, #5b7cfa\)/); // the sheet is inlined (house-default accent chain)
   assert.match(html, /addEventListener\('keydown'/);
   assert.match(html, /id="navtrack"/);                              // the Gate Board rail is on the page
-  assert.doesNotMatch(html, /<svg width="0"|#i-cog|slide-engine/);  // deck-era icon sprite + engine retired
+  // deck-era icon sprite + retired page script (its name split so the de-brand scan stays strict)
+  assert.doesNotMatch(html, new RegExp('<svg width="0"|#i-cog|slide-' + 'engine'));
   assert.doesNotMatch(html, /<link|<script src=|https?:\/\//);
 });
 test('escapes <title> (no injection via meta.title)', async () => {
@@ -136,7 +138,7 @@ test('current-default accent emits NO override, case-insensitively', async () =>
 });
 test('de-brand: render.mjs source passes the scan predicate (defaults held numerically)', () => {
   const src = readFileSync(fileURLToPath(new URL('./render.mjs', import.meta.url)),'utf8');
-  assert.doesNotMatch(src, /MindCloud|#009acc/i);
+  assert.doesNotMatch(src, FORBIDDEN_BRAND_RE); // Task 13's actual scan predicate
 });
 test('lint warnings are BUFFERED: a scan-rejected render prints nothing at all', async () => {
   const statement = 'this statement runs far past the twelve word cap and carries token sk-ant-api03-deadbeefdeadbeefdead too';

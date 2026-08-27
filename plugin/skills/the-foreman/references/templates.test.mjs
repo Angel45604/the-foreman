@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import * as templates from './templates.mjs';
 import { planDeck, brief, decisionCard, liveRun, phaseTracker, findings, comparison, dashboard } from './templates.mjs';
-import { stripDetails } from './test-helpers.mjs';
+import { stripDetails, FORBIDDEN_BRAND_RE } from './test-helpers.mjs';
 
 // ---- shared Gate Board test helpers ----
 
@@ -43,7 +43,7 @@ test('stripDetails keeps depth-0 content between sibling details and drops an un
 });
 
 const ledger = {
-  meta:{ title:'Cirra run-timing fix', crumb:'GRAVITY · CIRRA', favicon:'🛠️', accent:'#009ACC' },
+  meta:{ title:'Cirra run-timing fix', crumb:'GRAVITY · CIRRA', favicon:'🛠️', accent:'#C85C3F' },
   slides:[{ kicker:'PLAN', heading:'Exclude human-approval wait', cards:[{title:'Scope',body:'1 file'}] }],
   win:{ landed:'Excluded approval wait', evidence:'189/189 green', verified:true, next:'PR' },
   decision:{ question:'Persist events how?', options:[{label:'A',pros:'x',cons:'y',risk:'low'}], recommendation:'A' },
@@ -60,7 +60,8 @@ test('planDeck renders a Gate Board: rail, hero fallbacks, chapters, decision ch
   assert.match(bodyHtml, /id="diagnosis"/);                       // chapter from slide.chapter
   assert.match(bodyHtml, /id="your-call"/);                       // decision chapter
   assert.match(bodyHtml, /class="verdictline"/);                  // meta.subtitle fallback
-  assert.ok(!/id="bar"|slide"|#009ACC|MINDCLOUD/i.test(bodyHtml));
+  assert.ok(!/id="bar"|slide"/i.test(bodyHtml));      // deck-era markup retired
+  assert.ok(!FORBIDDEN_BRAND_RE.test(bodyHtml));      // no legacy brand string on the board
 });
 
 test('planDeck escapes ledger text and tolerates a minimal legacy ledger', () => {
@@ -246,7 +247,7 @@ test('planDeck: a block-less slide renders identically (no blocks markup leaks i
 
 // ---- Phase 3: four new artifact types, each composing already-built blocks ----
 
-const META3 = { title: 'Phase 3 art', crumb: 'GRAVITY · FOREMAN', favicon: '🛠️', accent: '#009ACC' };
+const META3 = { title: 'Phase 3 art', crumb: 'GRAVITY · FOREMAN', favicon: '🛠️', accent: '#C85C3F' };
 
 // phaseTracker — the stops figure VISIBLE (+ optional donut); pt.note drives the ask.
 test('phaseTracker: stops figure + donut VISIBLE, note as the ask (Your call chapter)', () => {

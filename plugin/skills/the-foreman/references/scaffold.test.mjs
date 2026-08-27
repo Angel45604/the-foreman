@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { gateBoard, unit, drawer, slugify, allocateIds, firstClause } from './scaffold.mjs';
+import { FORBIDDEN_BRAND_RE } from './test-helpers.mjs';
 
 test('slugify is stable and safe', () => {
   assert.equal(slugify('Decision record'), 'decision-record');
@@ -38,7 +39,7 @@ test('gateBoard renders rail chips for Top + every chapter, with matching sectio
   assert.match(bodyHtml, /href="#your-call"/); assert.match(bodyHtml, /id="your-call"/);
   assert.match(bodyHtml, /H&lt;x&gt;/);
   assert.match(bodyHtml, /class="tiles"/);
-  assert.ok(!/#009ACC|MINDCLOUD/i.test(bodyHtml));
+  assert.ok(!FORBIDDEN_BRAND_RE.test(bodyHtml)); // no legacy brand string in the shell
 });
 
 test('sources survive a zero-chapter board (fall back into #top)', () => {

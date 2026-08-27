@@ -13,10 +13,10 @@ What the skill owns:
 - **Stage-0 preflight** (`references/preflight.mjs`) — fail-closed check that the
   `permissions.deny` rails + hooks (push guard, mass-delete, exfiltration) are installed
   before any autonomous work. Missing rails ⇒ STOP with a ready-to-paste setup block.
-- **Artifact engine** (`references/render.mjs`) — renders plan decks, decision cards,
+- **Artifact engine** (`references/render.mjs`) — renders plan boards, decision cards,
   phase trackers, live-run briefs, and dashboards from a durable JSON ledger into
-  self-contained, **secret-scanned** HTML (+ a portable Markdown twin). The scan is
-  fail-closed: a detected secret/PII shape aborts the write.
+  self-contained, **secret-scanned** neumorphic Gate Board HTML (+ a portable Markdown
+  twin). The scan is fail-closed: a detected secret/PII shape aborts the write.
 - **Lifecycle conductor + gate contract** (`references/gate-contract.mjs`) — 7 stages with
   hard gates (plan-approval, phase-boundary, decision-fork, live-run, governance-pushback)
   enforced via render → surface → structured `AskUserQuestion`, with a file-based escalation
@@ -130,10 +130,9 @@ ChatGPT seat, superpowers skills, Claude Code host) are listed under
 - License: **MIT** (repo root + `plugin/LICENSE`).
 - The marketplace `name` is `angelm`; change it if you want a different install handle
   (`/plugin install the-foreman@<name>`).
-- The deck styling defaults to the MindCloud house style (accent `#009ACC`, crumb
-  `MINDCLOUD · DEV WORKFLOW`) — both are per-ledger overridable (`meta.accent`, `meta.crumb`);
-  genericize the defaults in `references/templates.mjs` / `style.css` if you ever want a
-  brand-neutral release.
+- Artifacts render as the neumorphic Gate Board (house accent `#5B7CFA`, crumb
+  `THE-FOREMAN · DEV WORKFLOW`) — both are per-ledger overridable (`meta.accent`, `meta.crumb`);
+  the defaults live in `references/style.css` / `references/templates.mjs`.
 - A pre-publish audit initiative (four-skill hardening: guard-parser closure, CODEX_HOME
   bootstrap, cutover tooling, owner dials, low sweep) is specified and deferred — it resumes
   from the local initiative bundle, not this README.
