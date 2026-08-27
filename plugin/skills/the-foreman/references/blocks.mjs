@@ -528,6 +528,14 @@ const BLOCKS = {
   },
 
   // { type:'verdictFan', verdict:string, fates:[{count:number, label, variant?:'ok'|'warn'|'x'}] }
+  // Fan geometry derives from the fate count (prepr blocker): the .verdict
+  // carries --fatecols:N (N = fates.length guarded into 1..6; style.css sizes
+  // the desktop fates grid and the crossbar insets from it) and the connector
+  // <i> set is BUILT from N — the trunk, a crossbar spanning first-to-last
+  // drop center (omitted when there is only one center to span), and one drop
+  // line per column at (i + 0.5)/N via a per-element --fx index. Every emitted
+  // number is ENGINE-DERIVED (array length / loop index), never ledger text —
+  // the same discipline as phaseSteps' --stopcols.
   verdictFan: {
     html(block) {
       const fates = Array.isArray(block?.fates) ? block.fates : [];
@@ -537,8 +545,11 @@ const BLOCKS = {
         return `<div class="fate fate--${v}"><span class="fate__dots" aria-hidden="true">${'<i></i>'.repeat(n)}</span>`
           + `<b>${esc(safeNum(f?.count, { min: 0, fallback: 0 }))}</b><span>${esc(f?.label)}</span></div>`;
       }).join('');
-      return `<div class="verdict"><span class="verdict__chip">${esc(block?.verdict)}</span>`
-        + `<div class="fan" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div><div class="fates">${cells}</div></div>`;
+      const cols = Math.min(6, Math.max(1, fates.length));
+      const drops = Array.from({ length: cols }, (_, i) => `<i class="fan__d" style="--fx:${i}"></i>`).join('');
+      const fan = `<div class="fan" aria-hidden="true"><i class="fan__t"></i>${cols > 1 ? '<i class="fan__x"></i>' : ''}${drops}</div>`;
+      return `<div class="verdict" style="--fatecols:${cols}"><span class="verdict__chip">${esc(block?.verdict)}</span>`
+        + `${fan}<div class="fates">${cells}</div></div>`;
     },
     md(block) {
       const fates = Array.isArray(block?.fates) ? block.fates : [];

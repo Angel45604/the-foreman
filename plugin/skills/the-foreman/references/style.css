@@ -479,11 +479,14 @@ section[id]{ scroll-margin-top: 86px; }
   font-family: 'Sora', system-ui, sans-serif; font-size: clamp(22px, 4vw, 30px); font-weight: 800; letter-spacing: .22em; color: var(--warnq); }
 .fan{ position: relative; width: 100%; max-width: 620px; height: 44px; }
 .fan i{ position: absolute; background: var(--lineV); }
-.fan i:nth-child(1){ left: 50%; transform: translateX(-50%); top: 0; height: 50%; width: 3px; }
-.fan i:nth-child(2){ top: 50%; left: 16.6%; right: 16.6%; height: 3px; transform: translateY(-50%); background: var(--lineH); }
-.fan i:nth-child(3){ left: 16.6%; transform: translateX(-50%); top: 50%; bottom: 0; width: 3px; }
-.fan i:nth-child(4){ left: 50%; transform: translateX(-50%); top: 50%; bottom: 0; width: 3px; }
-.fan i:nth-child(5){ left: 83.4%; transform: translateX(-50%); top: 50%; bottom: 0; width: 3px; }
+/* the connector geometry consumes the renderer-emitted vars (engine-derived
+   integers; 3 = the reference default): the crossbar spans first-to-last drop
+   center — half a column in from each edge — and each drop sits at
+   (--fx + 0.5) columns. The single-fate fan carries no crossbar element (and
+   the 1-column insets would collapse it to zero width anyway). */
+.fan i.fan__t{ left: 50%; transform: translateX(-50%); top: 0; height: 50%; width: 3px; }
+.fan i.fan__x{ top: 50%; left: calc(50% / var(--fatecols, 3)); right: calc(50% / var(--fatecols, 3)); height: 3px; transform: translateY(-50%); background: var(--lineH); }
+.fan i.fan__d{ left: calc((var(--fx, 0) + 0.5) * 100% / var(--fatecols, 3)); transform: translateX(-50%); top: 50%; bottom: 0; width: 3px; }
 .fates{ width: 100%; max-width: 620px; display: grid; grid-template-columns: 1fr; gap: 12px; }
 .fate{ padding: 16px 16px 18px; border-radius: 16px; background: var(--bg); box-shadow: var(--ins);
   display: flex; flex-direction: column; align-items: center; gap: 9px; text-align: center; }
@@ -496,7 +499,7 @@ section[id]{ scroll-margin-top: 86px; }
 .fate b{ font-family: 'Sora', system-ui, sans-serif; font-size: 22px; font-weight: 800; line-height: 1; }
 .fate span{ font-size: 10px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; color: var(--sb); }
 .fate--warn span{ color: var(--warnq); }
-@media (min-width: 640px){ .fates{ grid-template-columns: 1fr 1fr 1fr; } }
+@media (min-width: 640px){ .fates{ grid-template-columns: repeat(var(--fatecols, 3), 1fr); } }
 
 /* ============================================================
    FIG · five stops (Plan 2)

@@ -187,6 +187,33 @@ test('desktop .stops grid + rail insets are --stopcols-driven; the solo track hi
   assert.doesNotMatch(css, /: 9%/);
 });
 
+// ---- prepr blocker: the verdict-fan geometry derives from --fatecols/--fx ----
+// The old sheet fixed three columns and three endpoint drops (16.6% / 50% /
+// 83.4%) while the fates count is unconstrained. The connectors and the
+// desktop fates grid now consume the renderer-emitted vars: N equal columns,
+// crossbar insets of half a column each (first-to-last drop center), and each
+// drop at (--fx + 0.5) columns.
+test('fan connectors + the fates grid are --fatecols/--fx-driven (no fixed three-column endpoints)', () => {
+  const rules = parseRules(css);
+  const gtc = rules.filter((r) => r.selector === '.fates')
+    .flatMap((r) => r.declarations.filter((d) => d.prop === 'grid-template-columns').map((d) => d.value));
+  assert.deepEqual([...gtc].sort(), ['1fr', 'repeat(var(--fatecols, 3), 1fr)'].sort(),
+    'mobile keeps the single-column stack; desktop repeats var(--fatecols, 3)');
+  const bar = rules.filter((r) => r.selector === '.fan i.fan__x');
+  assert.equal(bar.length, 1, 'exactly one crossbar rule');
+  const barDecls = Object.fromEntries(bar[0].declarations.map((d) => [d.prop, d.value]));
+  assert.equal(barDecls.left, 'calc(50% / var(--fatecols, 3))', 'left inset = half a column (first drop center)');
+  assert.equal(barDecls.right, 'calc(50% / var(--fatecols, 3))', 'right inset = half a column (last drop center)');
+  const drop = rules.filter((r) => r.selector === '.fan i.fan__d');
+  assert.equal(drop.length, 1, 'exactly one drop rule');
+  const dropDecls = Object.fromEntries(drop[0].declarations.map((d) => [d.prop, d.value]));
+  assert.equal(dropDecls.left, 'calc((var(--fx, 0) + 0.5) * 100% / var(--fatecols, 3))',
+    'each drop sits at (index + 0.5) columns');
+  // the fixed three-column geometry must not survive anywhere in the sheet
+  assert.doesNotMatch(css, /16\.6%|83\.4%/);
+  assert.doesNotMatch(css, /\.fan i:nth-child/);
+});
+
 test('rail, unit, drawer, and every figure family have styles', () => {
   const selectors = parseRules(css).map((r) => r.selector.trim());
   for (const cls of ['.nav__track', '.nav__chip', '.tiles', '.ask', '.unit', '.drawer',

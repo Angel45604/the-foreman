@@ -1006,12 +1006,56 @@ test('verdictFan allowlists variants and clamps dot counts', () => {
   assert.equal((html.match(/class="fate fate--ok"/g) || []).length, 1);
   assert.equal((html.match(/class="fate fate--x"/g) || []).length, 1);  // injected variant coerced
   assert.equal((html.match(/class="fate fate--warn"/g) || []).length, 1);
-  // count dots INSIDE the .fate__dots spans only — the static .fan ornament
-  // carries 5 decorative <i></i> strokes of its own (per the reference markup)
+  // count dots INSIDE the .fate__dots spans only — the .fan ornament carries
+  // decorative connector <i> strokes of its own (fate-count-derived)
   const dotCount = [...html.matchAll(/class="fate__dots"[^>]*>((?:<i><\/i>)*)</g)]
     .reduce((n, m) => n + ((m[1].match(/<i><\/i>/g) || []).length), 0);
   assert.equal(dotCount, 6 + 24 + 0);
   assert.ok(!html.includes('<script>'));
+});
+
+// ---- prepr blocker: the fan geometry derives from the fate count ----
+// The renderer emits --fatecols:N on the .verdict (N = fates.length guarded
+// into 1..6) and BUILDS the connector set from N: the trunk, a crossbar (only
+// when there are two centers to span), and one drop line per fate carrying an
+// index-derived --fx custom prop (numbers only). The CSS consumes the vars, so
+// the fan and the fates grid fit ANY fate count — not just the reference three.
+const fanOf = (html) => (html.match(/<div class="fan" aria-hidden="true">([\s\S]*?)<\/div>/) || [])[1] ?? '';
+const mkFan = (n) => BLOCKS.verdictFan.html({ type: 'verdictFan', verdict: 'V',
+  fates: Array.from({ length: n }, (_, i) => ({ count: 1, label: `f${i}`, variant: 'ok' })) });
+
+test('verdictFan pins --fatecols and the connector count for 2 / 3 / 5 fates (trunk + crossbar + N drops)', () => {
+  for (const [n, connectors] of [[2, 4], [3, 5], [5, 7]]) {
+    const html = mkFan(n);
+    assert.match(html, new RegExp(`<div class="verdict" style="--fatecols:${n}">`), `--fatecols:${n}`);
+    const fan = fanOf(html);
+    assert.equal((fan.match(/<i /g) || []).length, connectors, `${n} fates => ${connectors} connectors`);
+    assert.equal((fan.match(/class="fan__t"/g) || []).length, 1, 'one trunk');
+    assert.equal((fan.match(/class="fan__x"/g) || []).length, 1, 'one crossbar');
+    assert.equal((fan.match(/class="fan__d"/g) || []).length, n, 'one drop per fate');
+    for (let i = 0; i < n; i++) {
+      assert.ok(fan.includes(`<i class="fan__d" style="--fx:${i}"></i>`), `drop ${i} carries its index --fx`);
+    }
+  }
+});
+
+test('verdictFan single fate: --fatecols:1, NO crossbar (nothing to span), trunk + one drop', () => {
+  const html = mkFan(1);
+  assert.match(html, /<div class="verdict" style="--fatecols:1">/);
+  const fan = fanOf(html);
+  assert.equal((fan.match(/class="fan__x"/g) || []).length, 0, 'the crossbar needs two centers');
+  assert.equal((fan.match(/class="fan__t"/g) || []).length, 1);
+  assert.deepEqual([...fan.matchAll(/class="fan__d" style="--fx:(\d+)"/g)].map((m) => m[1]), ['0']);
+});
+
+test('verdictFan guards --fatecols into 1..6 (0 fates => 1; 9 fates => 6 columns, 6 drops, 9 cells)', () => {
+  const zero = mkFan(0);
+  assert.match(zero, /style="--fatecols:1"/);
+  assert.equal((fanOf(zero).match(/class="fan__x"/g) || []).length, 0);
+  const nine = mkFan(9);
+  assert.match(nine, /style="--fatecols:6"/);
+  assert.equal((fanOf(nine).match(/class="fan__d"/g) || []).length, 6);
+  assert.equal((nine.match(/class="fate fate--ok"/g) || []).length, 9, 'every fate cell still renders');
 });
 
 // ============================================================================
