@@ -182,11 +182,18 @@ export function toMarkdown(ledger, type) {
     const options = Array.isArray(c.options) ? c.options : [];
     // Mirror the template: a trailing "Notes" column only when an option has a note.
     const anyNote = options.some((o) => o?.note != null && o.note !== '');
+    // MIRRORED from templates.mjs comparison (keep in lockstep): scores
+    // normalize to EXACTLY criteria.length BEFORE the note is appended, so a
+    // ragged row can never shift the note out of the Notes column or drop it.
+    const scoreCells = (o) => {
+      const scores = Array.isArray(o?.scores) ? o.scores : [];
+      return Array.from({ length: criteria.length }, (_, i) => scores[i] ?? '');
+    };
     const blocks = [
       {
         type: 'table',
         columns: ['Option', ...criteria, ...(anyNote ? ['Notes'] : [])],
-        rows: options.map((o) => [o?.label, ...(Array.isArray(o?.scores) ? o.scores : []), ...(anyNote ? [o?.note ?? ''] : [])]),
+        rows: options.map((o) => [o?.label, ...scoreCells(o), ...(anyNote ? [o?.note ?? ''] : [])]),
       },
     ];
     const effectiveAsk = askShape(meta.ask)

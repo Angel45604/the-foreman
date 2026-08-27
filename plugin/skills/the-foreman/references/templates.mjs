@@ -356,12 +356,20 @@ export function comparison(ledger) {
   // note; otherwise the table is unchanged (no Notes column). The table block
   // escapes every cell, so the note text is neutralized there.
   const anyNote = options.some((o) => o?.note != null && o.note !== '');
+  // Normalize each scores array to EXACTLY criteria.length BEFORE the note is
+  // appended (pad ''/truncate): a ragged row would otherwise shift the note
+  // into a criteria cell (short scores) or drop it (overlong scores) when the
+  // table block later normalizes the whole row. MIRRORED in markdown.mjs's
+  // comparison twin — keep the two in lockstep.
+  const scoreCells = (o) => {
+    const scores = Array.isArray(o?.scores) ? o.scores : [];
+    return Array.from({ length: criteria.length }, (_, i) => scores[i] ?? '');
+  };
   const figureHtml = renderBlocks([
     {
       type: 'table',
       columns: ['Option', ...criteria, ...(anyNote ? ['Notes'] : [])],
-      // ragged scores are normalized by the table block (normalizeRow) — just map.
-      rows: options.map((o) => [o?.label, ...(Array.isArray(o?.scores) ? o.scores : []), ...(anyNote ? [o?.note ?? ''] : [])]),
+      rows: options.map((o) => [o?.label, ...scoreCells(o), ...(anyNote ? [o?.note ?? ''] : [])]),
     },
   ]);
   return singleBoard(ledger, {

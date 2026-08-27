@@ -343,6 +343,23 @@ test('comparison twin OMITS the Notes column when no option has a note', () => {
   assert.match(md, /^\| Option \| Cost \|$/m);
   assert.doesNotMatch(md, /Notes/);
 });
+// twin parity for the ragged-scores + note normalization (same rule as the template)
+test('comparison twin with SHORT scores + a note: criteria cells pad empty, the note lands in the Notes column', () => {
+  const md = toMarkdown({
+    meta: META,
+    comparison: { criteria: ['C1', 'C2'], options: [{ label: 'O', scores: ['s1'], note: 'note-a' }] },
+  }, 'comparison').markdown;
+  assert.match(md, /^\| Option \| C1 \| C2 \| Notes \|$/m);
+  assert.match(md, /^\| O \| s1 \|  \| note-a \|$/m);
+});
+test('comparison twin with OVERLONG scores + a note: extras truncate, the note stays in the Notes column', () => {
+  const md = toMarkdown({
+    meta: META,
+    comparison: { criteria: ['C1'], options: [{ label: 'O', scores: ['s1', 's2-extra', 's3-extra'], note: 'note-a' }] },
+  }, 'comparison').markdown;
+  assert.match(md, /^\| O \| s1 \| note-a \|$/m);
+  assert.doesNotMatch(md, /s2-extra/); // the overflow score never displaces the note
+});
 test('comparison twin escapes a malicious note (inert)', () => {
   const md = toMarkdown({ meta: META, comparison: { criteria: ['C'], options: [{ label: 'O', scores: ['x'], note: INJ3 }] } }, 'comparison').markdown;
   assert.doesNotMatch(md, /<img src=x onerror/);

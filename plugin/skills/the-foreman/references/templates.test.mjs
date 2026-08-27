@@ -391,6 +391,23 @@ test('comparison OMITS the Notes column when no option has a note (table unchang
   }).bodyHtml;
   assert.doesNotMatch(h, /<th scope="col">Notes<\/th>/);
 });
+// ---- ragged scores + a note: scores normalize to criteria.length BEFORE the
+// note is appended, so the note always lands in the Notes column ----
+test('comparison with SHORT scores + a note: criteria cells pad empty, the note lands in the Notes column', () => {
+  const h = comparison({
+    meta: META3,
+    comparison: { criteria: ['C1', 'C2'], options: [{ label: 'O', scores: ['s1'], note: 'note-a' }] },
+  }).bodyHtml;
+  assert.match(h, /<tr><td>O<\/td><td>s1<\/td><td><\/td><td>note-a<\/td><\/tr>/);
+});
+test('comparison with OVERLONG scores + a note: extras truncate, the note still lands in the Notes column', () => {
+  const h = comparison({
+    meta: META3,
+    comparison: { criteria: ['C1'], options: [{ label: 'O', scores: ['s1', 's2-extra', 's3-extra'], note: 'note-a' }] },
+  }).bodyHtml;
+  assert.match(h, /<tr><td>O<\/td><td>s1<\/td><td>note-a<\/td><\/tr>/);
+  assert.doesNotMatch(h, /s2-extra/); // the overflow score never displaces the note
+});
 test('comparison escapes a malicious note (no raw tag survives)', () => {
   const h = comparison({
     meta: META3,
