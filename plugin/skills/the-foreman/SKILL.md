@@ -203,7 +203,13 @@ track, code/diff, pills — plus the six figure blocks `topo`, `deltaRow`, `duel
 `dotMatrix`, `ladder`). The full render catalog + every block/type ledger shape live in
 `references/ledger.schema.md` (and `gate-contract.mjs --print`). The renderer inlines the stylesheet +
 the Gate Board page script into one CSP-safe page, **also writes the portable Markdown twin**
-(`<name>.md`, step 4), and prints `{outPath, bytes, mdPath, mdBytes}`.
+(`<name>.md`, step 4) **and a browser-ready `<stem>.local.html` sibling**, and prints the full return
+`{outPath, bytes, mdPath, mdBytes, localPath, localBytes}`. The two HTML files are NOT interchangeable:
+`<outPath>` is the **hosted-artifact file** — shell-less by contract (no doctype/html/head/body wrapper;
+the Artifact host supplies them) — while `localPath` (`<stem>.local.html`) is the **standards-mode
+sibling** wrapping the same scanned content in a complete document, which `open-artifact.mjs` prefers
+for local browser opens. **When stating where the file lives for opening in a browser, surface the
+LOCAL path**; `<outPath>` exists for the `Artifact` publish (step 3).
 
 **Authoring contract** (design §7 — hard rules for the agent writing the ledger): statement
 headlines in plain English, ≤ ~12 words, no `model@effort` or env-var notation in a statement
@@ -228,11 +234,14 @@ browser tab so the human still sees it:**
 node <skill-dir>/references/open-artifact.mjs <outPath>
 ```
 
-That opens `<outPath>` in **Google Chrome** (falling back to the OS default browser) — the page is
-self-contained, so it renders identically to the hosted Artifact, just without the shareable URL +
-same-URL in-place update (a re-render reopens/refreshes the tab). **Also** state the local path
-`<outPath>` (+ the `.md` twin, step 4) so it's recoverable if there is no browser (when every opener
-fails, `open-artifact.mjs` exits non-zero — just surface the path). Publishing only *hosts* a finished
+That opens the board in **Google Chrome** (falling back to the OS default browser), **preferring the
+`<stem>.local.html` sibling** render.mjs wrote next to `<outPath>` (the `localPath` in the render
+output — the standards-mode document a local browser needs; `<outPath>` itself stays shell-less for
+the hosted publish, step 2). The page is self-contained, so it renders identically to the hosted
+Artifact, just without the shareable URL + same-URL in-place update (a re-render reopens/refreshes
+the tab). **Also** state where the file lives — the **LOCAL path** (`<stem>.local.html`) for browser
+opening, plus the `.md` twin (step 4) — so it's recoverable if there is no browser (when every opener
+fails, `open-artifact.mjs` exits non-zero — just surface the local path). Publishing only *hosts* a finished
 artifact at a URL; its absence changes the surfacing (a Chrome tab + local path instead of a hosted
 URL), **never the engine and never the gate (§7)**. (Contrast `AskUserQuestion`, which *is* the gate:
 if THAT is unavailable you do NOT proceed — you open a file-based escalation (`escalation.mjs`, §7/ADR-006)
