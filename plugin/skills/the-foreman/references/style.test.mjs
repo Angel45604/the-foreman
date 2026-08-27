@@ -60,6 +60,18 @@ test('one-rule oracle mutation checks: forbidden fills and borders are caught', 
   assert.ok(oracleOffenders(css + '\n.evil{BACKGROUND: #ff0000;}').length > 0); // case-smuggled property
 });
 
+// ---- prepr round 1: the font payloads live in references/fonts/, not here ----
+// The sheet carries PLACEHOLDERS in the @font-face src; render.mjs base64-embeds
+// references/fonts/*.woff2 into them at assembly (fail-loud on a missing
+// placeholder or unreadable font file). The stylesheet itself stays reviewable.
+test('style.css holds font placeholders + the OFL notice, and NO base64 payload', () => {
+  assert.match(css, /url\(data:font\/woff2;base64,__FONT_SORA_B64__\) format\('woff2'\)/);
+  assert.match(css, /url\(data:font\/woff2;base64,__FONT_NUNITO_B64__\) format\('woff2'\)/);
+  assert.match(css, /SIL Open Font License/i);     // the license notice still rides in the sheet
+  assert.doesNotMatch(css, /[A-Za-z0-9+/]{200,}/); // no base64 payload anywhere in the sheet
+  assert.ok(css.length < 60000, `style.css stays reviewable (${css.length} bytes)`);
+});
+
 test('embedded fonts: both faces declared with the portfolio weight ranges', () => {
   assert.match(css, /font-family: 'Sora';\s*\n\s*src: url\(data:font\/woff2;base64,/);
   assert.match(css, /font-family: 'Nunito Sans';\s*\n\s*src: url\(data:font\/woff2;base64,/);

@@ -22,6 +22,13 @@ test('renders a self-contained HTML file with style + engine inlined; no externa
   assert.doesNotMatch(html, new RegExp('<svg width="0"|#i-cog|slide-' + 'engine'));
   assert.doesNotMatch(html, /<link|<script src=|https?:\/\//);
 });
+test('the RENDERED page embeds BOTH real font payloads (no placeholder text survives assembly)', async () => {
+  const f = fixture(base); await render(f.ledgerPath,'planDeck',f.out);
+  const html = readFileSync(f.out,'utf8');
+  assert.doesNotMatch(html, /__FONT_/); // the style.css placeholders are substituted at assembly
+  const payloads = html.match(/url\(data:font\/woff2;base64,[A-Za-z0-9+/=]{10000,}\) format\('woff2'\)/g) || [];
+  assert.equal(payloads.length, 2, 'both woff2 payloads embedded');
+});
 test('escapes <title> (no injection via meta.title)', async () => {
   const f = fixture({ ...base, meta:{ ...base.meta, title:'</title><script>alert(1)</script>' } });
   await render(f.ledgerPath,'planDeck',f.out); const html = readFileSync(f.out,'utf8');

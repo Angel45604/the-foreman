@@ -21,6 +21,34 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // (bare :root, media-guarded dark, stamped dark) consume via var(--user-ac, …).
 const HOUSE_DEFAULT_ACCENTS = new Set([0x009acc, 0x5b7cfa]);
 
+// Font embedding (prepr round 1): style.css ships PLACEHOLDERS in its
+// @font-face src so the stylesheet stays reviewable; the actual woff2 payloads
+// live as files under references/fonts/ and are base64-embedded here at
+// assembly time. The substitution FAILS LOUDLY — a missing placeholder or an
+// unreadable font file must never produce a quietly font-less page. The base64
+// alphabet contains no `$`, so String.replace needs no replacement escaping.
+const FONT_PLACEHOLDERS = [
+  ['__FONT_SORA_B64__', 'sora-latin.woff2'],
+  ['__FONT_NUNITO_B64__', 'nunito-sans-latin.woff2'],
+];
+
+async function loadCss() {
+  let css = await readFile(join(HERE, 'style.css'), 'utf8');
+  for (const [placeholder, file] of FONT_PLACEHOLDERS) {
+    if (!css.includes(placeholder)) {
+      throw new Error(`style.css is missing the font placeholder ${placeholder}`);
+    }
+    let b64;
+    try {
+      b64 = (await readFile(join(HERE, 'fonts', file))).toString('base64');
+    } catch {
+      throw new Error(`font file unreadable: fonts/${file}`);
+    }
+    css = css.replace(placeholder, b64);
+  }
+  return css;
+}
+
 export async function render(ledgerPath, type, outPath) {
   const ledger = JSON.parse(await readFile(ledgerPath, 'utf8'));
   const make = templates[type];
@@ -31,7 +59,7 @@ export async function render(ledgerPath, type, outPath) {
   // and the messages themselves are rule+location only (see lint.mjs).
   const lintWarnings = lintLedger(ledger, type);
   const { title, bodyHtml } = make(ledger);
-  const css = await readFile(join(HERE, 'style.css'), 'utf8');
+  const css = await loadCss(); // style.css + the embedded font payloads (fail-loud)
   const js = await readFile(join(HERE, 'gate-board.js'), 'utf8');
   // Honor ledger.meta.accent — STRICT hex only (prevents CSS injection); a
   // house-default value (see HOUSE_DEFAULT_ACCENTS) emits nothing, so the
