@@ -1049,14 +1049,43 @@ test('verdictFan single fate: --fatecols:1, NO crossbar (nothing to span), trunk
   assert.deepEqual([...fan.matchAll(/class="fan__d" style="--fx:(\d+)"/g)].map((m) => m[1]), ['0']);
 });
 
-test('verdictFan guards --fatecols into 1..6 (0 fates => 1; 9 fates => 6 columns, 6 drops, 9 cells)', () => {
+test('verdictFan guards --fatecols into 1..6 (0 fates => 1; 9 fates => 6 columns, 6 drops, 6 capped cells)', () => {
   const zero = mkFan(0);
   assert.match(zero, /style="--fatecols:1"/);
   assert.equal((fanOf(zero).match(/class="fan__x"/g) || []).length, 0);
   const nine = mkFan(9);
   assert.match(nine, /style="--fatecols:6"/);
   assert.equal((fanOf(nine).match(/class="fan__d"/g) || []).length, 6);
-  assert.equal((nine.match(/class="fate fate--ok"/g) || []).length, 9, 'every fate cell still renders');
+  assert.equal((nine.match(/class="fate fate--ok"/g) || []).length, 5, 'the first five render as-is');
+  assert.match(nine, /<b>4<\/b><span>\+4 more<\/span>/, 'the sixth cell aggregates the remaining four (count 1 each)');
+});
+
+// ---- prepr blocker: fates beyond six rendered cards with NO branch ----
+// --fatecols and the drop set are guarded into 1..6, so a 7th+ fate cell
+// wrapped beneath the fan without a connector — a card whose branch simply
+// did not exist. The shipped rule caps the RENDERED cells at 6: the first
+// five render as-is and a sixth AGGREGATE cell absorbs the rest (count = the
+// safeNum'd sum of the remaining counts, label '+N more' over the engine-
+// derived remainder count, variant 'x') — one branch per rendered fate ALWAYS
+// holds. The twin still lists every fate, so nothing is lost from the record.
+test('verdictFan caps rendered fates at 6: the sixth cell aggregates the remainder as +N more', () => {
+  const seven = Array.from({ length: 7 }, (_, i) => ({ count: i + 1, label: `f${i}`, variant: 'ok' }));
+  const html = BLOCKS.verdictFan.html({ type: 'verdictFan', verdict: 'V', fates: seven });
+  assert.match(html, /style="--fatecols:6"/);
+  assert.equal((fanOf(html).match(/class="fan__d"/g) || []).length, 6, 'one drop per rendered cell');
+  assert.equal((html.match(/class="fate fate--/g) || []).length, 6, 'exactly six cells render');
+  assert.equal((html.match(/class="fate fate--ok"/g) || []).length, 5, 'the first five render as-is');
+  // the sixth is the aggregate: variant x, count = 6 + 7 = 13 (13 dots), label '+2 more'
+  assert.match(html, /class="fate fate--x"><span class="fate__dots" aria-hidden="true">(?:<i><\/i>){13}<\/span><b>13<\/b><span>\+2 more<\/span>/);
+  assert.ok(!html.includes('f5<') && !html.includes('f6<'), 'the collapsed fates render no cells of their own');
+  // exactly six fates stay untouched — no spurious aggregate
+  const six = mkFan(6);
+  assert.equal((six.match(/class="fate fate--ok"/g) || []).length, 6);
+  assert.ok(!six.includes('more'));
+  // the twin is the full record: every fate listed, no aggregate line
+  const md = BLOCKS.verdictFan.md({ type: 'verdictFan', verdict: 'V', fates: seven });
+  for (let i = 0; i < 7; i++) assert.match(md, new RegExp(`^- ${i + 1} — f${i}$`, 'm'));
+  assert.ok(!md.includes('more'));
 });
 
 // ============================================================================

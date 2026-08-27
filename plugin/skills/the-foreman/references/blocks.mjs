@@ -538,7 +538,22 @@ const BLOCKS = {
   // the same discipline as phaseSteps' --stopcols.
   verdictFan: {
     html(block) {
-      const fates = Array.isArray(block?.fates) ? block.fates : [];
+      const all = Array.isArray(block?.fates) ? block.fates : [];
+      // Fate cap (prepr blocker): --fatecols and the drop set are guarded into
+      // 1..6, so a 7th+ fate used to render a card with NO branch (it wrapped
+      // beneath the fan). The RENDERED cells therefore cap at 6: the first
+      // five render as-is and a sixth AGGREGATE cell absorbs the rest — count
+      // = the safeNum'd sum of the remaining counts, label '+N more' (N is the
+      // engine-derived remainder count, never ledger text), variant 'x' — so
+      // one branch per rendered fate ALWAYS holds. The twin (md below) still
+      // lists every fate; the cap is documented in ledger.schema.md.
+      const fates = all.length > 6
+        ? [...all.slice(0, 5), {
+            count: all.slice(5).reduce((sum, f) => sum + safeNum(f?.count, { min: 0, fallback: 0 }), 0),
+            label: `+${all.length - 5} more`,
+            variant: 'x',
+          }]
+        : all;
       const cells = fates.map((f) => {
         const v = fateVariant(f?.variant);
         const n = Math.round(safeNum(f?.count, { min: 0, max: 24, fallback: 0 }));

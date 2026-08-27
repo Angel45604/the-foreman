@@ -269,7 +269,11 @@ meant to be a unit's dominant visual (any of them also works inside `blocks[]`):
   `**value** label vs **value** label` + a flatline line.
 - **`verdictFan`** — `{ "type":"verdictFan", "verdict":string, "fates":[{ "count":number, "label":string, "variant"?:"ok"|"warn"|"x" }] }`.
   A verdict chip fanning into dot clusters, one per fate (`count` is `safeNum`'d; the dot repetition
-  is capped; `variant` is allowlisted, else `x`). Twin: bold verdict + `- count — label` lines.
+  is capped; `variant` is allowlisted, else `x`). The fan renders at most SIX fate cells — the fan
+  geometry has six branches, so with more than six fates the first five render as-is and a sixth
+  aggregate cell absorbs the rest (count = the sum of the remaining counts, label `+N more`,
+  variant `x`), keeping one branch per rendered cell. Twin: bold verdict + `- count — label` lines
+  — ALWAYS the full fate list, aggregation is HTML-only.
 - **`dotMatrix`** — `{ "type":"dotMatrix", "columns":[string], "rows":[{ "label":string, "sub"?:string, "marks":[boolean] }] }`.
   A recall-style dot matrix with full ARIA table semantics and visually-hidden yes/no per mark.
   Twin: a GitHub table of yes/— marks.
