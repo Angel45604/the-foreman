@@ -127,9 +127,13 @@ if (isMain(import.meta.url)) {
   const root = join(homedir(), '.claude', 'the-foreman');
   if (!existsSync(root)) {
     console.log(`no ledger corpus at ${root} — nothing to sweep`);
-    process.exit(0);
+  } else {
+    const { checked, failures } = sweep(root);
+    console.log(`swept ${checked} ledgers, ${failures} FAIL`);
+    // process.exitCode, never an explicit exit call: exiting right after
+    // console.log can truncate piped stdout mid-flush (the pipe's buffered
+    // lines are dropped). Setting exitCode lets Node drain stdout and exit
+    // naturally with the same status. Pinned by backcompat.test.mjs.
+    process.exitCode = failures > 0 ? 1 : 0;
   }
-  const { checked, failures } = sweep(root);
-  console.log(`swept ${checked} ledgers, ${failures} FAIL`);
-  process.exit(failures > 0 ? 1 : 0);
 }

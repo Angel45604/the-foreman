@@ -179,6 +179,17 @@ test('sweep: an unreadable subdirectory reports FAIL discovery-error and the swe
   }
 });
 
+// ---- prepr blocker: the CLI epilogue must let Node exit naturally ----
+// process.exit() immediately after console.log can truncate piped stdout (the
+// stream's write buffer is dropped mid-flush on a pipe). The epilogue sets
+// process.exitCode and falls off the end instead — Node drains stdout and then
+// exits on its own with the same status.
+test('sweep CLI epilogue: process.exitCode only — no process.exit() call anywhere', () => {
+  const src = readFileSync(new URL('./backcompat-sweep.mjs', import.meta.url), 'utf8');
+  assert.ok(!src.includes('process.exit('), 'process.exit() truncates piped stdout — set process.exitCode and exit naturally');
+  assert.ok(src.includes('process.exitCode'), 'the failure count must still drive a non-zero exit status');
+});
+
 test('sweep: recurses into subdirectories and PROVES no write — every swept byte identical after', () => {
   // The WHOLE fixture corpus, spread across nesting depths, then a byte-level
   // no-write proof: a listing diff alone would miss an in-place rewrite, so
