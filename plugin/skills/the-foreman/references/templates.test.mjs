@@ -269,7 +269,7 @@ test('phaseTracker: stops figure + donut VISIBLE, note as the ask (Your call cha
 });
 test('phaseTracker without progress/note: Progress label, no donut, NO ask strip', () => {
   const h = phaseTracker({ meta: META3, phaseTracker: { phases: [{ label: 'P1', status: 'done' }] } }).bodyHtml;
-  assert.match(h, /class="stops"/);
+  assert.match(h, /class="stops stops--solo"/);    // one phase = a solo track (rail hidden on desktop)
   assert.deepEqual(chipIds(h), ['top', 'progress']);
   assert.doesNotMatch(h, /class="ring"/);       // no donut
   assert.doesNotMatch(h, /class="ask"/);        // no ask source => no strip (never a dead link)

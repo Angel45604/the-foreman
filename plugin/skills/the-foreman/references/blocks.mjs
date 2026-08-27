@@ -355,6 +355,15 @@ const BLOCKS = {
   phaseSteps: {
     html(block) {
       const steps = Array.isArray(block?.steps) ? block.steps : [];
+      // Desktop column count rides a custom prop (style.css sizes the grid
+      // columns and the marker-center rail insets from it — the layout fits ANY
+      // step count, not just the reference's five). The value is an
+      // ENGINE-DERIVED integer only — steps.length is a non-negative array
+      // length, floored at 1 so the CSS division can never see 0 — never
+      // ledger text. A sub-2-step track gets .stops--solo, hiding the rail
+      // (it needs two marker centers to span).
+      const cols = Math.max(1, steps.length);
+      const solo = steps.length < 2 ? ' stops--solo' : '';
       const items = steps
         .map((s, i) => {
           const status = phaseStatus(s?.status); // always one of the allowlist
@@ -364,7 +373,7 @@ const BLOCKS = {
             + `<span class="stop__sign">${STOP_SIGN[status]}</span></div></li>`;
         })
         .join('');
-      return `<ol class="stops">${items}</ol>`;
+      return `<ol class="stops${solo}" style="--stopcols:${cols}">${items}</ol>`;
     },
     md(block) {
       const steps = Array.isArray(block?.steps) ? block.steps : [];

@@ -569,7 +569,7 @@ test('phaseSteps HTML emits an <ol class="stops"> of .stop items with the status
     { label: 'Testing', status: 'active' },
     { label: 'Ship', status: 'pending' },
   ] });
-  assert.match(html, /^<ol class="stops">/);
+  assert.match(html, /^<ol class="stops" style="--stopcols:3">/);
   assert.match(html, /<\/ol>$/);
   assert.equal((html.match(/<li class="stop">/g) || []).length, 3, 'one .stop li per step');
   assert.equal((html.match(/class="stop__mark" aria-hidden="true"/g) || []).length, 3, 'a decorative mark per stop');
@@ -638,8 +638,9 @@ test('phaseSteps HTML renders an escaped body <p> when a step has detail', () =>
 test('phaseSteps HTML omits the body <p> when a step has no detail (byte-identical stop)', () => {
   const html = BLOCKS.phaseSteps.html({ type: 'phaseSteps', steps: [{ label: 'Ship', status: 'pending' }] });
   assert.doesNotMatch(html, /<p>/);
-  // the exact stop shape (pins the full Gate Board markup for one pending step)
-  assert.equal(html, '<ol class="stops"><li class="stop"><span class="stop__mark" aria-hidden="true"><i></i><u></u></span>'
+  // the exact stop shape (pins the full Gate Board markup for one pending step —
+  // a single step is a solo track: --stopcols floors at 1, the rail hides)
+  assert.equal(html, '<ol class="stops stops--solo" style="--stopcols:1"><li class="stop"><span class="stop__mark" aria-hidden="true"><i></i><u></u></span>'
     + '<div class="stop__body"><span class="stop__n">1</span><b>Ship</b><span class="stop__sign">pending</span></div></li></ol>');
 });
 
@@ -667,6 +668,24 @@ test('phaseSteps MD escapes a malicious detail (inert, no raw tag)', () => {
   const md = BLOCKS.phaseSteps.md({ type: 'phaseSteps', steps: [{ label: 'a', status: 'done', detail: '<img onerror=x>' }] });
   assert.doesNotMatch(md, /<img onerror=x>/);
   assert.match(md, /&lt;img/);
+});
+
+// ---- prepr blocker 2: the desktop stops layout must fit ANY step count ----
+// The renderer emits an engine-derived --stopcols custom prop (style.css sizes
+// the desktop grid columns and the rail insets from it) and marks a sub-2-step
+// track .stops--solo, so the marker-to-marker rail (which needs two marker
+// centers to span) hides instead of floating beside a lone stop.
+test('phaseSteps pins --stopcols:N for 1/3/5 steps and stops--solo only below 2', () => {
+  const mk = (n) => BLOCKS.phaseSteps.html({ type: 'phaseSteps',
+    steps: Array.from({ length: n }, (_, i) => ({ label: `S${i + 1}` })) });
+  assert.match(mk(1), /^<ol class="stops stops--solo" style="--stopcols:1">/);
+  assert.match(mk(3), /^<ol class="stops" style="--stopcols:3">/);
+  assert.match(mk(5), /^<ol class="stops" style="--stopcols:5">/);
+  assert.doesNotMatch(mk(2), /stops--solo/);           // two markers = a real rail
+  assert.match(mk(2), /style="--stopcols:2"/);
+  // an empty track floors the engine-derived count at 1 (the CSS division can
+  // never see 0) and is solo
+  assert.match(mk(0), /^<ol class="stops stops--solo" style="--stopcols:1"><\/ol>$/);
 });
 
 test('phaseSteps HTML/MD render an empty-but-valid container for empty / non-array steps (never throws)', () => {

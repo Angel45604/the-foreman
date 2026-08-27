@@ -512,8 +512,13 @@ section[id]{ scroll-margin-top: 86px; }
 .stop__body p{ font-size: 11.5px; line-height: 1.5; color: var(--sb); text-wrap: pretty; }
 .stop__sign{ padding: 5px 10px; border-radius: 9px; background: var(--bg); box-shadow: var(--inm); font-size: 9.5px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; color: var(--sb); }
 @media (min-width: 900px){
-  .stops{ grid-template-columns: repeat(5, 1fr); gap: 14px; padding-top: 34px; }
-  .stops::before{ content: ""; position: absolute; left: 9%; right: 9%; top: 44px; height: 6px; border-radius: 99px; background: var(--bg); box-shadow: var(--ins); }
+  /* the desktop track sizes from --stopcols (renderer-emitted, engine-derived
+     integer; 5 = the reference default): N equal columns, rail insets of half
+     a column each so the rail always spans marker-center to marker-center. A
+     solo track has no second marker — the rail hides. */
+  .stops{ grid-template-columns: repeat(var(--stopcols, 5), 1fr); gap: 14px; padding-top: 34px; }
+  .stops::before{ content: ""; position: absolute; left: calc(50% / var(--stopcols, 5)); right: calc(50% / var(--stopcols, 5)); top: 44px; height: 6px; border-radius: 99px; background: var(--bg); box-shadow: var(--ins); }
+  .stops--solo::before{ display: none; }
   .stop{ display: flex; flex-direction: column; align-items: center; gap: 11px; padding: 0 4px; text-align: center; }
   .stop__mark{ display: contents; }
   .stop__mark i{ margin-top: 0; width: 26px; height: 26px; }

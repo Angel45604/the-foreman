@@ -145,6 +145,30 @@ test('long liveRun stat values wrap: no nowrap remains on .tile b / .well__v (en
   }
 });
 
+// ---- prepr blocker 2: the desktop stops track sizes from --stopcols ----
+// phaseSteps accepts any step count, so the desktop grid and the rail insets
+// derive from the renderer-emitted --stopcols var (fallback 5 = the reference
+// default): N equal columns, insets of half a column each so the rail always
+// spans marker-center to marker-center, and a solo track hides the rail.
+test('desktop .stops grid + rail insets are --stopcols-driven; the solo track hides the rail', () => {
+  const rules = parseRules(css);
+  const gtc = rules.filter((r) => r.selector === '.stops')
+    .flatMap((r) => r.declarations.filter((d) => d.prop === 'grid-template-columns').map((d) => d.value));
+  assert.deepEqual([...gtc].sort(), ['1fr', 'repeat(var(--stopcols, 5), 1fr)'].sort(),
+    'mobile keeps the single-column spine; desktop repeats var(--stopcols, 5)');
+  const rail = rules.filter((r) => r.selector === '.stops::before');
+  assert.equal(rail.length, 1, 'exactly one rail rule');
+  const decls = Object.fromEntries(rail[0].declarations.map((d) => [d.prop, d.value]));
+  assert.equal(decls.left, 'calc(50% / var(--stopcols, 5))', 'left inset = half a column (marker center)');
+  assert.equal(decls.right, 'calc(50% / var(--stopcols, 5))', 'right inset = half a column (marker center)');
+  const solo = rules.filter((r) => r.selector === '.stops--solo::before');
+  assert.equal(solo.length, 1, 'exactly one solo-hide rule');
+  assert.deepEqual(solo[0].declarations, [{ prop: 'display', value: 'none' }]);
+  // the hardcoded five-wide layout must not survive anywhere in the sheet
+  assert.doesNotMatch(css, /repeat\(5, 1fr\)/);
+  assert.doesNotMatch(css, /: 9%/);
+});
+
 test('rail, unit, drawer, and every figure family have styles', () => {
   const selectors = parseRules(css).map((r) => r.selector.trim());
   for (const cls of ['.nav__track', '.nav__chip', '.tiles', '.ask', '.unit', '.drawer',
