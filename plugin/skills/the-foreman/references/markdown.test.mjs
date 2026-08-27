@@ -500,6 +500,40 @@ test('twin askShape parity: a malformed meta.ask (plain string) falls through to
   assert.match(md, /^> \(Codex\)$/m);
 });
 
+// ---- prepr blocker 1: the twin's decisionShape mirror — a malformed decision
+// derives NO ask, and an options-less malformed decision serializes NO orphan
+// evidence block; options (when present) still serialize so nothing is lost.
+for (const [label, decision] of [['empty object', {}], ['array', []],
+  ['empty-string question', { question: '' }], ['whitespace question', { question: '  ' }]]) {
+  test(`twin decisionShape: ${label} decision derives NO ask and NO empty Decision block`, () => {
+    const md = toMarkdown({ meta: META, decision }, 'decisionCard').markdown;
+    assert.doesNotMatch(md, /\*\*The ask:\*\*/);             // no derived ask lines
+    assert.doesNotMatch(md, /\*\*Recommendation:\*\*/);
+    assert.doesNotMatch(md, /\*\*Decision:\*\*/);            // no orphan empty evidence block
+  });
+  test(`twin decisionShape parity on planDeck: ${label} decision derives NO ask, NO Your call chapter`, () => {
+    const md = toMarkdown({ meta: META, slides: [], decision }, 'planDeck').markdown;
+    assert.doesNotMatch(md, /\*\*The ask:\*\*/);
+    assert.doesNotMatch(md, /^## Your call$/m);
+    assert.doesNotMatch(md, /\*\*Decision:\*\*/);
+  });
+}
+test('twin options-only decision (decisionCard): options serialize as evidence, no derived ask', () => {
+  const md = toMarkdown({ meta: META,
+    decision: { options: [{ label: 'A', pros: 'p', cons: 'c', risk: 'low' }], recommendation: 'A' } }, 'decisionCard').markdown;
+  assert.doesNotMatch(md, /\*\*The ask:\*\*/);
+  assert.doesNotMatch(md, /\*\*Recommendation:\*\*/);        // rec rides askToMarkdown only — no ask, no line
+  assert.match(md, /^- \*\*Option A\*\* — Pros: p · Cons: c · Risk: low$/m); // options kept
+});
+test('twin options-only decision (planDeck): Decision-headed evidence chapter, never Your call', () => {
+  const md = toMarkdown({ meta: META, slides: [],
+    decision: { options: [{ label: 'A', pros: 'p', cons: 'c', risk: 'low' }] } }, 'planDeck').markdown;
+  assert.doesNotMatch(md, /\*\*The ask:\*\*/);
+  assert.doesNotMatch(md, /^## Your call$/m);                // no ask => the chapter keeps a content label
+  assert.match(md, /^## Decision$/m);
+  assert.match(md, /^- \*\*Option A\*\*/m);
+});
+
 test('twin escapes injection in verdict/lede/keyStats/ask fields', () => {
   const md = toMarkdown({
     meta: {

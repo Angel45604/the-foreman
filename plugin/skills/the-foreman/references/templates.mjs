@@ -48,11 +48,24 @@ function heroOf(meta, fallbackVerdict = '') {
 const askShape = (a) => (a && typeof a === 'object' && !Array.isArray(a)
   && typeof a.headline === 'string' && a.headline.trim() !== '' ? a : null);
 
+// decisionShape is askShape's decision-side twin (same discipline): a decision
+// derives an ask ONLY as a non-array object with a NON-EMPTY string question.
+// Any other truthy ledger.decision ({}, an array, {question:''}, options with
+// no question) used to satisfy a bare `if (d)` check and derive an ask with an
+// EMPTY headline — a blank hard-gate strip, while lint counted the ask as
+// present. A decision failing this gate contributes NO derived ask; its option
+// cards (when any) still render as evidence in a content-labeled chapter, so
+// nothing is lost. MIRRORED in markdown.mjs (its module-local copy — two
+// copies by design; keep the two in lockstep), and lint.mjs's
+// malformed-decision rule rides the same predicate.
+const decisionShape = (d) => (d && typeof d === 'object' && !Array.isArray(d)
+  && typeof d.question === 'string' && d.question.trim() !== '' ? d : null);
+
 function askOf(ledger) {
   const shaped = askShape(ledger?.meta?.ask);
   if (shaped) return shaped;
-  const d = ledger?.decision;
-  if (d) return { headline: d.question ?? '', recommendation: d.recommendation, recommendedBy: d.recommendedBy };
+  const d = decisionShape(ledger?.decision); // decisionShape guarantees a non-empty question
+  if (d) return { headline: d.question, recommendation: d.recommendation, recommendedBy: d.recommendedBy };
   return null;
 }
 
@@ -215,12 +228,20 @@ export function planDeck(ledger) {
   // effective ask exists — then allocate ids ONCE. gateBoard re-derives the
   // same ids from the same list, so the strip's targetId always resolves.
   const effectiveAsk = askOf(ledger);
+  // Content preservation (decisionShape): with an effective ask the decision's
+  // option cards ride the Your call chapter as evidence (below). With NO
+  // effective ask the decision is malformed-or-absent by construction — a
+  // malformed decision that still carries options gets a content-labeled
+  // Decision chapter of its own, so its options are never silently dropped.
+  const orphanOptionsHtml = effectiveAsk ? '' : optionCards(ledger?.decision);
   const labels = groups.map((g) => g.label);
-  const ids = allocateIds(effectiveAsk ? [...labels, 'Your call'] : labels);
+  const tailLabel = effectiveAsk ? 'Your call' : (orphanOptionsHtml ? 'Decision' : null);
+  const ids = allocateIds(tailLabel ? [...labels, tailLabel] : labels);
   const askTargetId = effectiveAsk ? ids[ids.length - 1] : null;
 
   const chapters = groups.map((g) => ({ label: g.label, unitsHtml: g.slides.map(slideUnit).join('') }));
   if (effectiveAsk) chapters.push({ label: 'Your call', unitsHtml: askChapterHtml(effectiveAsk, ledger?.decision) });
+  else if (orphanOptionsHtml) chapters.push({ label: 'Decision', unitsHtml: `<article class="unit">${orphanOptionsHtml}</article>` });
 
   const sources = Array.isArray(ledger?.findings?.sources) ? ledger.findings.sources : [];
 
@@ -264,11 +285,17 @@ export function brief(ledger) {
 // single attributed `.rec` strip.
 export function decisionCard(ledger) {
   const d = ledger?.decision ?? null;
+  const shaped = decisionShape(d);
+  // Content preservation (decisionShape): a malformed decision derives NO ask.
+  // Its option cards still render exactly once — as Your call evidence when a
+  // well-shaped meta.ask exists (singleBoard passes `decision` through), else
+  // VISIBLE inside the content-labeled Decision chapter here.
+  const orphanOptionsHtml = !shaped && !askShape(ledger?.meta?.ask) ? optionCards(d) : '';
   return singleBoard(ledger, {
     fallbackTitle: 'Decision',
     contentLabel: 'Decision',
-    unitHtml: '',
-    derivedAsk: d ? { headline: d.question ?? '', recommendation: d.recommendation, recommendedBy: d.recommendedBy } : null,
+    unitHtml: orphanOptionsHtml ? `<article class="unit">${orphanOptionsHtml}</article>` : '',
+    derivedAsk: shaped ? { headline: shaped.question, recommendation: shaped.recommendation, recommendedBy: shaped.recommendedBy } : null,
     decision: d,
   });
 }

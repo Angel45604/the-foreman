@@ -564,3 +564,56 @@ test('note-only meta.ask does not smuggle its note into the derived ask (planDec
   assert.match(bodyHtml, /Q\?/);                             // derived ask headline
   assert.doesNotMatch(bodyHtml, /orphan note/);              // the malformed ask participates not at all
 });
+
+// ---- prepr blocker 1: decisionShape — a malformed decision derives NO ask ----
+// Any truthy ledger.decision ({}, an array, a blank/whitespace/missing question)
+// used to satisfy the bare `if (d)` check and derive an EMPTY-headline ask —
+// rendering a blank hard-gate strip. Each shape must contribute NO derived ask;
+// an options-carrying malformed decision keeps its options VISIBLE in a
+// content-labeled chapter (nothing lost).
+const MALFORMED_DECISIONS = [
+  ['empty object', {}],
+  ['array', []],
+  ['empty-string question', { question: '' }],
+  ['whitespace question', { question: '  ' }],
+];
+for (const [label, decision] of MALFORMED_DECISIONS) {
+  test(`${label} decision derives NO ask on decisionCard: content label, no strip, no dead link`, () => {
+    const h = decisionCard({ meta: { title: 'D' }, decision }).bodyHtml;
+    assert.deepEqual(chipIds(h), ['top', 'decision']);       // content label, never Your call
+    assert.doesNotMatch(h, /class="ask"/);                   // no empty ask strip ever renders
+    assert.doesNotMatch(h, /<b><\/b>/);                      // never an empty headline anywhere
+    assert.doesNotMatch(h, /class="rec"/);                   // no orphan recommendation strip
+  });
+  test(`${label} decision derives NO ask on planDeck either (no Your call chapter)`, () => {
+    const h = planDeck({ meta: { title: 't' }, slides: [{ heading: 'H', chapter: 'Work' }], decision }).bodyHtml;
+    assert.deepEqual(chipIds(h), ['top', 'work']);
+    assert.doesNotMatch(h, /class="ask"/);
+    assert.doesNotMatch(h, /id="your-call"/);
+  });
+}
+test('options-only decision (no question) on decisionCard: no ask, options VISIBLE in the Decision chapter', () => {
+  const h = decisionCard({ meta: { title: 'D' },
+    decision: { options: [{ label: 'A', pros: 'pro text', cons: 'con text', risk: 'low' }], recommendation: 'A' } }).bodyHtml;
+  assert.deepEqual(chipIds(h), ['top', 'decision']);         // content-labeled chapter
+  assert.doesNotMatch(h, /class="ask"/);                     // no empty ask strip
+  const vis = stripDetails(h);
+  assert.match(vis, /class="opts"/);                         // option cards render, visible
+  assert.match(vis, /class="opt__rec"/);                     // recommended marker still keys off d.recommendation
+  assert.match(vis, /pro text/);                             // gist visible
+  assert.match(h, /con text/);                               // verbatim cons kept (drawer)
+});
+test('options-only decision on planDeck: options land in a content-labeled Decision chapter (nothing lost)', () => {
+  const h = planDeck({ meta: { title: 't' }, slides: [{ heading: 'H', chapter: 'Work' }],
+    decision: { options: [{ label: 'A', pros: 'pro text' }] } }).bodyHtml;
+  assert.deepEqual(chipIds(h), ['top', 'work', 'decision']);
+  assert.doesNotMatch(h, /class="ask"/);
+  assert.match(stripDetails(h), /class="opts"/);
+});
+test('well-shaped meta.ask + malformed decision: options render ONCE as Your call evidence (no duplicate)', () => {
+  const h = decisionCard({ meta: { title: 'D', ask: { headline: 'Approve?' } },
+    decision: { options: [{ label: 'A', pros: 'pro text' }] } }).bodyHtml;
+  assert.deepEqual(chipIds(h), ['top', 'your-call']);
+  assert.match(h, /Approve\?/);
+  assert.equal((h.match(/class="opts"/g) || []).length, 1);
+});

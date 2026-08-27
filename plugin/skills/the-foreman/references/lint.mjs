@@ -22,6 +22,14 @@ const isObj = (a) => Boolean(a) && typeof a === 'object' && !Array.isArray(a);
 // worth a lint line, since the author probably meant it to override.
 const askShape = (a) => isObj(a) && typeof a.headline === 'string' && a.headline.trim() !== '';
 
+// The SAME decision gate as templates.mjs's decisionShape (mirrored again in
+// markdown.mjs): a decision derives an ask ONLY as a non-array object with a
+// non-empty string question. Anything else present ({}, an array,
+// {question:''}, options with no question) contributes NO derived ask in the
+// renderers (its options render as evidence only) — worth a lint line, since
+// the author probably meant it to drive the gate.
+const decisionShape = (d) => isObj(d) && typeof d.question === 'string' && d.question.trim() !== '';
+
 export function lintLedger(ledger, type) {
   const warnings = [];
   const l = isObj(ledger) ? ledger : {};
@@ -40,12 +48,16 @@ export function lintLedger(ledger, type) {
   // override any type's ask.
   if (meta.ask != null && !askShape(meta.ask)) warnings.push('lint: malformed-ask meta');
 
+  // present-but-malformed decision (fails decisionShape): the renderers derive
+  // NO ask from it — flag it on EVERY type, same posture as malformed-ask.
+  if (l.decision != null && !decisionShape(l.decision)) warnings.push('lint: malformed-decision decision');
+
   if (GATE_TYPES.has(type)) {
     if (!meta.verdict && !meta.subtitle) warnings.push('lint: missing-verdict meta');
     // natural ask source per type, mirroring each template's derivedAsk input
     const naturalAsk = type === 'brief' ? l.win?.next
       : type === 'liveRun' ? l.liveRun
-        : l.decision; // planDeck + decisionCard derive from the decision
+        : decisionShape(l.decision); // planDeck + decisionCard derive ONLY from a well-shaped decision
     if (!askShape(meta.ask) && !naturalAsk) warnings.push('lint: missing-ask meta');
   }
 

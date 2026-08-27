@@ -92,6 +92,28 @@ test('malformed-ask never fires for a well-shaped ask, an absent ask, or a non-g
     ['lint: malformed-ask meta']);
 });
 
+// ---- prepr blocker 1: malformed-decision fires when ledger.decision is present
+// but fails decisionShape (the same gate the renderers ride) ----
+test('malformed-decision fires for {}, [], blank/whitespace/missing question, and non-objects', () => {
+  for (const decision of [{}, [], { question: '' }, { question: '   ' }, { options: [{ label: 'A' }] }, 'q?', 7]) {
+    const out = lintLedger({ meta: { title: 't', verdict: 'v', ask: { headline: 'H' } }, decision }, 'decisionCard');
+    assert.deepEqual(out, ['lint: malformed-decision decision'], JSON.stringify(decision));
+  }
+});
+test('a malformed decision is NOT an ask source: missing-ask fires alongside malformed-decision', () => {
+  assert.deepEqual(lintLedger({ meta: { title: 't', verdict: 'v' }, decision: {} }, 'decisionCard'),
+    ['lint: malformed-decision decision', 'lint: missing-ask meta']);
+  assert.deepEqual(lintLedger({ meta: { title: 't', verdict: 'v' }, decision: { question: '' } }, 'planDeck'),
+    ['lint: malformed-decision decision', 'lint: missing-ask meta']);
+});
+test('malformed-decision never fires for a well-shaped or absent decision, and fires on non-gate types too', () => {
+  assert.deepEqual(lintLedger({ meta: { title: 't', verdict: 'v' }, decision: { question: 'q' } }, 'decisionCard'), []);
+  assert.deepEqual(lintLedger({ meta: { title: 't' } }, 'findings'), []);
+  // present-but-malformed fires on NON-gate types too (same posture as malformed-ask)
+  assert.deepEqual(lintLedger({ meta: { title: 't' }, decision: {}, dashboard: { stats: [] } }, 'dashboard'),
+    ['lint: malformed-decision decision']);
+});
+
 test('keystats-count fires when meta.keyStats is present with length outside 3..5', () => {
   const mk = (n) => ({ meta: { ...clean.meta, keyStats: Array.from({ length: n }, (_, i) => ({ value: String(i), label: 'l' })) }, slides: [] });
   assert.deepEqual(lintLedger(mk(2), 'planDeck'), ['lint: keystats-count meta']);

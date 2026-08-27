@@ -34,6 +34,19 @@ const fav = (ledger) => (ledger?.meta?.favicon ?? '🛠️');
 const askShape = (a) => (a && typeof a === 'object' && !Array.isArray(a)
   && typeof a.headline === 'string' && a.headline.trim() !== '' ? a : null);
 
+// The decision-shape gate, MIRRORED VERBATIM from templates.mjs (its
+// module-local copy — two copies by design; keep the two in lockstep): a
+// decision derives an ask ONLY as a non-array object with a NON-EMPTY string
+// question. Anything else ({}, an array, {question:''}, options with no
+// question) contributes NO derived ask; its options (when any) still serialize
+// as evidence so nothing is lost — parity with the HTML's content-labeled
+// chapter. lint.mjs's malformed-decision rule rides the same predicate.
+const decisionShape = (d) => (d && typeof d === 'object' && !Array.isArray(d)
+  && typeof d.question === 'string' && d.question.trim() !== '' ? d : null);
+
+// A malformed decision still carries renderable evidence when it has options.
+const decisionHasOptions = (d) => Array.isArray(d?.options) && d.options.length > 0;
+
 // The shared ask serializer: recommendation and attribution reach the twin
 // EXCLUSIVELY through here (never via decisionToMarkdown or a per-type line).
 // Each field renders independently when present — no field gates another —
@@ -87,10 +100,11 @@ export function toMarkdown(ledger, type) {
 
   if (type === 'planDeck') {
     // The SAME effective ask templates.mjs askOf computes: meta.ask (askShape-
-    // gated) wins; else the decision derives one.
+    // gated) wins; else a decisionShape-passing decision derives one.
     const d = ledger?.decision;
+    const shapedD = decisionShape(d);
     const effectiveAsk = askShape(meta.ask)
-      ?? (d ? { headline: d.question ?? '', recommendation: d.recommendation, recommendedBy: d.recommendedBy } : null);
+      ?? (shapedD ? { headline: shapedD.question, recommendation: shapedD.recommendation, recommendedBy: shapedD.recommendedBy } : null);
     lines = head(meta, effectiveAsk);
     const slides = Array.isArray(ledger?.slides) ? ledger.slides : [];
     for (const s of slides) {
@@ -117,8 +131,13 @@ export function toMarkdown(ledger, type) {
       if (blocksMd) lines.push('', blocksMd);
     }
     // The decision chapter — evidence only (question + options); the
-    // recommendation already rode in via askToMarkdown above.
-    if (d) lines.push('', '## Your call', '', ...decisionToMarkdown(d));
+    // recommendation already rode in via askToMarkdown above. A malformed
+    // decision serializes ONLY when it has options to preserve, and with no
+    // effective ask the chapter keeps a content label (mirrors templates.mjs
+    // planDeck's content-labeled Decision chapter).
+    if (shapedD || decisionHasOptions(d)) {
+      lines.push('', effectiveAsk ? '## Your call' : '## Decision', '', ...decisionToMarkdown(d));
+    }
     // Evidence-base chips (value bold, then label — the HTML .src chip order).
     const sources = Array.isArray(ledger?.findings?.sources) ? ledger.findings.sources : [];
     if (sources.length) {
@@ -134,10 +153,13 @@ export function toMarkdown(ledger, type) {
     if (win.evidence) lines.push('', `**Evidence:** ${mdEsc(win.evidence)}`);
   } else if (type === 'decisionCard') {
     const d = ledger?.decision ?? null;
+    const shapedD = decisionShape(d);
     const effectiveAsk = askShape(meta.ask)
-      ?? (d ? { headline: d.question ?? '', recommendation: d.recommendation, recommendedBy: d.recommendedBy } : null);
+      ?? (shapedD ? { headline: shapedD.question, recommendation: shapedD.recommendation, recommendedBy: shapedD.recommendedBy } : null);
     lines = head(meta, effectiveAsk);
-    if (d) lines.push('', ...decisionToMarkdown(d));
+    // Evidence serializes for a well-shaped decision, or for a malformed one
+    // that still carries options (nothing lost, no orphan empty block).
+    if (shapedD || decisionHasOptions(d)) lines.push('', ...decisionToMarkdown(d));
   } else if (type === 'liveRun') {
     const lr = ledger?.liveRun ?? {};
     const effectiveAsk = askShape(meta.ask)
