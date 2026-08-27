@@ -3,9 +3,10 @@
 // bodyHtml is the inner markup only; render.mjs wraps it with <title>, the
 // inlined style.css, and the page script.
 //
-// planDeck renders the Gate Board (design.md §3/§6): one scrolling verdict-first
-// page composed via scaffold.mjs. The remaining seven types still compose the
-// legacy deck() until Task 7 moves them onto the same scaffold.
+// ALL EIGHT types render the Gate Board (design.md §3/§6): one scrolling
+// verdict-first page composed via scaffold.mjs — planDeck as the full
+// multi-chapter board, the other seven as single-section boards (singleBoard).
+// The deck()/slide()/card() era is retired (Task 7).
 //
 // SAFETY: esc() escapes every ledger-derived string before it reaches the
 // markup. The "templates HTML-escape ledger text" test pins this — never
@@ -130,50 +131,41 @@ function slideUnit(s) {
   });
 }
 
-// ---- legacy deck markup components (used by the seven pre-Gate-Board types
-// below until Task 7 moves them onto the scaffold; deleted then) ----
-
-// A single deck slide. `on` adds the initial-visible class the slide-engine toggles.
-// `chapter` (optional) stamps an escaped data-section the chapters navigator groups on.
-function slide({ icon = 'i-cog', kicker = '', heading = '', inner = '', num = '', on = false, chapter = '' }) {
-  const sectionAttr = chapter ? ` data-section="${esc(chapter)}"` : '';
-  return `  <section class="slide${on ? ' on' : ''}"${sectionAttr}>
-    <p class="kicker"><svg><use href="#${esc(icon)}"/></svg> ${esc(kicker)}</p>
-    <h2>${esc(heading)}</h2>
-${inner}
-    ${num ? `<span class="ghostnum">${esc(num)}</span>` : ''}
-  </section>`;
+// ---- the single-section Gate Board (Task 7 — the seven non-planDeck types) ----
+//
+// Ask-target + rail contract (design §6): a single-section type renders exactly
+// ONE chapter — the rail is Top + one chip, never a separate content chip and
+// ask chip. When the type has an effective ask (meta.ask ?? its derived ask),
+// that chapter is labeled `Your call` and carries BOTH the type's visible
+// primary content AND the ask; when the ask source is absent, the chapter keeps
+// its content label and no ask strip renders (never a dead link). Ids resolve
+// ONCE via allocateIds; the strip's targetId is the resolved id (gateBoard
+// re-derives the same id from the same single-label list).
+function singleBoard(ledger, { fallbackTitle, contentLabel, unitHtml, derivedAsk = null, decision = null, keyStats = null, sources = [] }) {
+  const meta = ledger?.meta ?? {};
+  const title = String(meta.title ?? fallbackTitle);
+  const effectiveAsk = meta.ask ?? derivedAsk; // the author's meta.ask always wins (design §6)
+  const label = effectiveAsk ? 'Your call' : contentLabel;
+  const [targetId] = allocateIds([label]);
+  const unitsHtml = `${unitHtml}${effectiveAsk ? askChapterHtml(effectiveAsk, decision) : ''}`;
+  const { verdict, lede } = heroOf(meta);
+  const { bodyHtml } = gateBoard({
+    crumb: crumbOf(ledger),
+    title,
+    verdict,
+    lede,
+    // meta.keyStats (author intent) wins over a type's derived stats
+    keyStats: Array.isArray(meta.keyStats) ? meta.keyStats : (keyStats ?? []),
+    ask: effectiveAsk ? { ...effectiveAsk, targetId } : null,
+    chapters: [{ label, unitsHtml }],
+    sources,
+  });
+  return { title, favicon: fav(ledger), bodyHtml };
 }
 
-// A .card tile. variant '' | 'ok' | 'warn' picks the icon-tile color.
-function card({ icon = 'i-cog', title = '', body = '', variant = '' }) {
-  const cls = variant ? ` ${esc(variant)}` : '';
-  return `<div class="card${cls}"><h3><svg><use href="#${esc(icon)}"/></svg> ${esc(title)}</h3><p>${esc(body)}</p></div>`;
-}
-
-function callout(html) {
-  return `<div class="callout">${html}</div>`;
-}
-
-// Wrap a list of slide sections in the deck scaffold the slide-engine drives
-// (#bar, #crumb, #deck/.stage, #ctl with #dots/#pg/#prev/#next).
-function deck(crumb, sections) {
-  return `<div id="bar"></div>
-<div id="crumb">${esc(crumb)}</div>
-<button id="toctgl" aria-label="Chapters" aria-haspopup="true" aria-controls="chapters" aria-expanded="false"><svg><use href="#i-list"/></svg></button>
-<div id="chapters" role="menu"></div>
-
-<div id="deck"><div class="stage">
-
-${sections.join('\n\n')}
-
-</div>
-
-<div id="ctl">
-  <div class="dots" id="dots"></div>
-  <div class="nav"><span class="pg" id="pg"></span><button class="btn" id="prev">&#8249;</button><button class="btn" id="next">&#8250;</button></div>
-</div></div>`;
-}
+// A labeled `.co` callout — the visible-fact carrier for gate-critical prose
+// (the label is an engine-authored literal; the value is esc'd here).
+const coFact = (label, value) => `<div class="co"><b>${label}</b><p>${esc(value ?? '—')}</p></div>`;
 
 // ---- templates ----
 
@@ -222,176 +214,114 @@ export function planDeck(ledger) {
   return { title, favicon: fav(ledger), bodyHtml };
 }
 
-// Win / pause brief: landed + evidence, verified-vs-claimed, the ask.
+// Win / pause brief: `win.landed` VISIBLE as the unit's callout, status pill
+// visible, the ask (win.next) visible beneath; the verbatim evidence in a drawer.
 export function brief(ledger) {
-  const meta = ledger?.meta ?? {};
   const win = ledger?.win ?? {};
-  const title = String(meta.title ?? 'Brief');
   const statusVariant = win.verified ? 'ok' : 'warn';
   const statusLabel = win.verified ? 'Verified' : 'Claimed (not yet verified)';
-
-  const cards = [
-    card({ icon: 'i-check', title: 'What landed', body: win.landed ?? '', variant: 'ok' }),
-    card({ icon: 'i-shield', title: 'Evidence', body: win.evidence ?? '', variant: statusVariant }),
-  ].join('\n      ');
-
-  const inner = `    <div class="grid g2">
-      ${cards}
-    </div>
-    <div class="pillrow">
-      <span class="pill ${statusVariant}">${esc(statusLabel)}</span>
-    </div>
-    ${callout(`<b>The ask:</b> ${esc(win.next ?? '—')}`)}`;
-
-  const section = slide({
-    icon: win.verified ? 'i-check' : 'i-warn',
+  const unitHtml = unit({
     kicker: win.verified ? 'Win' : 'Pause · waiting on you',
-    heading: title,
-    inner,
-    num: '01',
-    on: true,
+    statement: 'What landed',
+    figureHtml: `<div class="co"><p>${esc(win.landed ?? '')}</p></div>`,
+    pillsHtml: renderBlocks([{ type: 'pillRow', pills: [{ label: statusLabel, variant: statusVariant }] }]),
+    drawerLabel: 'Evidence',
+    drawerHtml: win.evidence ? `<p>${esc(win.evidence)}</p>` : '',
   });
-
-  return { title, favicon: fav(ledger), bodyHtml: deck(crumbOf(ledger), [section]) };
+  return singleBoard(ledger, {
+    fallbackTitle: 'Brief',
+    contentLabel: 'What landed',
+    unitHtml,
+    derivedAsk: win.next ? { headline: win.next } : null,
+  });
 }
 
-// Decision card: the question, options with pros/cons/risk, attributed recommendation.
+// Decision card: the ask chapter alone — question visible up top, option cards
+// as evidence (gists + risk chips visible, verbatim pros/cons collapsed), the
+// single attributed `.rec` strip.
 export function decisionCard(ledger) {
-  const meta = ledger?.meta ?? {};
-  const d = ledger?.decision ?? {};
-  const title = String(meta.title ?? 'Decision');
-  const options = Array.isArray(d.options) ? d.options : [];
-
-  const optionCards = options.length
-    ? `    <div class="grid g2">\n      ${options
-        .map((o) =>
-          card({
-            icon: 'i-fork',
-            title: `Option ${o.label ?? ''}`,
-            body: `Pros: ${o.pros ?? '—'} · Cons: ${o.cons ?? '—'} · Risk: ${o.risk ?? '—'}`,
-          }),
-        )
-        .join('\n      ')}\n    </div>`
-    : '';
-
-  const inner = `    <p class="lead">${esc(d.question ?? '')}</p>
-${optionCards}
-    ${callout(`<b>Recommendation:</b> ${esc(d.recommendation ?? '—')}${d.recommendedBy ? ` <span class="num">(${esc(d.recommendedBy)})</span>` : ''}`)}`;
-
-  const section = slide({
-    icon: 'i-fork',
-    kicker: 'Decision · your call',
-    heading: title,
-    inner,
-    num: '01',
-    on: true,
+  const d = ledger?.decision ?? null;
+  return singleBoard(ledger, {
+    fallbackTitle: 'Decision',
+    contentLabel: 'Decision',
+    unitHtml: '',
+    derivedAsk: d ? { headline: d.question ?? '', recommendation: d.recommendation, recommendedBy: d.recommendedBy } : null,
+    decision: d,
   });
-
-  return { title, favicon: fav(ledger), bodyHtml: deck(crumbOf(ledger), [section]) };
 }
 
-// Live-run brief: what it does, cost / blast-radius, cleanup proof.
+// Live-run brief: What / Cost / Blast radius / Cleanup as four VISIBLE callouts
+// (gate-critical facts never in a drawer), keyStats synthesized from cost +
+// blast radius, and the authorize ask always present.
 export function liveRun(ledger) {
-  const meta = ledger?.meta ?? {};
   const lr = ledger?.liveRun ?? {};
-  const title = String(meta.title ?? 'Live-run brief');
-
-  const cards = [
-    card({ icon: 'i-route', title: 'What it does', body: lr.what ?? '' }),
-    card({ icon: 'i-warn', title: 'Cost / blast radius', body: `${lr.cost ?? '—'} · ${lr.blastRadius ?? '—'}`, variant: 'warn' }),
-    card({ icon: 'i-check', title: 'Cleanup', body: lr.cleanup ?? '', variant: 'ok' }),
-  ].join('\n      ');
-
-  const inner = `    <div class="grid g3">
-      ${cards}
-    </div>
-    ${callout('<b>Live-run gate:</b> a hard human gate — confirm cost, blast radius, and the cleanup proof before authorizing.')}`;
-
-  const section = slide({
-    icon: 'i-shield',
-    kicker: 'Live-run · 🚦 authorize',
-    heading: title,
-    inner,
-    num: '01',
-    on: true,
+  const unitHtml = unit({
+    kicker: 'Live run · authorize',
+    statement: 'Live-run gate — authorize before anything runs',
+    figureHtml: coFact('What', lr.what) + coFact('Cost', lr.cost)
+      + coFact('Blast radius', lr.blastRadius) + coFact('Cleanup', lr.cleanup),
   });
-
-  return { title, favicon: fav(ledger), bodyHtml: deck(crumbOf(ledger), [section]) };
+  const keyStats = [
+    { value: firstClause(lr.cost), label: 'cost' },
+    { value: firstClause(lr.blastRadius), label: 'blast radius' },
+  ].filter((s) => s.value);
+  return singleBoard(ledger, {
+    fallbackTitle: 'Live-run brief',
+    contentLabel: 'Live run',
+    unitHtml,
+    derivedAsk: { headline: 'Authorize this live run?', note: firstClause(lr.what) },
+    keyStats,
+  });
 }
 
-// ---- Phase 3: thin single-slide templates that COMPOSE the validated blocks ----
-// Each builds a blocks[] array from its typed ledger section, renders it via
-// renderBlocks() into the slide inner (optionally + a callout whose ledger parts
-// are esc'd here), and wraps with deck(). The block builders escape every value
-// INSIDE a block; only the values I interpolate directly into a callout need esc().
+// ---- the four composite types — same singleBoard, figures from the validated
+// blocks registry (the block builders escape every value inside a block) ----
 
-// phaseTracker: a progress strip — phaseSteps (+ optional progress donut), note.
+// phaseTracker: the stops track VISIBLE (+ optional progress donut beside it);
+// pt.note drives the ask (Your call chapter) when present, else Progress.
 export function phaseTracker(ledger) {
-  const meta = ledger?.meta ?? {};
   const pt = ledger?.phaseTracker ?? {};
-  const title = String(meta.title ?? 'Phase tracker');
   const phases = Array.isArray(pt.phases) ? pt.phases : [];
   const progress = pt.progress;
-
-  const blocks = [
+  const figureHtml = renderBlocks([
     { type: 'phaseSteps', steps: phases },
     progress && { type: 'donut', value: progress.value, max: progress.max, label: progress.label },
-  ].filter(Boolean);
-
-  const inner = [renderBlocks(blocks), pt.note ? `    ${callout(esc(pt.note))}` : '']
-    .filter(Boolean)
-    .join('\n');
-
-  const section = slide({
-    icon: 'i-layers',
-    kicker: 'Phase tracker',
-    heading: title,
-    inner,
-    num: '01',
-    on: true,
+  ].filter(Boolean));
+  return singleBoard(ledger, {
+    fallbackTitle: 'Phase tracker',
+    contentLabel: 'Progress',
+    unitHtml: unit({ kicker: 'Phase tracker', statement: 'Where the work stands', figureHtml }),
+    derivedAsk: pt.note ? { headline: pt.note } : null,
   });
-
-  return { title, favicon: fav(ledger), bodyHtml: deck(crumbOf(ledger), [section]) };
 }
 
-// findings: a findings table (+ optional sources rankedRows), summary callout.
+// findings: the findings table VISIBLE; statRow wells from f.sources above it
+// when present, sources doubling as evidence-base chips; f.summary drives the ask.
 export function findings(ledger) {
-  const meta = ledger?.meta ?? {};
   const f = ledger?.findings ?? {};
-  const title = String(meta.title ?? 'Findings');
   const items = Array.isArray(f.items) ? f.items : [];
-  const sources = Array.isArray(f.sources) ? f.sources : null;
-
-  const blocks = [
+  const sources = Array.isArray(f.sources) ? f.sources : [];
+  const figureHtml = renderBlocks([
+    sources.length ? { type: 'statRow', stats: sources.map((s) => ({ value: s?.value, label: s?.label })) } : null,
     {
       type: 'table',
       columns: ['Finding', 'Confidence', 'Evidence', 'Verdict'],
       rows: items.map((i) => [i?.title, i?.confidence, i?.evidence, i?.verdict]),
     },
-    sources && { type: 'rankedRows', rows: sources },
-  ].filter(Boolean);
-
-  const inner = [renderBlocks(blocks), f.summary ? `    ${callout(esc(f.summary))}` : '']
-    .filter(Boolean)
-    .join('\n');
-
-  const section = slide({
-    icon: 'i-list',
-    kicker: 'Findings',
-    heading: title,
-    inner,
-    num: '01',
-    on: true,
+  ].filter(Boolean));
+  return singleBoard(ledger, {
+    fallbackTitle: 'Findings',
+    contentLabel: 'Findings',
+    unitHtml: unit({ kicker: 'Findings', statement: 'What the evidence shows', figureHtml }),
+    derivedAsk: f.summary ? { headline: f.summary } : null,
+    sources,
   });
-
-  return { title, favicon: fav(ledger), bodyHtml: deck(crumbOf(ledger), [section]) };
 }
 
-// comparison: an options × criteria table, recommendation callout (+ optional by).
+// comparison: the options × criteria table VISIBLE; c.recommendation drives the
+// attributed ask (`Pick an option` + the .rec strip).
 export function comparison(ledger) {
-  const meta = ledger?.meta ?? {};
   const c = ledger?.comparison ?? {};
-  const title = String(meta.title ?? 'Comparison');
   const criteria = Array.isArray(c.criteria) ? c.criteria : [];
   const options = Array.isArray(c.options) ? c.options : [];
 
@@ -399,60 +329,40 @@ export function comparison(ledger) {
   // note; otherwise the table is unchanged (no Notes column). The table block
   // escapes every cell, so the note text is neutralized there.
   const anyNote = options.some((o) => o?.note != null && o.note !== '');
-
-  const blocks = [
+  const figureHtml = renderBlocks([
     {
       type: 'table',
       columns: ['Option', ...criteria, ...(anyNote ? ['Notes'] : [])],
       // ragged scores are normalized by the table block (normalizeRow) — just map.
       rows: options.map((o) => [o?.label, ...(Array.isArray(o?.scores) ? o.scores : []), ...(anyNote ? [o?.note ?? ''] : [])]),
     },
-  ];
-
-  const note = c.recommendation != null
-    ? `    ${callout(`<b>Recommendation:</b> ${esc(c.recommendation)}${c.recommendedBy ? ` <span class="num">(${esc(c.recommendedBy)})</span>` : ''}`)}`
-    : '';
-  const inner = [renderBlocks(blocks), note].filter(Boolean).join('\n');
-
-  const section = slide({
-    icon: 'i-fork',
-    kicker: 'Comparison',
-    heading: title,
-    inner,
-    num: '01',
-    on: true,
+  ]);
+  return singleBoard(ledger, {
+    fallbackTitle: 'Comparison',
+    contentLabel: 'Comparison',
+    unitHtml: unit({ kicker: 'Comparison', statement: 'How the options compare', figureHtml }),
+    derivedAsk: c.recommendation != null
+      ? { headline: 'Pick an option', recommendation: c.recommendation, recommendedBy: c.recommendedBy }
+      : null,
   });
-
-  return { title, favicon: fav(ledger), bodyHtml: deck(crumbOf(ledger), [section]) };
 }
 
-// dashboard: stats (statRow) + a chart passed STRAIGHT THROUGH (unknown chart type
-// fails closed, same contract) + optional rows (rankedRows), an ask callout.
+// dashboard: d.stats as hero tiles, the chart passed STRAIGHT THROUGH (unknown
+// chart type fails closed, same contract) + optional ranked rows, both VISIBLE;
+// d.ask drives the ask.
 export function dashboard(ledger) {
-  const meta = ledger?.meta ?? {};
   const d = ledger?.dashboard ?? {};
-  const title = String(meta.title ?? 'Dashboard');
-  const stats = Array.isArray(d.stats) ? d.stats : null;
+  const stats = Array.isArray(d.stats) ? d.stats : [];
   const rows = Array.isArray(d.rows) ? d.rows : null;
-
-  const blocks = [
-    stats && { type: 'statRow', stats },
+  const figureHtml = renderBlocks([
     d.chart, // passed straight to renderBlocks => an unknown chart type FAILS CLOSED
     rows && { type: 'rankedRows', rows },
-  ].filter(Boolean);
-
-  const inner = [renderBlocks(blocks), d.ask ? `    ${callout(esc(d.ask))}` : '']
-    .filter(Boolean)
-    .join('\n');
-
-  const section = slide({
-    icon: 'i-deck',
-    kicker: 'Dashboard',
-    heading: title,
-    inner,
-    num: '01',
-    on: true,
+  ].filter(Boolean));
+  return singleBoard(ledger, {
+    fallbackTitle: 'Dashboard',
+    contentLabel: 'Dashboard',
+    unitHtml: unit({ kicker: 'Dashboard', statement: 'The numbers right now', figureHtml }),
+    derivedAsk: d.ask ? { headline: d.ask } : null,
+    keyStats: stats,
   });
-
-  return { title, favicon: fav(ledger), bodyHtml: deck(crumbOf(ledger), [section]) };
 }

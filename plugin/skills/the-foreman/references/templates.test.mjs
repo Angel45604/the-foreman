@@ -1,7 +1,46 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import * as templates from './templates.mjs';
 import { planDeck, brief, decisionCard, liveRun, phaseTracker, findings, comparison, dashboard } from './templates.mjs';
+import { stripDetails } from './test-helpers.mjs';
+
+// ---- shared Gate Board test helpers ----
+
+// rail chips in document order, by their data-sec ids (Top is always first)
+const chipIds = (h) => [...h.matchAll(/data-sec="([^"]+)"/g)].map((m) => m[1]);
+
+// slice one <section> out of the board by its id (sections never nest)
+function sectionOf(h, id) {
+  const at = h.indexOf(`id="${id}"`);
+  assert.notEqual(at, -1, `section #${id} exists`);
+  return h.slice(h.lastIndexOf('<section', at), h.indexOf('</section>', at));
+}
+
+// ask-target contract: the ask strip's jump href must resolve to a REAL section
+// whose VISIBLE (details-stripped) content contains the ask text
+function assertAskVisible(h, askText) {
+  const m = h.match(/class="ask"[\s\S]*?href="#([^"]+)"/);
+  assert.ok(m, 'ask strip renders a jump link');
+  assert.ok(stripDetails(sectionOf(h, m[1])).includes(askText), `ask text visible in #${m[1]}`);
+}
+
+// ---- stripDetails self-tests (the helper the visible-content contract rides on) ----
+
+test('stripDetails drops details content (negative control) and handles nesting', () => {
+  const html = '<p>seen</p><details class="dw"><summary>s</summary><p>HIDDEN-FACT</p>'
+    + '<details><p>DEEP-FACT</p></details><p>AFTER-NESTED</p></details><p>tail</p>';
+  const out = stripDetails(html);
+  assert.match(out, /seen/); assert.match(out, /tail/);
+  assert.ok(!out.includes('HIDDEN-FACT'));   // a fact ONLY inside <details> must NOT survive
+  assert.ok(!out.includes('DEEP-FACT'));     // nested details handled
+  assert.ok(!out.includes('AFTER-NESTED'));  // inner close returns depth to 1, not 0
+  assert.ok(!out.includes('<details'));      // the tags themselves are gone
+});
+test('stripDetails keeps depth-0 content between sibling details and drops an unclosed tail', () => {
+  assert.equal(stripDetails('<details>ONE</details><b>mid</b><details>TWO</details>'), '<b>mid</b>');
+  assert.ok(!stripDetails('<p>ok</p><details><p>SWALLOWED').includes('SWALLOWED'));
+});
 
 const ledger = {
   meta:{ title:'Cirra run-timing fix', crumb:'GRAVITY · CIRRA', favicon:'🛠️', accent:'#009ACC' },
@@ -29,14 +68,84 @@ test('planDeck escapes ledger text and tolerates a minimal legacy ledger', () =>
   assert.match(bodyHtml, /&lt;t&gt;/); assert.match(bodyHtml, /H&lt;img&gt;/);
   assert.ok(!bodyHtml.includes('<img>'));
 });
-test('brief surfaces verified-vs-claimed + the ask', () => {
-  const h = brief(ledger).bodyHtml; assert.match(h, /189\/189/); assert.match(h, /verified/i);
+// ---- the seven single-section types on the Gate Board (Task 7) ----
+// Rail contract: exactly ONE chapter — Top + one chip. With an effective ask the
+// chapter is `Your call` and carries BOTH the primary content AND the ask; with
+// no ask source it keeps its content label and no ask strip renders.
+
+test('brief: Your call chapter — landed + status pill VISIBLE, ask beneath, evidence in the drawer', () => {
+  const h = brief(ledger).bodyHtml;
+  assert.match(h, /class="nav"/);
+  assert.deepEqual(chipIds(h), ['top', 'your-call']);            // Top + Your call, 2 chips
+  const vis = stripDetails(h);
+  assert.match(vis, /What landed/);                              // the unit statement
+  assert.match(vis, /Excluded approval wait/);                   // win.landed VISIBLE (.co callout)
+  assert.match(vis, /class="pill pill--ok"/);                    // Verified pill, BEM form
+  assert.match(vis, /Verified/);
+  assert.ok(!vis.includes('189/189'));                           // evidence is drawer-only…
+  assert.match(h, /189\/189/);                                   // …but never dropped
+  assertAskVisible(h, 'PR');                                     // effective ask = win.next
 });
-test('decisionCard lists options + attributed recommendation', () => { assert.match(decisionCard(ledger).bodyHtml, /recommendation/i); });
-test('liveRun shows cost + cleanup', () => { const h = liveRun(ledger).bodyHtml; assert.match(h, /\$0\.12/); assert.match(h, /cleanup/i); });
+test('brief without win.next keeps the content label and renders NO ask strip (never a dead link)', () => {
+  const h = brief({ meta: { title: 'B' }, win: { landed: 'L', verified: false } }).bodyHtml;
+  assert.deepEqual(chipIds(h), ['top', 'what-landed']);
+  assert.doesNotMatch(h, /class="ask"/);
+  assert.doesNotMatch(h, /id="your-call"/);
+  assert.match(stripDetails(h), /class="pill pill--warn"/);      // Claimed pill still visible
+});
+test('decisionCard: the ask chapter — question visible up top, option cards, ONE .rec strip', () => {
+  const h = decisionCard(ledger).bodyHtml;
+  assert.deepEqual(chipIds(h), ['top', 'your-call']);
+  const vis = stripDetails(h);
+  assert.match(vis, /Persist events how\?/);                     // the question, visible
+  assert.match(vis, /class="opts"/);                             // option cards as evidence
+  assert.equal((h.match(/class="rec"/g) || []).length, 1);       // exactly one recommendation strip
+  assert.match(h, /Recommendation — <span>A<\/span>/);           // derived ask carries the decision's rec
+  assertAskVisible(h, 'Persist events how?');
+});
+test('decisionCard: meta.ask WINS over the decision in strip/target/.rec; options stay as evidence', () => {
+  const h = decisionCard({ ...ledger, meta: { ...ledger.meta,
+    ask: { headline: 'OVERRIDE ASK', recommendation: 'Meta rec', recommendedBy: 'Owner' } } }).bodyHtml;
+  assert.match(h, /OVERRIDE ASK/);
+  assert.equal((h.match(/class="rec"/g) || []).length, 1);
+  assert.match(h, /Recommendation — <span>Meta rec<\/span>/);
+  assert.doesNotMatch(h, /Recommendation — <span>A<\/span>/);    // never the decision's own line
+  assert.match(h, /class="opts"/); assert.match(h, /class="opt__rec"/);
+  assert.doesNotMatch(h, /Persist events how\?/);                // stale question out of strip + header
+});
+test('decisionCard escapes a malicious question (no raw tag)', () => {
+  const h = decisionCard({ meta: { title: 't' }, decision: { question: '<img onerror=q>', options: [] } }).bodyHtml;
+  assert.doesNotMatch(h, /<img onerror=q>/); assert.match(h, /&lt;img/);
+});
+test('liveRun: gate facts as four VISIBLE callouts, synthesized keyStats tiles, the authorize ask', () => {
+  const h = liveRun(ledger).bodyHtml;
+  const vis = stripDetails(h);
+  assert.match(vis, /Live-run gate — authorize before anything runs/);
+  for (const fact of ['smoke c93', '$0.12', 'prod write', 'purge verified']) assert.ok(vis.includes(fact), fact);
+  assert.equal((vis.match(/class="co"/g) || []).length, 4);      // What / Cost / Blast radius / Cleanup
+  assert.match(vis, /class="tiles"/);                            // synthesized keyStats…
+  assert.match(vis, /blast radius/);                             // …cost + blast radius labels
+  assert.deepEqual(chipIds(h), ['top', 'your-call']);
+  assertAskVisible(h, 'Authorize this live run?');
+});
+test('liveRun escapes a malicious what (no raw injection)', () => {
+  const h = liveRun({ meta: { title: 't' }, liveRun: { what: '<img src=x onerror=alert(1)>' } }).bodyHtml;
+  assert.doesNotMatch(h, /<img src=x onerror/); assert.match(h, /&lt;img/);
+});
 test('templates HTML-escape ledger text (no raw injection)', () => {
   const h = brief({ ...ledger, win:{ ...ledger.win, landed:'<img src=x onerror=alert(1)>' } }).bodyHtml;
   assert.doesNotMatch(h, /<img src=x onerror/); assert.match(h, /&lt;img/);
+});
+test('no artifact type emits deck-era markup (slides, callouts, ghost numbers, icon sprites)', () => {
+  const outs = [planDeck(ledger), brief(ledger), decisionCard(ledger), liveRun(ledger),
+    phaseTracker({ meta: { title: 't' }, phaseTracker: { phases: [{ label: 'P', status: 'done' }], note: 'n' } }),
+    findings({ meta: { title: 't' }, findings: { items: [{ title: 'T' }], summary: 's' } }),
+    comparison({ meta: { title: 't' }, comparison: { criteria: ['C'], options: [{ label: 'O', scores: ['x'] }], recommendation: 'O' } }),
+    dashboard({ meta: { title: 't' }, dashboard: { stats: [{ value: '1', label: 'l' }], ask: 'a?' } })];
+  for (const { bodyHtml } of outs) {
+    assert.match(bodyHtml, /class="nav"/);
+    assert.ok(!/class="slide|class="callout"|class="card|ghostnum|id="deck"|id="toctgl"|#i-/.test(bodyHtml));
+  }
 });
 
 // ---- chapters: the rail derives from slide.chapter (Gate Board form) ----
@@ -61,17 +170,13 @@ test('planDeck escapes a malicious chapter label; its id stays slug-safe (no raw
   assert.match(h, /&lt;img onerror=x&gt;/);   // label esc'd in the rail chip + section heading
   assert.match(h, /id="img-onerror-x"/);      // slugified id — nothing injected
 });
-// deck() chrome stays pinned via a still-deck-based type until Task 7 retires deck().
-test('deck() emits the chapters toggle button + empty #chapters menu container', () => {
-  const h = brief(ledger).bodyHtml;
-  assert.match(h, /id="toctgl"[^>]*aria-haspopup="true"/);
-  assert.match(h, /aria-label="Chapters"/);
-  assert.match(h, /<use href="#i-list"\/>/);
-  assert.match(h, /<div id="chapters" role="menu"><\/div>/);
-});
-test('deck() wires #toctgl to the panel via aria-controls="chapters" (a11y)', () => {
-  const h = brief(ledger).bodyHtml;
-  assert.match(h, /id="toctgl"[^>]*aria-controls="chapters"/);
+// deck()/slide()/card() are retired (Task 7): their chrome tests are replaced by
+// the Gate Board rail pins below (same property — navigable chapter chrome).
+test('planDeck(reference ledger) rail = Top + Diagnosis + Experiment + Decision + Plan + Your call', () => {
+  const ref = JSON.parse(readFileSync(new URL('../../../../docs/initiatives/2026-08-26-neumorphic-gate-board/reference-ledger.json', import.meta.url), 'utf8'));
+  const { bodyHtml } = planDeck(ref);
+  assert.deepEqual(chipIds(bodyHtml), ['top', 'diagnosis', 'experiment', 'decision', 'plan', 'your-call']);
+  assertAskVisible(bodyHtml, 'Change the artifact class rather than the scope?');
 });
 
 // ---- ask resolution: effectiveAsk = meta.ask ?? derived-from-decision ----
@@ -143,8 +248,8 @@ test('planDeck: a block-less slide renders identically (no blocks markup leaks i
 
 const META3 = { title: 'Phase 3 art', crumb: 'GRAVITY · FOREMAN', favicon: '🛠️', accent: '#009ACC' };
 
-// phaseTracker — phaseSteps block (+ optional donut + optional note callout).
-test('phaseTracker renders a phaseSteps block (+ progress donut + note)', () => {
+// phaseTracker — the stops figure VISIBLE (+ optional donut); pt.note drives the ask.
+test('phaseTracker: stops figure + donut VISIBLE, note as the ask (Your call chapter)', () => {
   const r = phaseTracker({
     meta: META3,
     phaseTracker: {
@@ -154,18 +259,19 @@ test('phaseTracker renders a phaseSteps block (+ progress donut + note)', () => 
     },
   });
   assert.match(r.title, /Phase 3 art/);
-  assert.match(r.bodyHtml, /class="stops"/);       // phaseSteps signature (the stops track)
-  assert.match(r.bodyHtml, /Design/);
-  assert.match(r.bodyHtml, /class="slide/);
-  assert.match(r.bodyHtml, /class="ring" role="img"/); // tick-ring donut rendered
-  assert.match(r.bodyHtml, /class="callout"/);      // note callout
-  assert.match(r.bodyHtml, /on track/);
+  const vis = stripDetails(r.bodyHtml);
+  assert.match(vis, /class="stops"/);              // phaseSteps figure, visible
+  assert.match(vis, /Design/);
+  assert.match(vis, /class="ring" role="img"/);    // tick-ring donut rendered beside it
+  assert.deepEqual(chipIds(r.bodyHtml), ['top', 'your-call']);
+  assertAskVisible(r.bodyHtml, 'on track');        // derivedAsk.headline = pt.note
 });
-test('phaseTracker omits the donut when no progress and omits callout when no note', () => {
+test('phaseTracker without progress/note: Progress label, no donut, NO ask strip', () => {
   const h = phaseTracker({ meta: META3, phaseTracker: { phases: [{ label: 'P1', status: 'done' }] } }).bodyHtml;
   assert.match(h, /class="stops"/);
+  assert.deepEqual(chipIds(h), ['top', 'progress']);
   assert.doesNotMatch(h, /class="ring"/);       // no donut
-  assert.doesNotMatch(h, /class="callout"/);    // no note callout
+  assert.doesNotMatch(h, /class="ask"/);        // no ask source => no strip (never a dead link)
 });
 test('phaseTracker escapes a malicious phase label (no raw tag) and a malicious note', () => {
   const h = phaseTracker({
@@ -177,8 +283,8 @@ test('phaseTracker escapes a malicious phase label (no raw tag) and a malicious 
   assert.match(h, /&lt;img/);
 });
 
-// findings — table block (+ optional rankedRows sources + optional summary callout).
-test('findings renders a table with a finding title + sources + summary', () => {
+// findings — the table figure VISIBLE, statRow wells + chips from sources, summary as the ask.
+test('findings: table VISIBLE, wells above from sources, evidence chips, summary as the ask', () => {
   const r = findings({
     meta: META3,
     findings: {
@@ -187,19 +293,24 @@ test('findings renders a table with a finding title + sources + summary', () => 
       summary: 'root cause found',
     },
   });
-  assert.match(r.bodyHtml, /<table class="t">/);
-  assert.match(r.bodyHtml, /Cache miss/);
-  assert.match(r.bodyHtml, /<th scope="col">Finding<\/th>/);
-  assert.match(r.bodyHtml, /class="relrow"/);  // rankedRows sources
-  assert.match(r.bodyHtml, /app\.log/);
-  assert.match(r.bodyHtml, /class="callout"/); // summary
-  assert.match(r.bodyHtml, /root cause found/);
+  const vis = stripDetails(r.bodyHtml);
+  assert.match(vis, /<table class="t">/);          // the findings table, visible
+  assert.match(vis, /Cache miss/);
+  assert.match(vis, /<th scope="col">Finding<\/th>/);
+  assert.match(vis, /class="wells"/);              // statRow wells from f.sources
+  assert.match(vis, /app\.log/);
+  assert.match(r.bodyHtml, /class="src"/);         // sources → evidence-base chips too
+  assert.deepEqual(chipIds(r.bodyHtml), ['top', 'your-call']);
+  assertAskVisible(r.bodyHtml, 'root cause found');
+  assert.ok(vis.indexOf('class="wells"') < vis.indexOf('<table class="t">')); // wells sit ABOVE the table
 });
-test('findings omits sources block when none and omits summary callout when none', () => {
+test('findings without sources/summary: Findings label, no wells, no chips, NO ask strip', () => {
   const h = findings({ meta: META3, findings: { items: [{ title: 'Only', confidence: 'Low' }] } }).bodyHtml;
   assert.match(h, /<table class="t">/);
-  assert.doesNotMatch(h, /class="relrow"/);  // no sources
-  assert.doesNotMatch(h, /class="callout"/); // no summary
+  assert.deepEqual(chipIds(h), ['top', 'findings']);
+  assert.doesNotMatch(h, /class="wells"/);   // no sources
+  assert.doesNotMatch(h, /class="src"/);     // no chips
+  assert.doesNotMatch(h, /class="ask"/);     // no summary => no ask strip
 });
 test('findings escapes a malicious finding title (no raw tag) and summary', () => {
   const h = findings({
@@ -211,8 +322,8 @@ test('findings escapes a malicious finding title (no raw tag) and summary', () =
   assert.match(h, /&lt;img/);
 });
 
-// comparison — table (Option + criteria columns), recommendation callout.
-test('comparison renders a table with an option label, criterion header + recommendation', () => {
+// comparison — the options × criteria table VISIBLE; recommendation drives the ask.
+test('comparison: table VISIBLE with criterion headers; recommendation as the attributed ask', () => {
   const r = comparison({
     meta: META3,
     comparison: {
@@ -222,13 +333,24 @@ test('comparison renders a table with an option label, criterion header + recomm
       recommendedBy: 'Codex',
     },
   });
-  assert.match(r.bodyHtml, /<table class="t">/);
-  assert.match(r.bodyHtml, /Option A/);     // option label
-  assert.match(r.bodyHtml, /<th scope="col">Cost<\/th>/); // criterion header
-  assert.match(r.bodyHtml, /<th scope="col">Option<\/th>/);
-  assert.match(r.bodyHtml, /class="callout"/);
-  assert.match(r.bodyHtml, /Option A/);
-  assert.match(r.bodyHtml, /Codex/);          // attribution
+  const vis = stripDetails(r.bodyHtml);
+  assert.match(vis, /<table class="t">/);
+  assert.match(vis, /Option A/);                            // option label
+  assert.match(vis, /<th scope="col">Cost<\/th>/);          // criterion header
+  assert.match(vis, /<th scope="col">Option<\/th>/);
+  assert.match(r.bodyHtml, /Recommendation — <span>Option A<\/span>/); // the single .rec strip
+  assert.match(r.bodyHtml, /Codex/);                        // attribution
+  assert.deepEqual(chipIds(r.bodyHtml), ['top', 'your-call']);
+  assertAskVisible(r.bodyHtml, 'Pick an option');
+});
+test('comparison without a recommendation: Comparison label, NO ask strip', () => {
+  const h = comparison({
+    meta: META3,
+    comparison: { criteria: ['Cost'], options: [{ label: 'Option A', scores: ['low'] }] },
+  }).bodyHtml;
+  assert.deepEqual(chipIds(h), ['top', 'comparison']);
+  assert.doesNotMatch(h, /class="ask"/);
+  assert.doesNotMatch(h, /class="rec"/);
 });
 test('comparison normalizes ragged scores (table block pads short rows; no throw)', () => {
   const h = comparison({
@@ -278,8 +400,8 @@ test('comparison escapes a malicious note (no raw tag survives)', () => {
   assert.match(h, /&lt;img/);
 });
 
-// dashboard — statRow (+ chart passthrough + rankedRows + ask callout).
-test('dashboard renders a statRow (+ chart + rows + ask)', () => {
+// dashboard — d.stats as hero tiles, chart + rows VISIBLE, d.ask as the ask.
+test('dashboard: stats as tiles, chart + ranked rows VISIBLE, ask strip resolves', () => {
   const r = dashboard({
     meta: META3,
     dashboard: {
@@ -289,18 +411,25 @@ test('dashboard renders a statRow (+ chart + rows + ask)', () => {
       ask: 'approve budget?',
     },
   });
-  assert.match(r.bodyHtml, /class="wells"/);     // statRow signature (carved wells)
-  assert.match(r.bodyHtml, /\$0\.12/);
-  assert.match(r.bodyHtml, /class="ring" role="img"/); // chart (tick-ring donut) passthrough rendered
-  assert.match(r.bodyHtml, /class="relrow"/);     // rankedRows
-  assert.match(r.bodyHtml, /class="callout"/);    // ask
-  assert.match(r.bodyHtml, /approve budget\?/);
+  const vis = stripDetails(r.bodyHtml);
+  assert.match(vis, /class="tiles"/);            // d.stats render as hero tiles
+  assert.match(vis, /\$0\.12/);
+  assert.match(vis, /class="ring" role="img"/);  // chart (tick-ring donut) passthrough, visible
+  assert.match(vis, /class="relrow"/);           // rankedRows, visible
+  assert.deepEqual(chipIds(r.bodyHtml), ['top', 'your-call']);
+  assertAskVisible(r.bodyHtml, 'approve budget?');
+});
+test('dashboard without an ask: Dashboard label, NO ask strip', () => {
+  const h = dashboard({ meta: META3, dashboard: { stats: [{ value: '1', label: 'x' }] } }).bodyHtml;
+  assert.deepEqual(chipIds(h), ['top', 'dashboard']);
+  assert.doesNotMatch(h, /class="ask"/);
 });
 test('dashboard FAILS CLOSED on an unknown chart type (chart passed straight to renderBlocks)', () => {
   assert.throws(
     () => dashboard({ meta: META3, dashboard: { chart: { type: 'bogusChart' } } }),
     /unknown block type: bogusChart/,
   );
+  assert.throws(() => templates.dashboard({ dashboard: { chart: { type: 'nope' } } })); // meta-less ledger too
 });
 test('dashboard escapes a malicious stat value (no raw tag) and ask', () => {
   const h = dashboard({
