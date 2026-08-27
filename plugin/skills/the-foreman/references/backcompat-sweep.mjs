@@ -41,6 +41,8 @@ export const SECTION_TEMPLATES = {
 
 // The FIXED category vocabulary — every error maps into one of these words;
 // nothing else ever reaches the output.
+//   discovery-error — a directory could not be listed (ENOENT/EACCES/a
+//                     traversal race); the line carries the DIRECTORY path
 //   parse-error    — the file could not be read/JSON.parsed
 //   unknown-block  — the fail-closed registry rejected a block type (HTML or twin)
 //   template-throw — any other throw while rendering the HTML body
@@ -71,13 +73,33 @@ export function sweepLedger(ledger) {
 // ledger via `log` (injectable so the self-tests can capture output). A file
 // that parses to anything other than an object with `meta` is not a ledger and
 // is skipped silently. Read-only throughout.
+//
+// Discovery runs under the SAME fixed-category contract as rendering: each
+// directory's readdir is guarded individually, so ENOENT/EACCES or a traversal
+// race maps to `dir: FAIL discovery-error` (the path only — the exception
+// message embeds errno text and must never reach output), the walk continues
+// with every other directory, and the failure still drives the non-zero exit.
+// Discovery-error lines surface DURING the walk, before the sorted ledger lines.
 export function sweep(rootDir, log = console.log) {
-  const files = readdirSync(rootDir, { recursive: true, withFileTypes: true })
-    .filter((e) => e.isFile() && e.name.endsWith('.json'))
-    .map((e) => join(e.parentPath, e.name))
-    .sort();
   let checked = 0;
   let failures = 0;
+  const files = [];
+  const walk = (dir) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      failures += 1;
+      log(`${dir}: FAIL discovery-error`);
+      return;
+    }
+    for (const e of entries) {
+      if (e.isDirectory()) walk(join(dir, e.name));
+      else if (e.isFile() && e.name.endsWith('.json')) files.push(join(dir, e.name));
+    }
+  };
+  walk(rootDir);
+  files.sort();
   for (const path of files) {
     let ledger;
     try {

@@ -7,7 +7,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, readdirSync, statSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -140,6 +140,43 @@ test('sweep: unparseable json reports FAIL parse-error (fixed category, not the 
   const { failures } = sweep(root, (l) => lines.push(l));
   assert.equal(failures, 1);
   assert.deepEqual(lines, [`${join(root, 'broken.json')}: FAIL parse-error`]);
+});
+
+test('sweep: a nonexistent root reports FAIL discovery-error — fixed category, never the raw ENOENT', () => {
+  // Discovery runs under the same fixed-category privacy contract as
+  // rendering: a failing readdir maps to 'discovery-error' with the PATH
+  // only — the exception message (which embeds the path AND the errno text)
+  // must never reach output, and the failure still drives a non-zero exit.
+  const root = join(tmpdir(), 'foreman-sweep-definitely-missing-root');
+  const lines = [];
+  const { checked, failures } = sweep(root, (l) => lines.push(l));
+  assert.equal(checked, 0);
+  assert.equal(failures, 1);
+  assert.deepEqual(lines, [`${root}: FAIL discovery-error`]);
+  assert.ok(!/ENOENT|no such file/i.test(lines.join('\n')), 'raw error text must never be echoed');
+});
+
+test('sweep: an unreadable subdirectory reports FAIL discovery-error and the sweep CONTINUES with other dirs', () => {
+  const root = mkdtempSync(join(tmpdir(), 'foreman-sweep-'));
+  const locked = join(root, 'locked');
+  mkdirSync(locked);
+  writeFileSync(join(locked, 'hidden.json'), readFileSync(join(FIXDIR, 'legacy-minimal.json')));
+  writeFileSync(join(root, 'ledger.json'), readFileSync(join(FIXDIR, 'legacy-minimal.json')));
+  chmodSync(locked, 0o000); // readdir(locked) → EACCES (owner-only, no sudo needed)
+  try {
+    const lines = [];
+    const { checked, failures } = sweep(root, (l) => lines.push(l));
+    assert.equal(checked, 1, 'the readable ledger is still swept');
+    assert.equal(failures, 1, 'the discovery failure counts toward the non-zero exit');
+    // discovery errors surface DURING the walk, before the (sorted) ledger lines
+    assert.deepEqual(lines, [
+      `${locked}: FAIL discovery-error`,
+      `${join(root, 'ledger.json')}: OK`,
+    ]);
+    assert.ok(!/EACCES|permission denied/i.test(lines.join('\n')), 'raw error text must never be echoed');
+  } finally {
+    chmodSync(locked, 0o755); // let the tmpdir be cleaned up
+  }
 });
 
 test('sweep: recurses into subdirectories and PROVES no write — every swept byte identical after', () => {
