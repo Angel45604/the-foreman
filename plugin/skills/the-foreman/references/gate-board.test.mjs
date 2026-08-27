@@ -55,7 +55,7 @@ test('end-override RELEASES on scroll-up: observerId + atEnd drive one selection
   assert.match(js, /if \(id\) setLive\(id\);/);   // null-guarded: no signal yet keeps the markup's Top state
   // observerId is written ONLY by the observer callback (one declaration + one write)
   assert.equal((js.match(/observerId =/g) || []).length, 2);
-  assert.match(js, /if \(e\.isIntersecting\)\{ observerId = e\.target\.id; landed = true; \}/);
+  assert.match(js, /if \(e\.isIntersecting\)\{\s*\n\s*observerId = e\.target\.id;\s*\n\s*if \(e\.target\.id === navId\) arrived = true;\s*\n\s*\}/);
   // atEnd is owned by the rAF-throttled scroll tick, and ALL paths re-apply the rule
   assert.match(js, /var atEnd = false;/);
   assert.equal((js.match(/applyLive\(\);/g) || []).length, 3, 'observer callback + scroll tick + jump each apply');
@@ -77,10 +77,41 @@ test('nav jumps route through ONE helper; navId gates the scroll-tick reapplicat
   assert.match(js, /e\.preventDefault\(\);\s*\n\s*jump\(id\);/);
   // navId OVERRIDES the observer/atEnd selection…
   assert.match(js, /var id = navId !== null \? navId : atEnd \? ids\[ids\.length - 1\] : observerId;/);
-  // …and ONLY an observer callback carrying an INTERSECTING entry releases it —
-  // a leave-only callback must not (that is the stale flip-back in observer form)
-  assert.match(js, /if \(landed\) navId = null;/);
-  assert.equal((js.match(/navId =/g) || []).length, 3, 'declaration + jump arms + observer releases: no other writer');
+  // …and the observer releases it ONLY when the DESTINATION itself intersects
+  // (the full release rule is pinned in its own test below)
+  assert.match(js, /if \(arrived\) navId = null;/);
+  assert.equal((js.match(/navId = /g) || []).length, 4,
+    'declaration + jump arms + destination release + user-input release: no other writer');
+});
+
+// ---- prepr blocker: navId releases ONLY at the destination or on user input ----
+// The old release — ANY intersecting entry — let the intermediate chapters
+// swept through the band during a smooth jump strip the override, so a short
+// destination lost its highlight to whatever chapter the band last crossed.
+// The pinned rule: (a) the observer reports the DESTINATION itself
+// intersecting, (b) an explicit user input occurs (programmatic smooth scroll
+// fires none, so the jump cannot self-release), or (c) a new jump replaces it.
+test('navId release rule: destination arrival, explicit user input, or a new jump — never an intermediate sweep', () => {
+  // (a) target-match release: the observer clears navId ONLY when the
+  // intersecting entry IS the destination…
+  assert.match(js, /if \(e\.target\.id === navId\) arrived = true;/);
+  assert.match(js, /if \(arrived\) navId = null;/);
+  // …never on just ANY intersecting entry (the retired release): the old
+  // landed-guarded clear is gone, and no release write sits inside the entry loop
+  assert.ok(!js.includes('if (landed) navId = null'), 'the any-entry release must not survive');
+  assert.ok(!/isIntersecting[^}]*navId = null/.test(js), 'no release inside the entry loop');
+  // (b) user input: passive wheel/touchstart/pointerdown + scroll-key keydown
+  // listeners hand control back to the observer — a programmatic smooth scroll
+  // fires none of these, so a jump can never release itself mid-flight
+  assert.match(js, /\['wheel', 'touchstart', 'pointerdown'\]\.forEach\(function\(type\)\{\s*\n\s*window\.addEventListener\(type, releaseNav, \{ passive: true \}\);/);
+  assert.match(js, /var scrollKeys = \['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', ' '\];/);
+  assert.match(js, /if \(scrollKeys\.indexOf\(e\.key\) !== -1\) releaseNav\(\);/);
+  assert.equal((js.match(/\{ passive: true \}/g) || []).length, 3, 'end-scroll tick + input-type loop + scroll-key keydown');
+  // (c) is jump() itself (navId = id — census pinned in the jump-helper test).
+  // releaseNav repaints nothing on its own: the next observer/tick signal
+  // renders the fresh rule, so a pointerdown that begins a NEW chip click
+  // never flashes the observer's stale pick before jump() re-arms.
+  assert.match(js, /function releaseNav\(\)\{\s*\n\s*if \(navId === null\) return;\s*\n\s*navId = null;\s*\n\s*\}/);
 });
 
 test('script never references deck-era elements', () => {

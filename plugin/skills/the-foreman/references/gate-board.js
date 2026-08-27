@@ -55,34 +55,67 @@
   /* scrollspy — a thin band around the viewport's middle decides the chapter.
      THREE tracked signals drive the live chip: observerId (written ONLY by
      the observer callback), atEnd (owned by the rAF-throttled scroll tick
-     below), and navId (armed by jump(), released ONLY by an intersecting
-     observer report). applyLive() recomputes the selection from all three, so
-     releasing the end override restores the observer's chapter WITHOUT a
-     fresh observer event — scrolling up from the end may produce none,
-     because the section above the final one can be intersecting the band the
-     whole time. */
+     below), and navId (armed by jump(); release rule pinned below).
+     applyLive() recomputes the selection from all three, so releasing the end
+     override restores the observer's chapter WITHOUT a fresh observer event —
+     scrolling up from the end may produce none, because the section above the
+     final one can be intersecting the band the whole time. */
   var observerId = null;
   var atEnd = false;
   /* navId — the navigation override. Armed by jump() (chip clicks, 1..9 keys,
      Home/End, the ask-strip anchor), it beats the observer/atEnd selection so
      the first scroll tick after a jump can never flip the requested chip back
      to a stale observerId — and a short destination section that never fires
-     an observer callback keeps its requested chip. The PINNED release rule:
-     the first observer callback carrying an INTERSECTING entry clears it (the
-     observer has a fresh pick). A leave-only callback must NOT release — its
-     observerId is exactly the stale chapter the override exists to beat. */
+     an observer callback keeps its requested chip. The PINNED RELEASE RULE —
+     navId is cleared ONLY by:
+       (a) the observer reporting the DESTINATION itself intersecting
+           (entry.target.id === navId — the jump landed), or
+       (b) an explicit user input — wheel / touchstart / pointerdown / a
+           scroll-key keydown. Programmatic smooth scroll fires none of
+           these, so a jump can never release itself mid-flight, or
+       (c) a new jump() replacing it.
+     A merely-intersecting NON-destination entry must NOT release: the
+     chapters the band sweeps through during a smooth jump are exactly the
+     stale picks the override exists to beat — a short destination would
+     otherwise lose its highlight to whatever chapter the band last crossed.
+     While navId is held, the observer callback and the scroll tick both
+     render navId; atEnd still wins at the document end as today (the
+     selection rule is unchanged — a jump that lands at the document end
+     targets the last chapter, so the two picks agree there, and the user's
+     next real scroll at the end releases the override, handing atEnd the
+     rail). Held, not stuck: the user's next real scroll releases it. */
   var navId = null;
   function applyLive(){
     var id = navId !== null ? navId : atEnd ? ids[ids.length - 1] : observerId;
     if (id) setLive(id); /* no signal yet (initial callback, nothing in the band) keeps the markup's Top state */
   }
+  /* release (b) — a real user input hands control back to the observer. No
+     immediate repaint: the next observer/tick signal renders the fresh rule,
+     so a pointerdown that begins a NEW chip click never flashes the
+     observer's stale pick before jump() re-arms. */
+  function releaseNav(){
+    if (navId === null) return;
+    navId = null;
+  }
+  ['wheel', 'touchstart', 'pointerdown'].forEach(function(type){
+    window.addEventListener(type, releaseNav, { passive: true });
+  });
+  /* the page-scrolling keys only — Home/End and 1..9 are jump keys here (they
+     route through jump(), which replaces the override per release rule (c)) */
+  var scrollKeys = ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', ' '];
+  window.addEventListener('keydown', function(e){
+    if (scrollKeys.indexOf(e.key) !== -1) releaseNav();
+  }, { passive: true });
   if ('IntersectionObserver' in window){
     var spy = new IntersectionObserver(function(entries){
-      var landed = false;
+      var arrived = false;
       entries.forEach(function(e){
-        if (e.isIntersecting){ observerId = e.target.id; landed = true; }
+        if (e.isIntersecting){
+          observerId = e.target.id;
+          if (e.target.id === navId) arrived = true;
+        }
       });
-      if (landed) navId = null; /* fresh observer pick → release the jump override */
+      if (arrived) navId = null; /* release (a): the DESTINATION itself reported in — the jump landed */
       applyLive();
     }, { rootMargin: '-40% 0px -55% 0px', threshold: 0 });
     ids.forEach(function(id){
