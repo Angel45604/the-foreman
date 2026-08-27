@@ -50,15 +50,37 @@ test('end-override RELEASES on scroll-up: observerId + atEnd drive one selection
   // Scrolling back up from the forced document-end chip may produce NO new
   // IntersectionObserver callback (the section above is ALREADY intersecting
   // the band), so the selection must recompute from tracked state instead:
-  // setLive(atEnd ? last : observerId) on BOTH signal paths.
-  assert.match(js, /var id = atEnd \? ids\[ids\.length - 1\] : observerId;/);
+  // setLive(navId || (atEnd ? last : observerId)) on EVERY signal path.
+  assert.match(js, /var id = navId !== null \? navId : atEnd \? ids\[ids\.length - 1\] : observerId;/);
   assert.match(js, /if \(id\) setLive\(id\);/);   // null-guarded: no signal yet keeps the markup's Top state
   // observerId is written ONLY by the observer callback (one declaration + one write)
   assert.equal((js.match(/observerId =/g) || []).length, 2);
-  assert.match(js, /if \(e\.isIntersecting\) observerId = e\.target\.id;/);
-  // atEnd is owned by the rAF-throttled scroll tick, and BOTH paths re-apply the rule
+  assert.match(js, /if \(e\.isIntersecting\)\{ observerId = e\.target\.id; landed = true; \}/);
+  // atEnd is owned by the rAF-throttled scroll tick, and ALL paths re-apply the rule
   assert.match(js, /var atEnd = false;/);
-  assert.equal((js.match(/applyLive\(\);/g) || []).length, 2, 'observer callback + scroll tick each apply');
+  assert.equal((js.match(/applyLive\(\);/g) || []).length, 3, 'observer callback + scroll tick + jump each apply');
+});
+
+test('nav jumps route through ONE helper; navId gates the scroll-tick reapplication of a stale observerId', () => {
+  // Leaving document-end, the tick's atEnd EDGE reapplies the selection rule —
+  // without a navigation override the requested chip flips back to the
+  // previously-observed chapter, and a short destination section may never
+  // fire an observer callback to correct it. Every navigation path must
+  // therefore route through one jump helper that clears atEnd and arms navId.
+  assert.match(js, /function jump\(id, scroll\)\{/);
+  assert.match(js, /atEnd = false;\s*\n\s*navId = id;/, 'the helper clears atEnd and arms the override');
+  // rail chips AND the ask-strip anchor: every in-page anchor to a derived
+  // chapter routes through the helper (scroll:false keeps native hash nav)
+  assert.match(js, /querySelectorAll\('a\[href\^="#"\]'\)/);
+  assert.match(js, /addEventListener\('click', function\(\)\{ jump\(k, false\); \}\)/);
+  // the keyboard path (1..9, Home/End) routes through the same helper
+  assert.match(js, /e\.preventDefault\(\);\s*\n\s*jump\(id\);/);
+  // navId OVERRIDES the observer/atEnd selection…
+  assert.match(js, /var id = navId !== null \? navId : atEnd \? ids\[ids\.length - 1\] : observerId;/);
+  // …and ONLY an observer callback carrying an INTERSECTING entry releases it —
+  // a leave-only callback must not (that is the stale flip-back in observer form)
+  assert.match(js, /if \(landed\) navId = null;/);
+  assert.equal((js.match(/navId =/g) || []).length, 3, 'declaration + jump arms + observer releases: no other writer');
 });
 
 test('script never references deck-era elements', () => {

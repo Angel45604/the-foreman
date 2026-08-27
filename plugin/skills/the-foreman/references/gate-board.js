@@ -53,23 +53,36 @@
   }
 
   /* scrollspy — a thin band around the viewport's middle decides the chapter.
-     TWO tracked signals drive the live chip: observerId (written ONLY by the
-     observer callback) and atEnd (owned by the rAF-throttled scroll tick
-     below). applyLive() recomputes the selection from both, so releasing the
-     end override restores the observer's chapter WITHOUT a fresh observer
-     event — scrolling up from the end may produce none, because the section
-     above the final one can be intersecting the band the whole time. */
+     THREE tracked signals drive the live chip: observerId (written ONLY by
+     the observer callback), atEnd (owned by the rAF-throttled scroll tick
+     below), and navId (armed by jump(), released ONLY by an intersecting
+     observer report). applyLive() recomputes the selection from all three, so
+     releasing the end override restores the observer's chapter WITHOUT a
+     fresh observer event — scrolling up from the end may produce none,
+     because the section above the final one can be intersecting the band the
+     whole time. */
   var observerId = null;
   var atEnd = false;
+  /* navId — the navigation override. Armed by jump() (chip clicks, 1..9 keys,
+     Home/End, the ask-strip anchor), it beats the observer/atEnd selection so
+     the first scroll tick after a jump can never flip the requested chip back
+     to a stale observerId — and a short destination section that never fires
+     an observer callback keeps its requested chip. The PINNED release rule:
+     the first observer callback carrying an INTERSECTING entry clears it (the
+     observer has a fresh pick). A leave-only callback must NOT release — its
+     observerId is exactly the stale chapter the override exists to beat. */
+  var navId = null;
   function applyLive(){
-    var id = atEnd ? ids[ids.length - 1] : observerId;
+    var id = navId !== null ? navId : atEnd ? ids[ids.length - 1] : observerId;
     if (id) setLive(id); /* no signal yet (initial callback, nothing in the band) keeps the markup's Top state */
   }
   if ('IntersectionObserver' in window){
     var spy = new IntersectionObserver(function(entries){
+      var landed = false;
       entries.forEach(function(e){
-        if (e.isIntersecting) observerId = e.target.id;
+        if (e.isIntersecting){ observerId = e.target.id; landed = true; }
       });
+      if (landed) navId = null; /* fresh observer pick → release the jump override */
       applyLive();
     }, { rootMargin: '-40% 0px -55% 0px', threshold: 0 });
     ids.forEach(function(id){
@@ -103,17 +116,28 @@
   }
   window.addEventListener('scroll', onEndScroll, { passive: true });
 
-  /* immediate feedback on click; the observer confirms on arrival */
-  ids.forEach(function(k){
-    if (chips[k]) chips[k].addEventListener('click', function(){ setLive(k); });
-  });
-
-  function jump(id){
+  /* ONE jump helper — EVERY navigation (rail chip click, 1..9 keys, Home/End,
+     the ask-strip anchor) routes through here: it clears atEnd (leaving the
+     end must not reapply stale end state), arms navId, and reapplies the
+     selection rule. scroll === false skips scrollIntoView so a native anchor
+     click keeps its default navigation (the URL hash stays deep-linkable). */
+  function jump(id, scroll){
     var s = document.getElementById(id);
     if (!s) return;
-    s.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
-    setLive(id);
+    atEnd = false;
+    navId = id;
+    if (scroll !== false) s.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
+    applyLive();
   }
+
+  /* immediate feedback on click; the observer confirms on arrival. Every
+     in-page anchor targeting a derived chapter routes through jump() — the
+     rail chips and the ask-strip "Jump to the ask" button alike. */
+  document.querySelectorAll('a[href^="#"]').forEach(function(a){
+    var k = a.getAttribute('href').slice(1);
+    if (!chips[k]) return;
+    a.addEventListener('click', function(){ jump(k, false); });
+  });
 
   /* number keys 1-9 jump to the first nine chapters; Home/End to first / last */
   window.addEventListener('keydown', function(e){
