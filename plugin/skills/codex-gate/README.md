@@ -6,9 +6,10 @@ Local-only: nothing is committed to any repo; all state lives under `~/.claude/c
 
 The contract source of truth is this README.
 
-**Tests:** run `bash codex-gate.test.sh` and expect `FAIL=0`. The printed `PASS=` count is the
-authoritative assert total (245 as of 2026-08-01); the per-tier Status lines below list what each
-tier added, not running totals. No npm packages — the suite is bash + Node stdlib only.
+**Tests:** run `bash codex-gate.test.sh` and expect `FAIL=0`. **`FAIL=0` is the contract.** No assertion
+total is quoted here: a hand-maintained count is stale the moment an assertion lands, nothing verifies it, and
+this one went stale three separate times during one initiative — each time costing a review cycle to flag. Run
+the suite if you want the number. The per-tier Status lines below list what each tier added, not running totals. No npm packages — the suite is bash + Node stdlib only.
 
 ---
 
@@ -237,3 +238,251 @@ Status: **Investigation contracts GREEN** — exercised by `codex-gate.test.sh` 
 the `investigate` outcome mappings (root_cause_found/needs_more_evidence/unsafe_or_blocked + infra/overflow),
 schema pinning to `investigate.schema.json`, code-tier read-only posture, brief+persona in packet, no-ledger,
 read-only invariant, and the `exec resume` round folding in `<RUNDIR>/evidence.md`).
+
+---
+
+## Config report — `config` (PINNED contract)
+
+A **report, not a gate**. `codex-gate.sh config` prints ONE JSON line describing the gate's **effective
+configuration** and whether the gate that actually runs still matches its **versioned source**.
+
+It exists because those two copies drifted apart once already — the versioned script and the installed
+runtime at `~/.claude/skills/codex-gate/codex-gate.sh` ended up with a different model, a different fast
+default, and a different sha256. Nobody noticed, so a fix committed to the repo would never have reached
+the running gate. This subcommand makes that condition observable.
+
+- **Read-only, always.** ZERO Codex calls, **no run dir**, no ledger, no repo mutation — it reads the
+  13-member inventory at both endpoints and runs read-only Git queries (`git rev-parse` to locate a work
+  tree, `git ls-files` to prove the source is tracked at its canonical path). Exit **0** on success.
+  Safe to run while another gate is mid-review.
+- **Fails closed** like the rest of the script: an unexpected argument ⇒ `exit 2` (the arg-validation
+  convention); anything that would make the report a guess ⇒ `die_infra` ⇒ an `INFRA_ERROR` status line.
+
+**Status line** (`outcome ∈ CONFIG | INFRA_ERROR`):
+
+| field | meaning |
+| --- | --- |
+| `defaults` | the **literal** fallback values baked into the **reporting** script (`model`, `effort`, `fast`). The other two copies' literals are `runtimeDefaults` / `sourceDefaults` |
+| `effective` | the dials in force **at the runtime endpoint**: `runtimeDefaults` with this environment's overrides applied. **Invariant to which copy runs `config`** — see the note below. `null` when the runtime's dials cannot be read at all. `fast` is normalized to its **real trigger** — `run_codex` arms fast mode on an exact `"1"` and nothing else, so `CODEX_GATE_FAST=2` reports `fast:false`; `fastRaw` keeps the raw value visible |
+| `origin` | per dial for **`effective` only** — i.e. the runtime endpoint: `"default"`, or the **name of the env var** that overrode that dial *there*. `null` exactly when `effective` is. It is **not** a fact about the environment alone, because each copy's expansion operator decides whether an override reaches its dial: with `${VAR:-…}` an empty value does **not** override (`origin` stays `"default"`), while with `${VAR-…}` it does. The reporter's own attribution is `reporter.origin`, and the two legitimately disagree when the copies declare different operators |
+| `reporter` | the process that produced the report: `{path, digest, dials, origin}`, so "the digest of the running script" is unambiguous even when it is neither endpoint. `dials` is `defaults` resolved under **the reporter's own** expansion operators — **this is what `effective` used to be** — and `origin` is that resolution's per-dial attribution, the reporter-scoped counterpart of top-level `origin` |
+| `runtimePath` / `runtimeDigest` / `runtimeKind` / `runtimeDefaults` | the gate that actually runs: path, sha256, `file`\|`symlink`\|`other`\|`missing`, and the dials that copy **declares**. `symlink` is reported when **any component** of the path is a symlink, not merely the leaf — the documented personal-skill setup symlinks the *directory*, and a leaf-only `-L` would call that install a plain physical one |
+| `runtimeExecutable` | whether the runtime script carries the executable bit — `true`\|`false`, or `null` when there is no runtime file to test. **A diagnostic only: it does not affect `parity` or `completeness`.** Every documented invocation runs the wrapper as `bash codex-gate.sh …`, and `bash <file>` needs only read permission, so a mode-0644 runtime runs fine. Worth noticing (a copy tool that drops the mode is a real thing), not worth failing on |
+| `sourcePath` / `sourceDigest` / `sourceKind` / `sourceDefaults` | the same four for the versioned copy. `sourceKind` is a **leaf** classification: the source is only ever read, and a checkout legitimately living behind a symlinked parent is not a hazard — the any-component rule exists because the *runtime* is the copy whose topology an operator is about to act on |
+| `sourceDiscovery` | how the source was resolved — or, when it wasn't, why not |
+| `syncInventory` | the documented 13-member file inventory (see Manual sync below) — the exact set parity is claimed over |
+| `inventoryDrift` | the members that actually **differ between** the two copies: `{file, state}` where state is `differs` \| `absent-from-source` \| `absent-from-runtime` |
+| `inventoryMissing` | the members **absent from an endpoint**: `{file, endpoint}` where endpoint is `source` \| `runtime` \| `both`. Distinct from drift: a member missing from *both* copies is not a difference between them, but it is still a hole in each |
+| `completeness` | `COMPLETE` when every inventory member is present on both endpoints, `INCOMPLETE` when any is not, `UNAVAILABLE` when an endpoint could not be located |
+| `digestParity` | sha256 byte identity across the **whole inventory**, not just the script |
+| `effectiveParity` | the **runtime-effective** dials (`effective`) vs the dials the versioned source **declares** — reported separately because byte-identical files still behave differently under env overrides |
+| `parity` | the roll-up: `MATCH` only when digest **and** effective matched **and** the pair is complete; a known difference ⇒ `MISMATCH` (it wins — a real divergence is the more actionable answer); agreement over an incomplete pair ⇒ `INCOMPLETE`; anything undetermined ⇒ `UNAVAILABLE` |
+| `remediation` | the machine-readable action list — a closed set: `sync-files` \| `clear-env-override` \| `rerun-from-source` \| `resolve-source` \| `resolve-runtime`. Empty **exactly when there is nothing to act on** (see below) |
+
+- **Three copies are in play, and the report keeps them apart.** The **runtime** (the gate that will actually
+  run), the **source** (the versioned copy) and the **reporter** (whichever copy you happened to invoke).
+  `effective` describes the **runtime**: its declared defaults with this environment's overrides applied. It
+  used to describe the *reporter*, which meant the answer to "what will this gate use?" changed with the copy
+  you asked — a runtime declaring `gpt-5.6-terra`/`ultra` was reported as `runtimeDefaults: {terra, ultra}`
+  alongside `effective: {sol, xhigh}` whenever `config` ran from the source checkout. Useless for reasoning
+  about the configured runtime, and most misleading in precisely the drift scenario this mode exists for.
+  **Same configured runtime + same environment now yields the same `effective` from either copy**; the
+  reporter is reported separately (`reporter.path`, `reporter.digest`, `reporter.dials`) so nothing is lost.
+  When the reporter's own dials are not the source's, the report says so as a `CAVEAT` and asks for
+  `rerun-from-source` — the one case where a `parity: MATCH` legitimately carries an action, because the
+  endpoints can agree perfectly while the report *about* them came from a third copy.
+- **The inventory enumeration is validated before any comparison is trusted.** The digest/completeness loop is
+  fed by enumerating `syncInventory`; when that enumeration yielded **no rows** the loop body never executed,
+  so `drift` and `missing` stayed empty and the roll-up fell straight through to `digestParity: MATCH`,
+  `completeness: COMPLETE`, `parity: MATCH` — a drift detector certifying agreement having compared *nothing*.
+  The enumeration is now materialized and checked against the exact expected member set (right **count**,
+  right **names**, in the declared **order**) before any verdict may depend on it; a mismatch is `INFRA_ERROR`.
+  The count is pinned independently of the list (`CODEX_GATE_SYNC_INVENTORY_COUNT`), because checking a
+  truncated enumeration against a truncated constant is a tautology — they agree, on nothing. Changing the
+  inventory is therefore a deliberate two-place edit in this script, and the suite pins the members as a third.
+- **`parity` never guesses.** A source copy that cannot be located or read reports **`UNAVAILABLE`**, never
+  a silent `MATCH`. A `missing` or `symlink` endpoint is reported as such via `*Kind` rather than assumed —
+  the owner-decided authoritative runtime `~/.claude/skills/codex-gate/codex-gate.sh` is a real directory
+  and a real file today, but the report **detects** that rather than trusting it.
+- **`MATCH` means "the same, and whole" — not merely "the same bytes".** Drift and completeness are
+  different questions, and folding them together answered the wrong one. Two skill directories that both
+  lacked `question.schema.json` reported `digestParity: MATCH`, `parity: MATCH` and an **empty**
+  `inventoryDrift` — literally true (they do not differ) and useless, because one of them is the gate about
+  to be trusted and it is not a whole skill. Absence is recorded in its own right: `completeness` is the
+  state, `inventoryMissing` names the member and which endpoint lacks it, and `MATCH` requires `COMPLETE`.
+  Such a pair reports **`parity: INCOMPLETE`** — not `MATCH` (it is not usable) and not `MISMATCH` (the two
+  copies genuinely do not differ). The `summary` names the reason.
+- **The executable bit is *not* a parity term.** An earlier revision made `runtimeExecutable: false` force
+  `INCOMPLETE`, on the theory that a skill is loaded by *executing* `codex-gate.sh`. That was **retracted**:
+  every documented command here invokes the wrapper as `bash codex-gate.sh …`, `bash <file>` needs read
+  permission only, and a mode-0644 copy demonstrably runs `config` to completion. Reporting the bit is
+  useful; failing parity on it sent operators to `chmod` a file that was never the problem.
+- **The MISMATCH remedy follows the CAUSE.** Files differing on disk and dials differing in the environment
+  want *opposite* actions, so the `summary` branches: digest/inventory drift ⇒ sync the files (see
+  [Manual sync](#manual-sync--keeping-the-runtime-equal-to-the-source-pinned-contract)); effective-only
+  drift ⇒ the summary **names the overriding variable** from `origin` and says to clear or change it, because
+  copying files cannot clear an env override; both ⇒ both. (The supported `CODEX_GATE_MODEL=''` hatch used to
+  produce "a fix in the source may not be reaching the running gate" over two byte-identical copies.) A runtime
+  whose *declared* dials differ from the source's is a **file** difference by construction — different literals
+  mean different bytes — so it is folded into the sync clause and named there rather than prescribed as a
+  second, independent action for one fault.
+- **`remediation` is empty exactly when there is nothing to act on** — `parity: MATCH` **and** the reporter's own
+  dials are the ones the source declares. It is **never** empty for `MISMATCH`, `INCOMPLETE` or `UNAVAILABLE`,
+  and `config` fails closed (`INFRA_ERROR`) rather than emit an empty list for one of those. `UNAVAILABLE` used
+  to emit `[]` — byte for byte the same signal as a clean `MATCH`, so a consumer branching on "empty means all
+  good" read *"we could not tell"* as *"everything agrees"*. Undetermined always has a cause worth naming: the
+  endpoint that could not be located, read, or parsed as a codex-gate script gets `resolve-source` or
+  `resolve-runtime`, and the `summary` says which knob to point where.
+- **Endpoint knobs** (both exist so tests use temp fixtures instead of a machine's real `~/.claude/skills`,
+  and so an operator can compare any two copies):
+  - `CODEX_GATE_RUNTIME` — the gate that actually runs. Default: `$HOME/.claude/skills/codex-gate/codex-gate.sh`.
+  - `CODEX_GATE_SOURCE` — the versioned copy. Default: auto-discovered, first match wins — (1) the running
+    script **when git tracks it at `plugin/skills/codex-gate/codex-gate.sh`**, (2) `<cwd repo top>/plugin/skills/codex-gate/codex-gate.sh`,
+    again only when git tracks it there, (3) otherwise none ⇒ `UNAVAILABLE` with the reason in `sourceDiscovery`.
+- **Auto-discovery must *prove* the source; it never falls back to self.** Being inside *some* git work tree
+  is not evidence of being the versioned copy. Discovery used to accept a successful `git rev-parse` from the
+  running script's directory, so a runtime installed under a dotfiles repo, an unrelated checkout or a scratch
+  repo compared itself **with itself** and reported `MATCH`/`COMPLETE` while the real repo had moved on —
+  masking exactly the drift this subcommand exists to expose. Both auto-discovery rules now require the file
+  to be **git-tracked** (`git ls-files --error-unmatch`) **and** at that canonical repo-relative path. If
+  neither can be proven, the source is `UNAVAILABLE`; an explicit `CODEX_GATE_SOURCE` is still honoured as
+  given, tracked or not.
+- **`defaults` are parsed back out of the file, not hardcoded** (`parse_dial`, a column-1 fixed-string match
+  on `VAR="${VAR<op>literal}"`, so no value can be read as a regex metacharacter). The guard that keeps it
+  honest is a replay: re-resolving the running script's own declaration against this environment must
+  reproduce the live variable, operator included. A disagreement ⇒ `INFRA_ERROR`, because every parity claim
+  would inherit the parser's error. A dial whose operator this parser does not model is never guessed at —
+  `INFRA_ERROR` for the reporter, `effective: null` / `origin: null` for an unparseable runtime.
+- **Each copy's own expansion operator decides its dials.** `${VAR-lit}` and `${VAR:-lit}` are *not*
+  interchangeable — an EMPTY value overrides under the first and falls back to the literal under the second —
+  and the runtime, the source and the reporter may each declare a dial either way, per dial. `effective` and
+  `origin` are therefore resolved under the **runtime's** operators; `reporter.dials` and `reporter.origin`
+  under the **reporter's own**. `config` used to parse the operator and discard it, applying the reporter's
+  form to everyone: against a runtime declaring `${CODEX_GATE_MODEL:-…}` with `CODEX_GATE_MODEL=''` exported
+  it reported `effective.model: ""` (that runtime's shell resolves the *literal*), named the variable in
+  `origin`, and told the operator to clear something that changes nothing — while a copy declaring `:-` for
+  the model could not report at all. `MISMATCH` on the bytes was never a substitute: it says the two files
+  differ, not what the running gate will *do*, which is the one question `effective` answers.
+
+Status: **Config contracts GREEN** — exercised by `codex-gate.test.sh` (all three dials by their EXACT
+effective values plus both digests and a parity state; an env override moving `effective` off `defaults`
+with `origin` naming the variable; `CODEX_GATE_FAST=2` reporting DISABLED with `=1` as the contrast control;
+a divergent fixture pair reporting MISMATCH and naming both distinct digests plus each side's declared dials;
+an unlocatable source reporting UNAVAILABLE rather than MATCH; missing, leaf-symlinked and
+directory-symlinked endpoints all reported honestly against a physical-path control; the inventory reported
+and pinned at exactly the documented 13 members, with a docs-only divergence reporting MISMATCH and naming
+the drifted members while the identical script is *not* named; a member absent from BOTH endpoints reporting
+`completeness: INCOMPLETE` and never MATCH, with the member and its endpoint named in both the machine field
+and the summary; a one-sided absence staying MISMATCH *and* INCOMPLETE; a byte-identical but non-executable
+runtime reporting `runtimeExecutable: false` while parity stays MATCH — with a mode-0644 copy of this very
+skill *running* `config` to exit 0 as the proof, and `+x` restored as the control; an untracked runtime under
+a git work tree refusing to self-certify (`sourcePath` empty, `UNAVAILABLE`), a tracked-but-off-path copy
+likewise, against a real checkout that still auto-discovers to a full MATCH, an explicit `CODEX_GATE_SOURCE`
+still honoured, and the cwd-checkout rule intact; the MISMATCH remedy branching by cause across all four
+combinations of file drift × env override; four independent ways of reaching a short inventory enumeration —
+two that break the enumeration with the constant intact, two that corrupt the constant with the enumeration
+intact — each failing closed to `INFRA_ERROR` against a control pair that genuinely IS a MATCH; `effective`
+proven **identical** whether `config` is invoked from the source copy or from the runtime copy, with and
+without an env override, while `reporter` shows the two really are different processes; and every non-MATCH
+parity carrying a non-empty, cause-specific action list; and the read-only invariants — zero Codex calls, no run dir, an
+unchanged repo, the runtime path's own mtime and inode untouched under both a review and `config` itself,
+exit 0, and exit 2 on a bogus argument. `install` is pinned as an **unknown, non-mutating** mode).
+
+---
+
+## Manual sync — keeping the runtime equal to the source (PINNED contract)
+
+`config` (above) makes source↔runtime drift **observable**. Resolving it is a **manual step**: copy the
+documented inventory from the versioned checkout onto the installed skill, then re-run `config` to confirm.
+
+> **Automated sync was removed.** An `install` subcommand used to do this. It accumulated five P1 defects
+> across two review rounds — a plugin-root containment bypass, a directory-symlink overwrite, an unusable
+> partial install, a non-transactional update that left a partial install behind after a *reported* failure,
+> and a `..` dot-segment containment bypass — all of them in the mutating path, none in the detector. The
+> detector shipped; the mutator was quarantined into its own initiative. Until that lands, sync by hand.
+> `codex-gate.sh` therefore **never writes either endpoint**: `config` is a report, and every other mode is
+> a review.
+
+### The sync unit is the whole skill directory
+
+Sync operates on an **explicit, documented file inventory** — not on `codex-gate.sh` alone. A script-only
+copy is wrong in two separate ways: it cannot run at all (`main` requires the sibling `verdict.schema.json`
+and `reviewer-instructions.md` before dispatching any mode), and it leaves the installed `SKILL.md` /
+`README.md` documenting superseded dials while a script-only parity check cheerfully says `MATCH`.
+
+| # | inventory member | why it is in the sync unit |
+| --- | --- | --- |
+| 1 | `codex-gate.sh` | the gate itself. Its two endpoints are the explicitly-named `CODEX_GATE_SOURCE` / `CODEX_GATE_RUNTIME` paths, whatever they are called, so both knobs keep pointing at a script; every other member is resolved as a sibling |
+| 2 | `verdict.schema.json` | required by `main` before ANY mode dispatches |
+| 3 | `question.schema.json` | the `question` grounding mode's output schema |
+| 4 | `investigate.schema.json` | the `investigate` mode's output schema |
+| 5 | `reviewer-instructions.md` | required by `main` before ANY mode dispatches |
+| 6–9 | `reviewer-instructions.{arch,frontend,security,tests}.md` | the four multi-lens personas |
+| 10 | `question-instructions.md` | the `question` mode's reviewer brief |
+| 11 | `investigate-instructions.md` | the `investigate` mode's reviewer brief |
+| 12 | `SKILL.md` | the operational contract an agent reads to drive the gate |
+| 13 | `README.md` | this contract |
+
+`config` reports the same list as `syncInventory`, so it is machine-readable and cannot silently drift from
+what you are told to copy. **Nothing outside the inventory is claimed over** — `codex-gate.test.sh` is
+deliberately excluded (the suite is developed against the checkout, not shipped into the runtime), and the
+per-file copy below leaves an owner's own notes in the installed directory untouched.
+
+### The sync
+
+Run from the checkout carrying the fix. `$GATE` is that checkout's `plugin/skills/codex-gate`; the
+destination is the owner-decided authoritative install:
+
+```bash
+GATE=/path/to/the-foreman/plugin/skills/codex-gate
+DEST=~/.claude/skills/codex-gate
+
+mkdir -p "$DEST"
+for f in codex-gate.sh verdict.schema.json question.schema.json investigate.schema.json \
+         reviewer-instructions.md reviewer-instructions.arch.md reviewer-instructions.frontend.md \
+         reviewer-instructions.security.md reviewer-instructions.tests.md \
+         question-instructions.md investigate-instructions.md SKILL.md README.md; do
+  cp "$GATE/$f" "$DEST/$f"
+done
+chmod +x "$DEST/codex-gate.sh"
+```
+
+Why it is written this way:
+
+- **Per-file, not `cp -r`.** The loop names exactly the 13 inventory members, so anything else in the
+  installed directory — your own notes, an old scratch file — is neither overwritten nor removed. `cp -r`
+  would sweep in `codex-gate.test.sh` and any other checkout-only file.
+- **The explicit `chmod +x` is tidiness, not a requirement.** `cp` onto an *existing* destination file keeps
+  the destination's mode, so a runtime that lost its executable bit keeps that mode through any number of
+  syncs; this line restores it. It does **not** gate anything — the gate is invoked as `bash codex-gate.sh`
+  throughout, which needs no `+x`. `config` reports the bit (`runtimeExecutable`) without failing on it.
+- **Not atomic, and not pretending to be.** This is a plain sequence of copies: do not run it while a gate
+  is mid-review elsewhere. The verification step below is what tells you it landed.
+
+### Verify — this is the step that closes the loop
+
+```bash
+bash "$GATE/codex-gate.sh" config | jq '{parity, digestParity, effectiveParity, completeness, runtimeExecutable}'
+```
+
+Expect **`parity: MATCH`**, with `digestParity` and `effectiveParity` both `MATCH` and
+`completeness: COMPLETE`. (`runtimeExecutable` is informational — `true` is tidy, `false` does not block
+anything.) Anything else is the report telling you the sync did not land:
+
+| what you see | what it means |
+| --- | --- |
+| `MISMATCH` | a member still differs, **or** an env var is overriding a dial — the `summary` says which, and gives the matching remedy (sync the files / clear the named variable / both) |
+| `INCOMPLETE` | the copies agree but one of them is not a whole skill — read `inventoryMissing` (which member, which endpoint) |
+| `UNAVAILABLE` | an endpoint could not be located, read, or **proven to be the tracked canonical source** — read `sourceDiscovery` and `runtimeKind`; this is *not* a match |
+
+Run both commands **from the checkout carrying the fix**: `CODEX_GATE_SOURCE` auto-discovery resolves to the
+running script when git tracks it at `plugin/skills/codex-gate/codex-gate.sh`, so no env var is needed for
+the common case, and `CODEX_GATE_RUNTIME` defaults to the real installed gate. Note the consequence of that
+rule: running `config` from the **installed** copy instead of the checkout reports
+`sourceDiscovery: none…` and `parity: UNAVAILABLE` unless the cwd is a checkout — deliberately, since an
+installed copy cannot vouch for itself.
+
+**If your install is the symlink mode**, there is nothing to sync — the two "copies" are one file, and
+`config` reports `runtimeKind: symlink`. Do not run the copy loop against a symlinked destination: it would
+write **through** the link into the checkout and silently convert a linked install into a copied one. See
+the repo-root README's "Pick one install mode".

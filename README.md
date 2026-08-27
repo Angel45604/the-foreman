@@ -78,7 +78,13 @@ for s in the-foreman codex-gate handoff keep-it-simple; do
 done
 ```
 
-**Pick one install mode.** Both at once loads each skill twice.
+**Pick one install mode.** Both at once loads each skill twice — nothing detects that for you, so keep
+track of which mode you chose. If you'd rather keep a **physical copy** at `~/.claude/skills/codex-gate`
+instead of a symlink, `cp -r` the directory instead of `ln -s` — then a copy can drift from the checkout,
+so see `plugin/skills/codex-gate/README.md`'s "Manual sync" section for the exact copy command and the
+parity check that confirms it landed. Run `codex-gate.sh config` any time to check whether the two copies
+have quietly drifted apart and whether the installed one is complete: it inspects **one** configured
+runtime endpoint against the versioned source and enumerates no other installs.
 
 ## Bundled skills
 

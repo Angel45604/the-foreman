@@ -14,6 +14,7 @@
 #   codex-gate.sh investigate  <file>    [round] [threadId]   # root-cause a bug (sibling)
 #   codex-gate.sh prepr        [base]    [round] [threadId]
 #   codex-gate.sh prepr-delta  [base]    [round] [threadId]   # since-reviewed delta
+#   codex-gate.sh config                                      # read-only dials + parity report
 #
 # Contract source of truth is README.md (sibling of this file), including Phase-0 pins.
 #
@@ -30,6 +31,36 @@
 #   {outcome, threadId, round, verdictPath, runDir, confidence, nextSafeProbe, summary}
 #   outcome ∈ ROOT_CAUSE_FOUND | NEEDS_MORE_EVIDENCE | UNSAFE_OR_BLOCKED | INFRA_ERROR | OVERFLOW.
 #   (First three come from Codex's report; the wrapper adds INFRA_ERROR/OVERFLOW. Never auto-fixes.)
+#
+# Outcome (one JSON status line on stdout for the CONFIG read-only report):
+#   {outcome, defaults, effective, origin, reporter, runtimePath, runtimeDigest, runtimeKind,
+#    runtimeExecutable, runtimeDefaults, sourcePath, sourceDigest, sourceKind, sourceDiscovery,
+#    sourceDefaults, syncInventory, inventoryDrift, inventoryMissing, completeness,
+#    digestParity, effectiveParity, parity, summary, remediation}
+#   Three copies are in play and the report keeps them apart: `effective` is the RUNTIME
+#   endpoint's declared dials with this environment's overrides applied UNDER THAT FILE'S OWN
+#   expansion operators (so it is invariant to which copy ran `config`), with `origin` beside
+#   it saying which side won each dial — both `null` when the runtime cannot be parsed;
+#   `reporter` is the process that produced the report — its path, digest, its OWN resolved
+#   dials and its OWN `origin`, resolved under ITS operators, which may legitimately differ
+#   from the runtime's; `defaults` are the reporter's declared literals.
+#   outcome ∈ CONFIG | INFRA_ERROR.  Makes source↔runtime DRIFT observable; calls Codex zero
+#   times, creates no run dir, writes no ledger.  parity NEVER reports MATCH on a guess.
+#   digestParity is a DIRECTORY-level claim over CODEX_GATE_SYNC_INVENTORY, so MATCH means
+#   the installed skill matches the source INCLUDING its schemas and operational docs;
+#   inventoryDrift names each member that differs or is present on only one side.
+#   parity ∈ MATCH | MISMATCH | INCOMPLETE | UNAVAILABLE.  INCOMPLETE = the two copies agree
+#   as far as they go but this is not a complete install — an inventory member is absent
+#   (completeness + inventoryMissing say which member and from which endpoint).
+#   runtimeExecutable is a DIAGNOSTIC only: `bash codex-gate.sh` needs no +x, so the bit
+#   never moves parity.  The gate NEVER writes either endpoint — syncing is manual, see README.md.
+#   remediation is a machine-readable action list, a small closed set — sync-files |
+#   clear-env-override | rerun-from-source | resolve-source | resolve-runtime — built from
+#   the SAME conditions that grow `summary`, so the two cannot disagree; which variable(s)
+#   are implicated is already in `origin`. Empty exactly when there is NOTHING TO ACT ON:
+#   parity MATCH *and* the reporter's own dials are the ones the source declares. Never
+#   empty for MISMATCH / INCOMPLETE / UNAVAILABLE — an empty list is the all-clear signal,
+#   and UNAVAILABLE emitting one made "we could not tell" read as "everything agrees".
 
 set -u
 
@@ -43,16 +74,36 @@ CODEX_GATE_RUNS="${CODEX_GATE_RUNS:-$HOME/.claude/codex-gate/runs}"
 SCHEMA_FILE="$SKILL_DIR/verdict.schema.json"
 INSTRUCTIONS_FILE="$SKILL_DIR/reviewer-instructions.md"
 
-# Model / reasoning-effort. Default to the user's quality-first Codex pair (gpt-5.6-sol / ultra);
-# override via env. (Added to argv only when non-empty; set CODEX_GATE_MODEL="" to use Codex's own default.)
-CODEX_GATE_MODEL="${CODEX_GATE_MODEL:-gpt-5.6-sol}"
-CODEX_GATE_EFFORT="${CODEX_GATE_EFFORT:-ultra}"
+# Dial ENV capture — read ONLY by `config`, and it MUST stay directly above the three
+# assignments below: once they run, an overridden var is indistinguishable from a defaulted
+# one. TWO facts per dial, and deliberately NOT mirrored to this file's own expansion forms:
+# whether an override wins depends on the operator of the SCRIPT BEING DESCRIBED, and
+# `config` describes other copies (the installed runtime, the versioned source) as well as
+# this one. `${VAR+1}` = SET at all, which is what `${VAR-default}` keys off; `${VAR:+1}` =
+# set AND non-empty, which is what `${VAR:-default}` keys off. Capturing both lets `config`
+# resolve any dial under EITHER operator; baking one operator in here is what made it report
+# a `:-` runtime's empty override as though that runtime used `-`.
+# The INBOUND value is recoverable from these two plus the live variable: non-empty survives
+# both operators unchanged, and "set but empty" is by definition the empty string.
+CODEX_GATE_MODEL_SET="${CODEX_GATE_MODEL+1}"
+CODEX_GATE_MODEL_NONEMPTY="${CODEX_GATE_MODEL:+1}"
+CODEX_GATE_EFFORT_SET="${CODEX_GATE_EFFORT+1}"
+CODEX_GATE_EFFORT_NONEMPTY="${CODEX_GATE_EFFORT:+1}"
+CODEX_GATE_FAST_SET="${CODEX_GATE_FAST+1}"
+CODEX_GATE_FAST_NONEMPTY="${CODEX_GATE_FAST:+1}"
+
+# Model / reasoning-effort. Default tier is gpt-5.6-sol / xhigh — NOT ultra: ultra performs
+# automatic task delegation (observed spawning ~3 sub-reviewers per round, wrapper-invisible
+# and unbounded by --multi/CODEX_GATE_FANOUT); it remains available via explicit env override.
+# (Model added to argv only when non-empty; set CODEX_GATE_MODEL="" to use Codex's own default.)
+CODEX_GATE_MODEL="${CODEX_GATE_MODEL-gpt-5.6-sol}"
+CODEX_GATE_EFFORT="${CODEX_GATE_EFFORT:-xhigh}"
 
 # Fast mode (Codex "Speed"): keeps the SAME model (gpt-5.6-sol) but runs ~1.5x faster at ~2.5x credit
-# cost (per developers.openai.com/codex/speed). Default ON (enforced); set CODEX_GATE_FAST=0 to
-# conserve credits. The gate inherits none of the app's config (--ignore-user-config), so this is
-# the only way fast mode reaches the gate's Codex calls. NOT a quality knob — reasoning effort is separate.
-CODEX_GATE_FAST="${CODEX_GATE_FAST:-1}"
+# cost (per developers.openai.com/codex/speed). Default OFF (opt-in); set CODEX_GATE_FAST=1 to
+# spend the extra credits for speed. The gate inherits none of the app's config (--ignore-user-config),
+# so this is the only way fast mode reaches the gate's Codex calls. NOT a quality knob — reasoning effort is separate.
+CODEX_GATE_FAST="${CODEX_GATE_FAST:-0}"
 
 # Extra scratch excludes (space-separated globs), opt-in per repo.
 CODEX_GATE_EXCLUDES="${CODEX_GATE_EXCLUDES:-}"
@@ -1431,6 +1482,34 @@ _prepr_common() {
   set_round_paths
   mkdir -p "$RUN_DIR"
 
+  # ultra + multi-lens fan-out refusal (fail-closed; RUN_DIR is set, so die_infra's status
+  # carries proper paths). `ultra` performs its OWN automatic, model-driven task delegation
+  # (observed ~3 wrapper-invisible sub-reviewers per round across a controlled sweep — 0
+  # spawn_agent calls off-ultra vs ~1,060 under ultra — and descendants attempting FURTHER
+  # nested delegation, stopped only by a global thread limit: 3 is a capped floor, not a
+  # ceiling). Multi-lens ALSO fans out (arch/security/tests[/frontend]). Stacking them
+  # multiplies reviewers — lenses × ultra's own native children — wrapper-invisible and
+  # unbounded by CODEX_GATE_FANOUT_MAX_LENSES (that cap only counts OUR lenses). Refuse
+  # before any codex call rather than run an unbounded review.
+  # Reads the RESOLVED `$multilens` (both --multi and CODEX_GATE_FANOUT=1 already folded in
+  # above — checking `$multi_flag` alone would leave the env-only path wide open) and the
+  # RESOLVED `$CODEX_GATE_EFFORT` (a plain global var assigned once at the top of this file;
+  # by the time this function runs it already reflects any env override, so
+  # CODEX_GATE_EFFORT=ultra is caught the same as a hypothetical file default would be).
+  # NO bypass env var is offered — two legitimate escape hatches already exist without one:
+  # (1) drop --multi / unset CODEX_GATE_FANOUT and run single-lens ultra, or (2) keep
+  # --multi and pick a non-delegating CODEX_GATE_EFFORT. A silent override would defeat the
+  # whole point of failing closed here.
+  if [ "$multilens" = "1" ] && [ "$CODEX_GATE_EFFORT" = "ultra" ]; then
+    local ultra_trig=""
+    [ "$multi_flag" != "1" ] || ultra_trig="--multi"
+    if [ "${CODEX_GATE_FANOUT:-0}" = "1" ]; then
+      if [ -n "$ultra_trig" ]; then ultra_trig="$ultra_trig and CODEX_GATE_FANOUT=1"
+      else ultra_trig="CODEX_GATE_FANOUT=1"; fi
+    fi
+    die_infra "refusing: multi-lens fan-out ($ultra_trig) combined with CODEX_GATE_EFFORT=ultra would multiply reviewers — ultra runs its OWN automatic, wrapper-invisible sub-reviewer delegation on top of every lens this run would fan out to (unbounded by CODEX_GATE_FANOUT_MAX_LENSES). Fail-closed, ZERO codex calls. To proceed: lower CODEX_GATE_EFFORT below ultra and keep $ultra_trig, or drop $ultra_trig and run a normal single-lens ultra review."
+  fi
+
   # Validate the packet-budget knob ONCE, before ANY size comparison downstream (the normal
   # enforce_packet_budget, the shard per-job check, AND the multi-lens over-budget preflight all
   # compare against it). A malformed value makes `[ N -gt "$CODEX_GATE_PACKET_BUDGET" ]` error and
@@ -2151,11 +2230,797 @@ emit_synthetic_approve() { # <summary>
 parse_thread_id_noop() { THREAD_ID=""; }
 
 # ============================================================================
+# MODE: config  (READ-ONLY report — ZERO Codex calls, no run dir, no ledger)
+# ----------------------------------------------------------------------------
+# Reports the gate's EFFECTIVE configuration and source/runtime PARITY, so the drift
+# this file has already suffered once — the versioned copy and the installed runtime
+# quietly diverging (different model, different fast default, different sha256), with
+# nobody noticing that a fix committed to the repo never reached the running gate — is
+# OBSERVABLE instead of invisible. Reads three files and one `git rev-parse`; writes
+# nothing anywhere. Safe to run while another gate is mid-review.
+#
+#   defaults    the LITERAL fallback values baked into the REPORTING script (this process).
+#               The runtime's and the source's own literals are runtimeDefaults / sourceDefaults.
+#   effective   the values actually in force AT THE RUNTIME ENDPOINT: runtimeDefaults with
+#               this environment's overrides applied. NOT the reporting process's dials —
+#               that made the answer depend on which copy you ran `config` from, which is
+#               useless for reasoning about the configured runtime and worst precisely in a
+#               drift scenario. Invariant to the reporter; `null` when the runtime's dials
+#               cannot be read at all. `fast` is normalized to its REAL trigger — run_codex
+#               enables fast mode only on an exact "1", so CODEX_GATE_FAST=2 reports
+#               fast:false. `fastRaw` keeps the raw value visible so a 2 is not silently
+#               rounded to either state.
+#   origin      per dial: "default", or the name of the env var that overrode it. It
+#               describes `effective`, and ONLY `effective` — whether an override wins is
+#               decided by the operator of the declaration it is competing with, so this is
+#               a fact about the environment AND the runtime's own `${VAR-…}` / `${VAR:-…}`
+#               forms, not a portable one. `null` when `effective` is. It used to be shared
+#               with `reporter.dials`, which is wrong the moment the two copies declare a
+#               dial differently — and they do; see the note on `effective`.
+#   reporter    the process that produced this report: {path, digest, dials, origin}. `dials`
+#               is `defaults` with the same env overrides applied under THIS script's
+#               operators — i.e. what `effective` used to be, kept so the information is not
+#               lost and so a report computed by a copy that is not the source can say so
+#               (see remediation rerun-from-source) — and `origin` explains those dials the
+#               way the top-level `origin` explains `effective`.
+#   parity      MATCH / MISMATCH / INCOMPLETE / UNAVAILABLE, rolled up from three
+#               checks reported separately, because byte-identical files can still
+#               behave differently under env overrides — and can still be half a skill:
+#                 digestParity     — sha256 byte identity across the whole inventory
+#                 effectiveParity  — the RUNTIME-effective dials (`effective`) vs the
+#                                    dials the versioned SOURCE declares
+#                 completeness     — every inventory member present on BOTH endpoints
+#                                    (inventoryMissing names any that are not, and
+#                                    which endpoint lacks each)
+#               MATCH requires all three; a known difference is MISMATCH; agreement
+#               over an incomplete pair is INCOMPLETE; anything unlocatable/unparseable
+#               is UNAVAILABLE. Nothing undetermined ever reports MATCH.
+#               `runtimeExecutable` is reported alongside but is NOT one of the checks —
+#               see the note at the field: `bash codex-gate.sh` does not need the bit.
+#
+# Endpoints (both overridable so tests can point at fixtures instead of a machine's
+# real ~/.claude/skills state):
+#   CODEX_GATE_RUNTIME  the gate that actually runs — default the owner-decided
+#                       authoritative install $HOME/.claude/skills/codex-gate/codex-gate.sh
+#                       (a real directory, NOT a symlink; symlink/missing is detected and
+#                       reported via runtimeKind rather than assumed).
+#   CODEX_GATE_SOURCE   the versioned copy — default auto-discovered (see below).
+# `running` always names the script that produced the report, so "the digest of the
+# running script" is unambiguous even when it is neither endpoint.
+# ============================================================================
+
+sha256_of() { # <file> -> 64-hex sha256, or EMPTY when unreadable (follows symlinks: the
+  # target is what would actually run). Caller treats empty as "no digest available".
+  [ -f "$1" ] || return 0
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" 2>/dev/null | awk '{print $1}'
+  fi
+}
+
+path_kind() { # <path> -> symlink | file | other | missing  (-L FIRST: -f follows links,
+  # so testing -f first would report a symlinked install as a plain file)
+  if   [ -L "$1" ]; then printf 'symlink'
+  elif [ -f "$1" ]; then printf 'file'
+  elif [ -e "$1" ]; then printf 'other'
+  else                   printf 'missing'
+  fi
+}
+
+path_has_symlink_component() { # <path> -> echoes the FIRST symlinked component, returns 0; else 1
+  # Leaf-only `-L` is not enough for an honest report. The repo-root README's documented
+  # personal-skill setup symlinks the skill DIRECTORY
+  # (`ln -s .../plugin/skills/codex-gate ~/.claude/skills/codex-gate`), so `<link>/codex-gate.sh`
+  # is a perfectly ordinary file by `-L` and `config` would call a symlinked install a plain
+  # physical one — the single fact an operator most needs when the two copies disagree. Walk
+  # the components textually — deliberately NOT resolving as we go, since resolving is what
+  # hides the link.
+  local p="$1" acc="" comp rest
+  case "$p" in /*) ;; *) p="$PWD/$p" ;; esac
+  rest="${p#/}"
+  while [ -n "$rest" ]; do
+    case "$rest" in
+      */*) comp="${rest%%/*}"; rest="${rest#*/}" ;;
+      *)   comp="$rest";       rest="" ;;
+    esac
+    [ -n "$comp" ] || continue
+    acc="$acc/$comp"
+    if [ -L "$acc" ]; then printf '%s' "$acc"; return 0; fi
+  done
+  return 1
+}
+
+runtime_path_kind() { # <path> -> symlink | file | other | missing (symlink wins on ANY component)
+  if path_has_symlink_component "$1" >/dev/null 2>&1; then printf 'symlink'; return 0; fi
+  path_kind "$1"
+}
+
+# ============================================================================
+# The SYNC INVENTORY — the unit a manual sync copies and `config` claims parity over.
+# ----------------------------------------------------------------------------
+# Everything the skill needs to RUN, plus the two operational docs that describe how
+# it behaves. A script-only claim was wrong in two separate ways: a copy carrying only
+# codex-gate.sh cannot run at all (`main` requires the sibling verdict.schema.json +
+# reviewer-instructions.md before dispatching any mode), and a copy whose SKILL.md /
+# README.md still document superseded dials was reported as a full MATCH.
+#
+# This list is the CONTRACT (documented in README.md's "Manual sync" section and
+# reported by `config` as `syncInventory`). Nothing outside it is claimed over, so an
+# owner's own notes in the installed skill directory are simply not this report's
+# business. `codex-gate.test.sh` is deliberately absent: the suite is developed
+# against the checkout, not shipped into the runtime.
+#
+# The FIRST entry is "the script": its two endpoints are the explicitly-named
+# CODEX_GATE_SOURCE / CODEX_GATE_RUNTIME paths whatever they happen to be called, so
+# both knobs keep pointing at a script. Every other entry is resolved as a sibling of
+# the corresponding endpoint.
+# ============================================================================
+CODEX_GATE_SYNC_INVENTORY='codex-gate.sh
+verdict.schema.json
+question.schema.json
+investigate.schema.json
+reviewer-instructions.md
+reviewer-instructions.arch.md
+reviewer-instructions.frontend.md
+reviewer-instructions.security.md
+reviewer-instructions.tests.md
+question-instructions.md
+investigate-instructions.md
+SKILL.md
+README.md'
+
+# DOUBLE-ENTRY PIN on the size of that list, deliberately NOT derived from it.
+# The comparison loop below is fed by enumerating the constant, so validating the
+# enumeration AGAINST the constant cannot see a constant that is itself empty or
+# truncated — the two would agree on nothing and the loop would run zero times, which is
+# how `config` came to certify digestParity MATCH / completeness COMPLETE over a
+# comparison it never performed. An independently stated count is the one fact that
+# catches that, and changing the inventory is meant to be a deliberate two-place edit
+# (the suite pins the member list itself as a third).
+CODEX_GATE_SYNC_INVENTORY_COUNT=13
+
+inventory_pairs() { # <sourceScript> <destScript> -> "<src>\t<dest>\t<name>" per member
+  local srcDir destDir name first=1
+  srcDir="$(dirname "$1")"; destDir="$(dirname "$2")"
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    if [ "$first" = "1" ]; then
+      first=0
+      printf '%s\t%s\t%s\n' "$1" "$2" "$name"
+    else
+      printf '%s\t%s\t%s\n' "$srcDir/$name" "$destDir/$name" "$name"
+    fi
+  done <<INVEOF
+$CODEX_GATE_SYNC_INVENTORY
+INVEOF
+}
+
+parse_dial() { # <file> <VAR> -> "<op>|<literal>", or EMPTY when absent/malformed
+  # Reads a dial's declared fallback out of ANY codex-gate.sh: the assignment line
+  # `VAR="${VAR<op>literal}"` where <op> is `-` (unset only) or `:-` (unset or empty).
+  # Anchored at column 1 via awk index() — a fixed-string compare, so nothing in the
+  # value can be read as a regex metacharacter, and a comment mentioning the var is
+  # never matched. Pure; fails by echoing nothing (callers fail closed on empty).
+  local f="$1" v="$2" prefix line rest op
+  [ -f "$f" ] || return 0
+  prefix="$v=\"\${$v"
+  line="$(awk -v p="$prefix" 'index($0,p)==1 {print; exit}' "$f" 2>/dev/null)"
+  [ -n "$line" ] || return 0
+  rest="${line#"$prefix"}"                       # e.g.  -gpt-5.6-sol}"   or   :-xhigh}"
+  case "$rest" in
+    :-*) op=":-"; rest="${rest#:-}" ;;
+    -*)  op="-";  rest="${rest#-}"  ;;
+    *)   return 0 ;;
+  esac
+  case "$rest" in
+    *'}"') rest="${rest%\}\"}" ;;
+    *)     return 0 ;;
+  esac
+  printf '%s|%s' "$op" "$rest"
+}
+
+resolve_dial() { # <op> <literal> <VAR> <isSet> <isNonEmpty> <inbound> -> "<origin>|<value>"
+  # Resolve ONE dial exactly as the SCRIPT THAT DECLARES IT would, and say which side won.
+  # The operator is not a formality and the two are NOT interchangeable: `${VAR:-lit}` reads
+  # an EMPTY value as absent and falls back to `lit`; `${VAR-lit}` reads it as a deliberate
+  # empty override and keeps it. Resolving one script's dial under ANOTHER script's operator
+  # is exactly how `config` came to report a `:-` runtime's model as "" — a value that
+  # runtime never uses — and to advise clearing a variable that was changing nothing.
+  # <isSet>/<isNonEmpty> are the operator-INDEPENDENT captures from the top of this file;
+  # <inbound> is the value the environment actually supplied ("" when unset or set-empty).
+  # `origin` is "default" when the declared literal won, else the variable's own name.
+  # Fails (nonzero, no output) on an operator this parser does not model — never guesses.
+  local op="$1" lit="$2" var="$3" isSet="$4" isNonEmpty="$5" inbound="$6" wins=""
+  case "$op" in
+    ':-') [ -z "$isNonEmpty" ] || wins=1 ;;
+    '-')  [ -z "$isSet" ]      || wins=1 ;;
+    *)    return 1 ;;
+  esac
+  if [ -n "$wins" ]; then printf '%s|%s' "$var" "$inbound"; else printf 'default|%s' "$lit"; fi
+}
+
+# The repo-relative path a checkout of this project carries the gate at. Auto-discovery
+# claims a file is "the versioned copy" only when git tracks it AT THIS PATH.
+CODEX_GATE_CANONICAL_RELPATH='plugin/skills/codex-gate/codex-gate.sh'
+
+# ----------------------------------------------------------------------------
+# Is <path> the TRACKED CANONICAL copy — the file a checkout of this project is supposed
+# to carry, as git itself sees it?
+#
+# Sitting inside SOME git work tree proves nothing. An installed runtime dropped under a
+# dotfiles repo, an unrelated checkout, or a scratch repo answers `rev-parse` perfectly
+# well, and taking that as "this file IS the versioned copy" made `config` compare a copy
+# with ITSELF and certify digestParity MATCH / completeness COMPLETE / parity MATCH — the
+# exact drift the subcommand exists to expose, masked by the check meant to expose it.
+#
+# Two facts are required, and both come from git rather than from the filesystem:
+#   * TRACKED — `git ls-files --error-unmatch` fails (nonzero) for anything git does not
+#     have in its index, which is precisely the untracked-copy case.
+#   * CANONICAL PATH — `--full-name` prints the path relative to the work-tree root, so a
+#     tracked-but-relocated copy (vendored under tools/, say) is rejected too.
+# Read-only: one `git ls-files`, no writes. Returns 0 only when both hold.
+# ----------------------------------------------------------------------------
+gate_is_tracked_canonical() { # <path>
+  local p="$1" dir base rel
+  [ -f "$p" ] || return 1
+  dir="$(cd "$(dirname "$p")" 2>/dev/null && pwd)" || return 1
+  base="$(basename "$p")"
+  rel="$(git -C "$dir" ls-files --full-name --error-unmatch -- "$base" 2>/dev/null)" || return 1
+  [ "$rel" = "$CODEX_GATE_CANONICAL_RELPATH" ] || return 1
+  return 0
+}
+
+# ----------------------------------------------------------------------------
+# Resolve the versioned SOURCE copy for `config`. Kept as its own function so the
+# discovery rule is stated once and can be quoted verbatim in the docs an operator
+# follows when syncing by hand — `config` must claim parity against exactly the copy
+# the operator would copy FROM. Auto-discovery order (first match wins):
+#   1. CODEX_GATE_SOURCE override (an explicit instruction; honoured as given)
+#   2. the running script itself, ONLY when git tracks it at $CODEX_GATE_CANONICAL_RELPATH
+#   3. <cwd git work tree top>/$CODEX_GATE_CANONICAL_RELPATH, same proof required
+#   4. none PROVEN -> RESOLVED_SOURCE_DISCOVERY states why, path/kind/digest stay empty/missing
+# There is deliberately NO fall-back to self: an unprovable source reports UNAVAILABLE,
+# because "I could not find the versioned copy" and "the versioned copy is whatever I am"
+# are opposite answers and only one of them is honest.
+# Sets globals (caller reads them immediately; not meant to outlive the call):
+#   RESOLVED_SOURCE_PATH RESOLVED_SOURCE_KIND RESOLVED_SOURCE_DIGEST RESOLVED_SOURCE_DISCOVERY
+# Side-effect-free besides read-only `git` queries + file reads.
+# ----------------------------------------------------------------------------
+resolve_gate_source() { # <selfDir> <selfPath>
+  local selfDir="$1" selfPath="$2" top="" cand=""
+  RESOLVED_SOURCE_PATH="" RESOLVED_SOURCE_KIND="missing" RESOLVED_SOURCE_DIGEST="" RESOLVED_SOURCE_DISCOVERY=""
+  if [ -n "${CODEX_GATE_SOURCE:-}" ]; then
+    RESOLVED_SOURCE_PATH="$CODEX_GATE_SOURCE"
+    RESOLVED_SOURCE_DISCOVERY="CODEX_GATE_SOURCE"
+  elif gate_is_tracked_canonical "$selfPath"; then
+    # the running script is the checkout's OWN tracked canonical copy => it IS the source
+    top="$(git -C "$selfDir" rev-parse --show-toplevel 2>/dev/null)"
+    RESOLVED_SOURCE_PATH="$selfPath"
+    RESOLVED_SOURCE_DISCOVERY="running script (git-tracked at $CODEX_GATE_CANONICAL_RELPATH in work tree $top)"
+  elif top="$(git rev-parse --show-toplevel 2>/dev/null)" && [ -n "$top" ] \
+       && cand="$top/$CODEX_GATE_CANONICAL_RELPATH" && gate_is_tracked_canonical "$cand"; then
+    RESOLVED_SOURCE_PATH="$cand"
+    RESOLVED_SOURCE_DISCOVERY="cwd git work tree ($top), git-tracked at $CODEX_GATE_CANONICAL_RELPATH"
+  else
+    RESOLVED_SOURCE_DISCOVERY="none: the running script is not git-tracked at $CODEX_GATE_CANONICAL_RELPATH, and the cwd is not a checkout that tracks it there — set CODEX_GATE_SOURCE, or run from the repo that carries it. (Being inside SOME git work tree is not proof: an untracked runtime would otherwise certify itself as its own source.)"
+  fi
+  if [ -n "$RESOLVED_SOURCE_PATH" ]; then
+    RESOLVED_SOURCE_KIND="$(path_kind "$RESOLVED_SOURCE_PATH")"
+    RESOLVED_SOURCE_DIGEST="$(sha256_of "$RESOLVED_SOURCE_PATH")"
+    [ -n "$RESOLVED_SOURCE_DIGEST" ] || RESOLVED_SOURCE_DISCOVERY="$RESOLVED_SOURCE_DISCOVERY (unreadable: $RESOLVED_SOURCE_PATH)"
+  fi
+}
+
+mode_config() {
+  [ $# -eq 0 ] || { echo "config takes no arguments" >&2; exit 2; }
+
+  # ---- the RUNNING script: the report's anchor, and the source of `defaults` ----
+  local selfDir selfPath selfDigest
+  selfDir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || selfDir=""
+  [ -n "$selfDir" ] || die_infra "config: cannot resolve the running script's directory"
+  selfPath="$selfDir/$(basename "${BASH_SOURCE[0]}")"
+  [ -f "$selfPath" ] || die_infra "config: the running script is not readable at $selfPath"
+  selfDigest="$(sha256_of "$selfPath")"
+
+  # ---- defaults: the literal fallbacks AND their expansion operators, read back out of
+  # the running script. The operator is HALF of a dial's declaration and is kept WITH it:
+  # `${VAR-lit}` and `${VAR:-lit}` disagree about an EMPTY value, so no dial can be resolved
+  # from its literal alone. The operator used to be parsed and thrown away, leaving every
+  # dial — this script's, the runtime's, the source's — resolved under THIS file's forms.
+  local pair defModel defEffort defFast selfOpModel selfOpEffort selfOpFast
+  pair="$(parse_dial "$selfPath" CODEX_GATE_MODEL)"
+  [ -n "$pair" ] || die_infra "config: cannot read the CODEX_GATE_MODEL default from $selfPath"
+  selfOpModel="${pair%%|*}"; defModel="${pair#*|}"
+  pair="$(parse_dial "$selfPath" CODEX_GATE_EFFORT)"
+  [ -n "$pair" ] || die_infra "config: cannot read the CODEX_GATE_EFFORT default from $selfPath"
+  selfOpEffort="${pair%%|*}"; defEffort="${pair#*|}"
+  pair="$(parse_dial "$selfPath" CODEX_GATE_FAST)"
+  [ -n "$pair" ] || die_infra "config: cannot read the CODEX_GATE_FAST default from $selfPath"
+  selfOpFast="${pair%%|*}"; defFast="${pair#*|}"
+
+  # ---- what the environment actually supplied ----
+  # The SET / NON-EMPTY captures at the top of this file are operator-independent, so they
+  # answer for any copy. The inbound VALUE is recovered from them: a non-empty value passes
+  # through both operators unchanged (so the live variable still holds it), and "set but
+  # empty" is the empty string by definition — which a `:-` declaration would already have
+  # replaced with its literal in the live variable, hence the reconstruction.
+  local inModel="" inEffort="" inFast=""
+  [ -z "${CODEX_GATE_MODEL_NONEMPTY:-}" ]  || inModel="$CODEX_GATE_MODEL"
+  [ -z "${CODEX_GATE_EFFORT_NONEMPTY:-}" ] || inEffort="$CODEX_GATE_EFFORT"
+  [ -z "${CODEX_GATE_FAST_NONEMPTY:-}" ]   || inFast="$CODEX_GATE_FAST"
+
+  # ---- the REPORTER's own origin, under the REPORTER's OWN operators ----
+  # "default" means: no env var overrode this dial UNDER THE FORM THIS SCRIPT DECLARES, so
+  # this script's declared literal is what is in force here. It is NOT transferable to the
+  # runtime — that endpoint gets its own resolution below, from its own operators.
+  local roModel roEffort roFast rvModel rvEffort rvFast
+  pair="$(resolve_dial "$selfOpModel" "$defModel" CODEX_GATE_MODEL "${CODEX_GATE_MODEL_SET:-}" "${CODEX_GATE_MODEL_NONEMPTY:-}" "$inModel")" \
+    || die_infra "config: CODEX_GATE_MODEL in $selfPath declares an expansion operator this parser does not model"
+  roModel="${pair%%|*}"; rvModel="${pair#*|}"
+  pair="$(resolve_dial "$selfOpEffort" "$defEffort" CODEX_GATE_EFFORT "${CODEX_GATE_EFFORT_SET:-}" "${CODEX_GATE_EFFORT_NONEMPTY:-}" "$inEffort")" \
+    || die_infra "config: CODEX_GATE_EFFORT in $selfPath declares an expansion operator this parser does not model"
+  roEffort="${pair%%|*}"; rvEffort="${pair#*|}"
+  pair="$(resolve_dial "$selfOpFast" "$defFast" CODEX_GATE_FAST "${CODEX_GATE_FAST_SET:-}" "${CODEX_GATE_FAST_NONEMPTY:-}" "$inFast")" \
+    || die_infra "config: CODEX_GATE_FAST in $selfPath declares an expansion operator this parser does not model"
+  roFast="${pair%%|*}"; rvFast="${pair#*|}"
+
+  # Parser trust gate: replaying this script's OWN declaration against this environment must
+  # reproduce the live variable — in every case, not merely when the default won. That makes
+  # it a check on the operator as well as the literal (a `:-` dial with an empty override
+  # resolves to the literal, a `-` dial to the empty value, and only one of those can match
+  # the live value). A disagreement means the PARSER is wrong and every claim below would
+  # silently inherit the error, so refuse to report rather than report a guess.
+  [ "$rvModel"  = "$CODEX_GATE_MODEL" ]  || die_infra "config: parsed CODEX_GATE_MODEL declaration \${CODEX_GATE_MODEL$selfOpModel$defModel} resolves to '$rvModel' but the live value is '$CODEX_GATE_MODEL'"
+  [ "$rvEffort" = "$CODEX_GATE_EFFORT" ] || die_infra "config: parsed CODEX_GATE_EFFORT declaration \${CODEX_GATE_EFFORT$selfOpEffort$defEffort} resolves to '$rvEffort' but the live value is '$CODEX_GATE_EFFORT'"
+  [ "$rvFast"   = "$CODEX_GATE_FAST" ]   || die_infra "config: parsed CODEX_GATE_FAST declaration \${CODEX_GATE_FAST$selfOpFast$defFast} resolves to '$rvFast' but the live value is '$CODEX_GATE_FAST'"
+
+  # The REPORTER's own dials. By construction the LIVE variables already ARE this
+  # process's resolved values (its declared literal when the env was silent, the inbound
+  # value when it was not), so they need no arithmetic. These are reported under
+  # `reporter`, NOT as `effective` — see the note there.
+  # fast is a TRIGGER, not a truthy value: run_codex arms it on an exact "1" and on
+  # nothing else, so 2/true/yes/on are all DISABLED. Report the trigger, not the intent.
+  local repFast="false"
+  [ "$CODEX_GATE_FAST" != "1" ] || repFast="true"
+
+  # ---- runtime endpoint: the authoritative installed gate ----
+  local runtimePath runtimeKind runtimeDigest runtimeExecutable
+  runtimePath="${CODEX_GATE_RUNTIME:-$HOME/.claude/skills/codex-gate/codex-gate.sh}"
+  runtimeKind="$(runtime_path_kind "$runtimePath")"
+  runtimeDigest="$(sha256_of "$runtimePath")"
+  # The runtime's MODE, reported as a DIAGNOSTIC and nothing more. A copy tool that drops the
+  # mode, a stray chmod or an archive round-trip is worth noticing, so the bit is reported —
+  # but it MUST NOT move parity or completeness.
+  # RETRACTION: an earlier revision made a missing +x force parity INCOMPLETE, on the theory
+  # that "a skill is loaded by EXECUTING codex-gate.sh". That is false for every documented
+  # command here: they all invoke the wrapper as `bash codex-gate.sh …`, and `bash <file>`
+  # needs READ permission only. A mode-0644 runtime runs fine — codex-gate.test.sh proves it
+  # by running `config` FROM one and getting exit 0. So no summary may claim a non-executable
+  # runtime cannot run, and no roll-up may score it.
+  # `null` when there is no runtime file to test: absent is reported by runtimeKind, and
+  # guessing a boolean there would be inventing an answer.
+  runtimeExecutable="null"
+  if [ -n "$runtimeDigest" ]; then
+    if [ -x "$runtimePath" ]; then runtimeExecutable="true"; else runtimeExecutable="false"; fi
+  fi
+
+  # ---- source endpoint: the versioned copy (shared discovery — see resolve_gate_source) ----
+  local sourcePath sourceKind sourceDigest sourceDiscovery
+  resolve_gate_source "$selfDir" "$selfPath"
+  sourcePath="$RESOLVED_SOURCE_PATH"; sourceKind="$RESOLVED_SOURCE_KIND"
+  sourceDigest="$RESOLVED_SOURCE_DIGEST"; sourceDiscovery="$RESOLVED_SOURCE_DISCOVERY"
+
+  # ---- each endpoint's DECLARED dials (so a mismatch is legible, not just flagged) ----
+  # Each dial's OPERATOR is retained alongside its literal, per dial and per endpoint: the
+  # three dials of one script may use different operators, and the runtime's may differ from
+  # the source's (that is the drift shape this mode exists to expose). Only the runtime's
+  # operators are consumed below — the source's literals are what `effectiveParity` compares
+  # against, and a literal is operator-independent — but they are parsed the same way so a
+  # source declaring an operator this parser cannot model is caught, not silently accepted.
+  local rtDefaults="null" srcDefaults="null" sdModel="" sdEffort="" sdFast="" sdParsed=0
+  local rtModel="" rtEffort="" rtFast="" rtParsed=0
+  local rtOpModel="" rtOpEffort="" rtOpFast=""
+  local pm pe pf
+  if [ -n "$runtimeDigest" ]; then
+    pm="$(parse_dial "$runtimePath" CODEX_GATE_MODEL)"
+    pe="$(parse_dial "$runtimePath" CODEX_GATE_EFFORT)"
+    pf="$(parse_dial "$runtimePath" CODEX_GATE_FAST)"
+    if [ -n "$pm" ] && [ -n "$pe" ] && [ -n "$pf" ]; then
+      rtOpModel="${pm%%|*}"; rtOpEffort="${pe%%|*}"; rtOpFast="${pf%%|*}"
+      rtModel="${pm#*|}"; rtEffort="${pe#*|}"; rtFast="${pf#*|}"; rtParsed=1
+      rtDefaults="$(jq -nc --arg m "$rtModel" --arg e "$rtEffort" --arg f "$rtFast" '{model:$m, effort:$e, fast:$f}')"
+    fi
+  fi
+  if [ -n "$sourceDigest" ]; then
+    pm="$(parse_dial "$sourcePath" CODEX_GATE_MODEL)"
+    pe="$(parse_dial "$sourcePath" CODEX_GATE_EFFORT)"
+    pf="$(parse_dial "$sourcePath" CODEX_GATE_FAST)"
+    if [ -n "$pm" ] && [ -n "$pe" ] && [ -n "$pf" ]; then
+      sdModel="${pm#*|}"; sdEffort="${pe#*|}"; sdFast="${pf#*|}"; sdParsed=1
+      srcDefaults="$(jq -nc --arg m "$sdModel" --arg e "$sdEffort" --arg f "$sdFast" '{model:$m, effort:$e, fast:$f}')"
+    fi
+  fi
+
+  # ---- effective: the RUNTIME ENDPOINT's dials, not the reporter's --------------------
+  # `effective` answers ONE question — "what will the gate that actually runs use?" — so it
+  # is the RUNTIME's declared defaults with the same environment overrides applied that
+  # would apply when that runtime is invoked.
+  # It used to be this process's own resolved dials, which made the answer depend on which
+  # COPY you happened to run `config` from: a runtime declaring gpt-5.6-terra/ultra was
+  # reported as `runtimeDefaults: {terra, ultra}` next to `effective: {sol, xhigh}` whenever
+  # the report was produced from the source checkout. Useless for reasoning about the
+  # configured runtime, and most misleading in exactly the drift scenario this mode exists
+  # for. Same configured runtime + same environment now yields the same `effective` from
+  # either copy; the reporting process is reported separately as `reporter` below, so
+  # nothing is lost.
+  # The override RULE applied here is the RUNTIME's OWN, dial by dial, taken from the
+  # operators parsed out of that file. It used to be this script's forms — `${VAR-…}` for
+  # model, `${VAR:-…}` for effort/fast — on the theory that "the runtime is a copy of this
+  # script, and a differing form is a byte difference digestParity already reports". Both
+  # halves were wrong: MISMATCH says the files differ, it does not say what the running gate
+  # will DO, which is the one question `effective` answers. A runtime declaring
+  # `${CODEX_GATE_MODEL:-…}` with CODEX_GATE_MODEL='' exported was reported as running an
+  # empty model — its shell resolves the literal — with `origin` naming the variable and the
+  # remedy telling the operator to clear something that changes nothing.
+  # `origin` is derived here for the same reason and from the same operators: "the default
+  # won" is a claim about a specific declaration, so it can only be made where that
+  # declaration is known. `null` — alongside a null `effective` — when the runtime's dials
+  # cannot be read at all (endpoint missing, unreadable, or not a codex-gate script):
+  # inventing dials, or an attribution for dials we could not parse, is exactly the guess
+  # this mode refuses to make. The REPORTER's own origin travels with `reporter` instead.
+  local effective="null" origin="null"
+  local oModel="default" oEffort="default" oFast="default"
+  local rtEffModel="" rtEffEffort="" rtEffFastRaw="" rtEffFast="false"
+  if [ "$rtParsed" = "1" ]; then
+    pair="$(resolve_dial "$rtOpModel" "$rtModel" CODEX_GATE_MODEL "${CODEX_GATE_MODEL_SET:-}" "${CODEX_GATE_MODEL_NONEMPTY:-}" "$inModel")" \
+      || die_infra "config: CODEX_GATE_MODEL in $runtimePath declares an expansion operator this parser does not model"
+    oModel="${pair%%|*}"; rtEffModel="${pair#*|}"
+    pair="$(resolve_dial "$rtOpEffort" "$rtEffort" CODEX_GATE_EFFORT "${CODEX_GATE_EFFORT_SET:-}" "${CODEX_GATE_EFFORT_NONEMPTY:-}" "$inEffort")" \
+      || die_infra "config: CODEX_GATE_EFFORT in $runtimePath declares an expansion operator this parser does not model"
+    oEffort="${pair%%|*}"; rtEffEffort="${pair#*|}"
+    pair="$(resolve_dial "$rtOpFast" "$rtFast" CODEX_GATE_FAST "${CODEX_GATE_FAST_SET:-}" "${CODEX_GATE_FAST_NONEMPTY:-}" "$inFast")" \
+      || die_infra "config: CODEX_GATE_FAST in $runtimePath declares an expansion operator this parser does not model"
+    oFast="${pair%%|*}"; rtEffFastRaw="${pair#*|}"
+    [ "$rtEffFastRaw" != "1" ] || rtEffFast="true"
+    effective="$(jq -nc --arg m "$rtEffModel" --arg e "$rtEffEffort" \
+        --argjson f "$rtEffFast" --arg fr "$rtEffFastRaw" \
+        '{model:$m, effort:$e, fast:$f, fastRaw:$fr}')" \
+      || die_infra "config: failed to render the runtime-effective dials"
+    origin="$(jq -nc --arg m "$oModel" --arg e "$oEffort" --arg f "$oFast" \
+        '{model:$m, effort:$e, fast:$f}')" \
+      || die_infra "config: failed to render the runtime-effective origins"
+  fi
+
+  # ---- reporter: WHO produced this report, kept distinct from what it describes -------
+  # Its path and digest answer "the digest of the running script" unambiguously even when
+  # the reporter is neither endpoint, and its own resolved dials are retained because
+  # they are the thing `effective` used to be — a report produced by a copy that is not
+  # the source can still be worth knowing about (see `rerun-from-source`).
+  # Its `origin` travels here rather than at top level because it is resolved under the
+  # REPORTER's operators, which are not necessarily the runtime's — two copies expanding the
+  # same empty variable differently is the whole point of the fix above, so one shared
+  # origin block could only be right about one of them.
+  local reporter
+  reporter="$(jq -nc --arg p "$selfPath" --arg d "$selfDigest" \
+      --arg m "$CODEX_GATE_MODEL" --arg e "$CODEX_GATE_EFFORT" \
+      --argjson f "$repFast" --arg fr "$CODEX_GATE_FAST" \
+      --arg om "$roModel" --arg oe "$roEffort" --arg of "$roFast" \
+      '{path:$p, digest:$d, dials:{model:$m, effort:$e, fast:$f, fastRaw:$fr},
+        origin:{model:$om, effort:$oe, fast:$of}}')" \
+    || die_infra "config: failed to render the reporter block"
+
+  # ---- the parity checks + completeness, then the roll-up ----
+  # digestParity is a DIRECTORY-level claim over the documented sync inventory, not a
+  # single-file one: a script-only comparison reported MATCH while the installed
+  # SKILL.md/README.md still documented dials the source had already changed, so MATCH
+  # was overstating what had actually been synced.
+  #
+  # DRIFT and COMPLETENESS are two different questions and are answered separately.
+  # Drift is "do these two copies differ"; completeness is "is each of them a whole
+  # skill". A member absent from BOTH sides has no drift BETWEEN them — that reasoning
+  # was right, and it silently certified two skill directories that both lacked
+  # question.schema.json as `parity: MATCH` with an EMPTY inventoryDrift. Absence from
+  # either endpoint is now recorded in its own right (inventoryMissing names the member
+  # and WHICH endpoint lacks it), and MATCH requires COMPLETE.
+  # Either endpoint being unlocatable stays UNAVAILABLE, never MATCH and never MISMATCH.
+  local digestParity="UNAVAILABLE" effectiveParity="UNAVAILABLE" parity
+  local inventoryDrift="[]" inventoryMissing="[]" completeness="UNAVAILABLE"
+
+  # ---- MATERIALIZE the enumeration, and VALIDATE it before anything trusts it --------
+  # The comparison below used to walk `inventory_pairs` straight out of a command
+  # substitution inside a heredoc. When that substitution yielded no rows — a failure in
+  # the enumeration, a truncated read, an empty or corrupted CODEX_GATE_SYNC_INVENTORY —
+  # the loop body never executed at all: `drift` and `missing` stayed empty and control
+  # fell through to digestParity=MATCH, completeness=COMPLETE, parity=MATCH. A detector
+  # whose entire job is catching drift reported agreement having compared NOTHING, which
+  # is the single worst answer it can give, because MATCH is exactly the word an operator
+  # reads as "the installed gate is the code in the repo".
+  # So: materialize once, then require the enumeration to be the EXACT expected member
+  # set before any verdict may depend on it. Two checks, because neither subsumes the other:
+  #   * COUNT against the independent CODEX_GATE_SYNC_INVENTORY_COUNT pin — the only thing
+  #     that can catch an empty/truncated CONSTANT (comparing the enumeration against a
+  #     corrupted constant is a tautology: they agree, on nothing).
+  #   * NAMES + ORDER against the constant, as one string compare — catches a row lost,
+  #     duplicated or reordered anywhere in the enumeration pipeline, and rejects any
+  #     malformed row (only rows of exactly three tab-separated fields carrying a name
+  #     are counted). The two PATH fields are deliberately not required to be non-empty:
+  #     an unresolved endpoint legitimately yields an empty path, and that condition is
+  #     reported on its own terms (sourceKind/sourceDiscovery), not by refusing to run.
+  # Unconditional: it runs even when an endpoint is missing, because a broken enumeration
+  # invalidates `syncInventory` and every claim built on it, not merely the comparison.
+  # Failure is INFRA_ERROR — refusing to report beats reporting a comparison of nothing.
+  local inventoryPairs declaredNames declaredCount enumeratedNames
+  declaredNames="$(printf '%s\n' "$CODEX_GATE_SYNC_INVENTORY" | awk 'NF{print}')"
+  declaredCount="$(printf '%s\n' "$CODEX_GATE_SYNC_INVENTORY" | awk 'NF{n++} END{print n+0}')"
+  [ "$declaredCount" = "$CODEX_GATE_SYNC_INVENTORY_COUNT" ] \
+    || die_infra "config: the sync inventory declares $declaredCount member(s) but CODEX_GATE_SYNC_INVENTORY_COUNT pins $CODEX_GATE_SYNC_INVENTORY_COUNT — the inventory constant is empty, truncated or corrupted, and every parity claim would be made over the wrong set of files"
+  inventoryPairs="$(inventory_pairs "$sourcePath" "$runtimePath")"
+  enumeratedNames="$(printf '%s\n' "$inventoryPairs" | awk -F'\t' 'NF==3 && $3!="" {print $3}')"
+  [ "$enumeratedNames" = "$declaredNames" ] \
+    || die_infra "config: enumerating the sync inventory yielded $(printf '%s\n' "$enumeratedNames" | awk 'NF{n++} END{print n+0}') well-formed row(s) for $declaredCount declared member(s) — refusing to compare, because a short enumeration silently reports MATCH/COMPLETE over the members it never looked at"
+
+  if [ -n "$runtimeDigest" ] && [ -n "$sourceDigest" ]; then
+    local isp idp inm isd idd drift="" missing=""
+    while IFS="$(printf '\t')" read -r isp idp inm; do
+      [ -n "$inm" ] || continue
+      isd="$(sha256_of "$isp")"; idd="$(sha256_of "$idp")"
+      if   [ -z "$isd" ] && [ -z "$idd" ]; then missing="$missing$inm|both
+"
+      elif [ -z "$isd" ]; then missing="$missing$inm|source
+"
+        drift="$drift$inm|absent-from-source
+"
+      elif [ -z "$idd" ]; then missing="$missing$inm|runtime
+"
+        drift="$drift$inm|absent-from-runtime
+"
+      elif [ "$isd" != "$idd" ]; then drift="$drift$inm|differs
+"
+      fi
+    done <<PAIREOF
+$inventoryPairs
+PAIREOF
+    if [ -z "$drift" ]; then
+      digestParity="MATCH"
+    else
+      digestParity="MISMATCH"
+      inventoryDrift="$(printf '%s' "$drift" | jq -Rsc 'split("\n")|map(select(length>0))|map(split("|"))|map({file:.[0], state:.[1]})')" \
+        || inventoryDrift="[]"
+    fi
+    if [ -z "$missing" ]; then
+      completeness="COMPLETE"
+    else
+      completeness="INCOMPLETE"
+      inventoryMissing="$(printf '%s' "$missing" | jq -Rsc 'split("\n")|map(select(length>0))|map(split("|"))|map({file:.[0], endpoint:.[1]})')" \
+        || inventoryMissing="[]"
+    fi
+  fi
+  local syncInventory
+  syncInventory="$(printf '%s' "$CODEX_GATE_SYNC_INVENTORY" | jq -Rsc 'split("\n")|map(select(length>0))')" \
+    || die_infra "config: failed to render the sync inventory"
+  # effectiveParity: the RUNTIME-EFFECTIVE dials (computed above) against the dials the
+  # versioned SOURCE declares. Computed DIAL BY DIAL rather than as one boolean, because
+  # the remedy below has to name what actually moved and who moved it. For each dial that
+  # differs from the source's declared value: if the environment set that dial, the env var
+  # is the thing to clear (driftDialsEnv); if not, the RUNTIME's own declared literal
+  # differs from the source's (driftDialsRuntime) — which means the two files differ, so
+  # digestParity is necessarily MISMATCH too and the fix is the same sync. Both lists can
+  # be non-empty at once. Requires BOTH endpoints parsed; otherwise it stays UNAVAILABLE,
+  # because "we could not read one side's dials" is not agreement.
+  local sdFastBool="false"
+  [ "$sdFast" != "1" ] || sdFastBool="true"
+  local driftDialsEnv="" driftDialsRuntime=""
+  if [ "$sdParsed" = "1" ] && [ "$rtParsed" = "1" ]; then
+    if [ "$rtEffModel" != "$sdModel" ]; then
+      if [ "$oModel" = "default" ]; then driftDialsRuntime="$driftDialsRuntime, model"; else driftDialsEnv="$driftDialsEnv, CODEX_GATE_MODEL"; fi
+    fi
+    if [ "$rtEffEffort" != "$sdEffort" ]; then
+      if [ "$oEffort" = "default" ]; then driftDialsRuntime="$driftDialsRuntime, effort"; else driftDialsEnv="$driftDialsEnv, CODEX_GATE_EFFORT"; fi
+    fi
+    if [ "$rtEffFast" != "$sdFastBool" ]; then
+      if [ "$oFast" = "default" ]; then driftDialsRuntime="$driftDialsRuntime, fast"; else driftDialsEnv="$driftDialsEnv, CODEX_GATE_FAST"; fi
+    fi
+    driftDialsEnv="${driftDialsEnv#, }"; driftDialsRuntime="${driftDialsRuntime#, }"
+    if [ -z "$driftDialsEnv" ] && [ -z "$driftDialsRuntime" ]; then
+      effectiveParity="MATCH"
+    else
+      effectiveParity="MISMATCH"
+    fi
+  fi
+  # REPORTER drift — a separate question from parity, and deliberately not a term in it.
+  # Parity is about the two ENDPOINTS; this is about the process that produced the report.
+  # When the reporting script's own dials differ from the source's with no env override in
+  # play, the report was computed by code that is not the versioned code, so it is worth
+  # saying out loud (`rerun-from-source`) even when the endpoints themselves agree.
+  # Gated on the REPORTER's own origin (`ro*`), not the runtime's: whether an env var
+  # displaced THIS process's declared literal is decided by THIS file's operators.
+  local driftDialsReporter=""
+  if [ "$sdParsed" = "1" ]; then
+    [ "$roModel"  != "default" ] || [ "$CODEX_GATE_MODEL"  = "$sdModel" ]  || driftDialsReporter="$driftDialsReporter, model"
+    [ "$roEffort" != "default" ] || [ "$CODEX_GATE_EFFORT" = "$sdEffort" ] || driftDialsReporter="$driftDialsReporter, effort"
+    [ "$roFast"   != "default" ] || [ "$repFast"           = "$sdFastBool" ] || driftDialsReporter="$driftDialsReporter, fast"
+    driftDialsReporter="${driftDialsReporter#, }"
+  fi
+  # Fail closed: MATCH only when BOTH checks affirmatively matched AND the thing they
+  # matched on is a COMPLETE skill. A known difference is MISMATCH (it wins: a real
+  # divergence is the more actionable answer); agreement over a pair that is missing
+  # inventory members is INCOMPLETE, which is NOT a match; anything undetermined stays
+  # UNAVAILABLE. There is no path from "we could not tell" to MATCH. The runtime's
+  # executable bit is deliberately NOT a term here — see the runtimeExecutable note.
+  if [ "$digestParity" = "MISMATCH" ] || [ "$effectiveParity" = "MISMATCH" ]; then
+    parity="MISMATCH"
+  elif [ "$digestParity" = "MATCH" ] && [ "$effectiveParity" = "MATCH" ]; then
+    if [ "$completeness" = "COMPLETE" ]; then
+      parity="MATCH"
+    else
+      parity="INCOMPLETE"
+    fi
+  else
+    parity="UNAVAILABLE"
+  fi
+
+  local summary driftNames="" missingNames="" incompleteWhy=""
+  [ "$inventoryDrift" = "[]" ] || driftNames=" (inventory drift: $(printf '%s' "$inventoryDrift" | jq -r 'map(.file+"="+.state)|join(", ")'))"
+  if [ "$inventoryMissing" != "[]" ]; then
+    missingNames="$(printf '%s' "$inventoryMissing" | jq -r 'map(.file+" (absent from "+.endpoint+")")|join(", ")')"
+    incompleteWhy="missing inventory member(s): $missingNames"
+  fi
+  # The REMEDY has to match the CAUSE, and the causes want different actions. Files
+  # differing on disk is fixed by copying the source over the runtime. The dials in force
+  # differing from the ones the source declares is NOT: when an env var moved them, no
+  # amount of copying clears it, and the previous one-size sentence ("a fix in the source
+  # may not be reaching the running gate") sent an operator whose only "drift" was a
+  # supported CODEX_GATE_MODEL='' override to copy files that were already identical, see
+  # the same MISMATCH, and copy again. driftDialsEnv / driftDialsRuntime / driftDialsReporter
+  # (computed above) say which dials moved and who moved them.
+  local envRemedy=""
+  if [ -n "$driftDialsEnv" ]; then
+    envRemedy="the dials in force at the runtime are not the ones the source declares because the environment overrides them ($driftDialsEnv) — copying files cannot clear that; clear or change $driftDialsEnv"
+  fi
+  # A runtime whose OWN declared dials differ from the source's is a file difference by
+  # construction (different literals => different bytes), so it is folded into the sync
+  # clause rather than raised as an independent cause — naming it there keeps the report
+  # legible without prescribing two actions for one fault.
+  local runtimeDialRemedy=""
+  if [ -n "$driftDialsRuntime" ]; then
+    runtimeDialRemedy="the runtime declares dial(s) the source does not ($driftDialsRuntime), with no environment override in play"
+  fi
+  # The REPORTER caveat: not a parity fault, but the report itself came from code that is
+  # not the source's, so the reader should know before acting on it.
+  local reporterRemedy=""
+  if [ -n "$driftDialsReporter" ]; then
+    reporterRemedy="the script that produced this report declares dial(s) the source does not ($driftDialsReporter), with NO environment override in play, so this report was not computed by the source's code — re-run config from the source checkout"
+  fi
+  # syncFileRemedy: the ONE canonical sentence for "copy the source over the runtime",
+  # single-sourced so the two call sites below (a digest MISMATCH, and the standalone
+  # INCOMPLETE parity case) can never say two different things for the same fix.
+  local syncFileRemedy='sync by hand (see README.md, "Manual sync") and re-run config'
+  # remediation: a machine-readable action list, built from the closed set {sync-files,
+  # clear-env-override, rerun-from-source, resolve-source, resolve-runtime}. Each action is appended at the exact spot
+  # where its matching prose clause is appended below, from the exact same condition —
+  # never re-derived from the finished `summary` string — so the two cannot drift apart
+  # the way a free-text phrase blocklist could be defeated by rewording alone. Which
+  # variable(s) are implicated is already unambiguous from `origin`; no need to repeat it.
+  #
+  # `remedy` starts EMPTY and stays that way unless a real cause below sets it — never
+  # give it a placeholder default, since a placeholder here is exactly the shape of bug
+  # this file exists to prevent: prose that fires regardless of the guard that is
+  # supposed to gate it. The ". ALSO: " join only happens when `remedy` is ALREADY
+  # non-empty when a second cause is found, i.e. only when two independent causes are
+  # both real — so its presence/absence in `summary` is itself a structural signal a
+  # test can check without guessing at wording (see TEST 58).
+  local remActionsRaw=""
+  case "$parity" in
+    MATCH)    summary="parity MATCH — the installed skill matches the versioned source across the whole sync inventory (script, schemas, reviewer instructions and docs), every member is present on both sides, and the dials in force are the ones it declares" ;;
+    MISMATCH) summary="parity MISMATCH (digest $digestParity, effective $effectiveParity) — runtime $runtimePath vs source $sourcePath$driftNames"
+              local remedy=""
+              if [ "$digestParity" = "MISMATCH" ] || [ -n "$runtimeDialRemedy" ]; then
+                remedy="the two copies differ on disk"
+                [ -z "$runtimeDialRemedy" ] || remedy="$remedy — $runtimeDialRemedy"
+                remedy="$remedy, so a fix in the source is not reaching the running gate: $syncFileRemedy"
+                remActionsRaw="$remActionsRaw
+sync-files"
+              fi
+              if [ -n "$envRemedy" ]; then
+                [ -z "$remedy" ] || remedy="$remedy. ALSO: "
+                remedy="$remedy$envRemedy"
+                remActionsRaw="$remActionsRaw
+clear-env-override"
+              fi
+              [ -z "$remedy" ] || summary="$summary; $remedy"
+              [ "$completeness" != "INCOMPLETE" ] || summary="$summary. Also INCOMPLETE — $incompleteWhy" ;;
+    INCOMPLETE) summary="parity INCOMPLETE — runtime $runtimePath and source $sourcePath agree byte-for-byte on everything present and the dials in force are the ones the source declares, but this is NOT a complete install: $incompleteWhy. NOT a match; $syncFileRemedy"
+                remActionsRaw="$remActionsRaw
+sync-files" ;;
+    # UNAVAILABLE used to end here with an EMPTY remediation — byte for byte the same
+    # signal as a clean MATCH, so a consumer branching on "empty means all good" read
+    # "we could not tell" as "everything agrees". Undetermined is not agreement, and it
+    # always has a cause worth naming: an endpoint that could not be located, read, or
+    # parsed as a codex-gate script. Whichever endpoint that is gets its own action.
+    *)        summary="parity UNAVAILABLE (digest $digestParity, effective $effectiveParity) — $sourceDiscovery; NOT a match, just undetermined"
+              local unavailRemedy=""
+              if [ -z "$sourceDigest" ]; then
+                unavailRemedy="the versioned SOURCE could not be located or read, so there was nothing to compare against — set CODEX_GATE_SOURCE to the versioned copy, or run config from the checkout that tracks it"
+                remActionsRaw="$remActionsRaw
+resolve-source"
+              elif [ "$sdParsed" != "1" ]; then
+                unavailRemedy="the versioned SOURCE at $sourcePath could not be parsed as a codex-gate script (its three dial declarations were not found) — point CODEX_GATE_SOURCE at a real one"
+                remActionsRaw="$remActionsRaw
+resolve-source"
+              fi
+              local runtimeUnavail=""
+              if [ -z "$runtimeDigest" ]; then
+                runtimeUnavail="the installed RUNTIME could not be located or read at $runtimePath — set CODEX_GATE_RUNTIME to the gate that actually runs, or install it there"
+              elif [ "$rtParsed" != "1" ]; then
+                runtimeUnavail="the installed RUNTIME at $runtimePath could not be parsed as a codex-gate script (its three dial declarations were not found) — point CODEX_GATE_RUNTIME at a real one"
+              fi
+              if [ -n "$runtimeUnavail" ]; then
+                [ -z "$unavailRemedy" ] || unavailRemedy="$unavailRemedy. ALSO: "
+                unavailRemedy="$unavailRemedy$runtimeUnavail"
+                remActionsRaw="$remActionsRaw
+resolve-runtime"
+              fi
+              [ -z "$unavailRemedy" ] || summary="$summary; $unavailRemedy" ;;
+  esac
+  # The reporter caveat is appended for EVERY parity state, including MATCH: the endpoints
+  # can agree perfectly while the report about them came from a third copy. Joined with
+  # "CAVEAT: " rather than ". ALSO: " so the ALSO token keeps meaning exactly one thing —
+  # two independent PARITY causes coincided.
+  if [ -n "$reporterRemedy" ]; then
+    summary="$summary. CAVEAT: $reporterRemedy"
+    remActionsRaw="$remActionsRaw
+rerun-from-source"
+  fi
+  # Fail closed on the CONTRACT itself. `remediation` is empty exactly when there is
+  # nothing to act on; anything else must hand the operator an action, because an empty
+  # list is the all-clear signal and emitting it for a non-MATCH is the very confusion
+  # BLOCKER-3 above describes. Unreachable by construction (every MISMATCH has a digest or
+  # env cause, every INCOMPLETE syncs, every UNAVAILABLE has an unresolvable endpoint) —
+  # which is the point: if it ever fires, the mapping has a hole and the report is a guess.
+  if [ "$parity" != "MATCH" ] && [ -z "$remActionsRaw" ]; then
+    die_infra "config: parity $parity produced an EMPTY remediation list, which is the signal reserved for a clean MATCH — refusing to emit an all-clear for a state that is not one"
+  fi
+  local remediation
+  remediation="$(printf '%s' "$remActionsRaw" | jq -Rsc 'split("\n")|map(select(length>0))')" \
+    || die_infra "config: failed to render the remediation action list"
+
+  jq -nc \
+    --arg outcome "CONFIG" \
+    --arg defModel "$defModel" --arg defEffort "$defEffort" --arg defFast "$defFast" \
+    --argjson effective "$effective" --argjson reporter "$reporter" \
+    --argjson origin "$origin" \
+    --arg runtimePath "$runtimePath" --arg runtimeDigest "$runtimeDigest" --arg runtimeKind "$runtimeKind" \
+    --argjson runtimeExecutable "$runtimeExecutable" --argjson runtimeDefaults "$rtDefaults" \
+    --arg sourcePath "$sourcePath" --arg sourceDigest "$sourceDigest" --arg sourceKind "$sourceKind" \
+    --arg sourceDiscovery "$sourceDiscovery" --argjson sourceDefaults "$srcDefaults" \
+    --arg digestParity "$digestParity" --arg effectiveParity "$effectiveParity" --arg parity "$parity" \
+    --arg completeness "$completeness" \
+    --argjson syncInventory "$syncInventory" --argjson inventoryDrift "$inventoryDrift" \
+    --argjson inventoryMissing "$inventoryMissing" \
+    --arg summary "$summary" --argjson remediation "$remediation" \
+    '{outcome:$outcome,
+      defaults:{model:$defModel, effort:$defEffort, fast:$defFast},
+      effective:$effective,
+      origin:$origin,
+      reporter:$reporter,
+      runtimePath:$runtimePath, runtimeDigest:$runtimeDigest, runtimeKind:$runtimeKind,
+      runtimeExecutable:$runtimeExecutable, runtimeDefaults:$runtimeDefaults,
+      sourcePath:$sourcePath, sourceDigest:$sourceDigest, sourceKind:$sourceKind,
+      sourceDiscovery:$sourceDiscovery, sourceDefaults:$sourceDefaults,
+      syncInventory:$syncInventory, inventoryDrift:$inventoryDrift,
+      inventoryMissing:$inventoryMissing, completeness:$completeness,
+      digestParity:$digestParity, effectiveParity:$effectiveParity, parity:$parity,
+      summary:$summary, remediation:$remediation}' || die_infra "config: failed to render the status line"
+  exit 0
+}
+
+# ============================================================================
 # Dispatch
 # ============================================================================
 main() {
   local mode="${1:-}"
-  [ -n "$mode" ] || { echo "usage: codex-gate.sh <phase-start|phase-review|plan|bundle|question|investigate|prepr|prepr-delta> [args]" >&2; exit 2; }
+  [ -n "$mode" ] || { echo "usage: codex-gate.sh <phase-start|phase-review|plan|bundle|question|investigate|prepr|prepr-delta|config> [args]" >&2; exit 2; }
   shift
 
   # Sanity: required helper files exist.
@@ -2172,6 +3037,7 @@ main() {
     investigate)  mode_investigate  "$@" ;;
     prepr)        mode_prepr        "$@" ;;
     prepr-delta)  mode_prepr_delta  "$@" ;;
+    config)       mode_config       "$@" ;;
     *) echo "unknown mode: $mode" >&2; exit 2 ;;
   esac
 }
