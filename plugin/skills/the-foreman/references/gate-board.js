@@ -54,7 +54,8 @@
 
   /* scrollspy — a thin band around the viewport's middle decides the chapter.
      THREE tracked signals drive the live chip: observerId (written ONLY by
-     the observer callback), atEnd (owned by the rAF-throttled scroll tick
+     the observer callback), atEnd (computed by the shared end-state helper —
+     sampled once at startup and re-sampled by the rAF-throttled scroll tick
      below), and navId (armed by jump(); release rule pinned below).
      applyLive() recomputes the selection from all three, so releasing the end
      override restores the observer's chapter WITHOUT a fresh observer event —
@@ -89,13 +90,18 @@
     var id = navId !== null ? navId : atEnd ? ids[ids.length - 1] : observerId;
     if (id) setLive(id); /* no signal yet (initial callback, nothing in the band) keeps the markup's Top state */
   }
-  /* release (b) — a real user input hands control back to the observer. No
-     immediate repaint: the next observer/tick signal renders the fresh rule,
-     so a pointerdown that begins a NEW chip click never flashes the
-     observer's stale pick before jump() re-arms. */
+  /* release (b) — a real user input hands control back to the observer, and
+     the release itself re-renders from the current observerId/atEnd: a
+     mid-document scroll after the release may neither flip atEnd nor cross an
+     observer threshold (the live section is ALREADY intersecting the band, so
+     the observer fires nothing new), and waiting for the next signal would
+     leave the jump's stale chip lit indefinitely. A pointerdown that begins a
+     NEW chip click repaints again the moment jump() re-arms in the same
+     gesture, so the destination chip still lands. */
   function releaseNav(){
     if (navId === null) return;
     navId = null;
+    applyLive();
   }
   ['wheel', 'touchstart', 'pointerdown'].forEach(function(type){
     window.addEventListener(type, releaseNav, { passive: true });
@@ -133,14 +139,19 @@
      leaving it restores the observer's pick — so a mid-document click's
      immediate feedback is never stomped by a tick re-asserting an observerId
      the observer has not caught up to yet. */
+  /* ONE end-state computation, shared by the scroll tick AND the startup
+     sample below — the two must never drift */
+  function endState(){
+    return ids.length > 0
+      && window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2;
+  }
   var endTick = false;
   function onEndScroll(){
     if (endTick) return;
     endTick = true;
     requestAnimationFrame(function(){
       endTick = false;
-      var nowEnd = ids.length > 0
-        && window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2;
+      var nowEnd = endState();
       if (nowEnd !== atEnd){
         atEnd = nowEnd;
         applyLive();
@@ -148,6 +159,12 @@
     });
   }
   window.addEventListener('scroll', onEndScroll, { passive: true });
+  /* startup sample: a document that already fits the viewport fires NO scroll
+     event, ever — atEnd would stay false and the markup's Top chip would sit
+     stale over an on-screen ask. Sample the end state once at initialization
+     (the script runs at the end of body, after layout) and apply. */
+  atEnd = endState();
+  applyLive();
 
   /* ONE jump helper — EVERY navigation (rail chip click, 1..9 keys, Home/End,
      the ask-strip anchor) routes through here: it clears atEnd (leaving the

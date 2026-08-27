@@ -56,9 +56,11 @@ test('end-override RELEASES on scroll-up: observerId + atEnd drive one selection
   // observerId is written ONLY by the observer callback (one declaration + one write)
   assert.equal((js.match(/observerId =/g) || []).length, 2);
   assert.match(js, /if \(e\.isIntersecting\)\{\s*\n\s*observerId = e\.target\.id;\s*\n\s*if \(e\.target\.id === navId\) arrived = true;\s*\n\s*\}/);
-  // atEnd is owned by the rAF-throttled scroll tick, and ALL paths re-apply the rule
+  // atEnd is computed by endState() (startup sample + the rAF-throttled scroll
+  // tick), and ALL signal paths re-apply the rule
   assert.match(js, /var atEnd = false;/);
-  assert.equal((js.match(/applyLive\(\);/g) || []).length, 3, 'observer callback + scroll tick + jump each apply');
+  assert.equal((js.match(/applyLive\(\);/g) || []).length, 5,
+    'observer callback + scroll tick + jump + navId release + startup end sample each apply');
 });
 
 test('nav jumps route through ONE helper; navId gates the scroll-tick reapplication of a stale observerId', () => {
@@ -108,10 +110,38 @@ test('navId release rule: destination arrival, explicit user input, or a new jum
   assert.match(js, /if \(scrollKeys\.indexOf\(e\.key\) !== -1\) releaseNav\(\);/);
   assert.equal((js.match(/\{ passive: true \}/g) || []).length, 3, 'end-scroll tick + input-type loop + scroll-key keydown');
   // (c) is jump() itself (navId = id — census pinned in the jump-helper test).
-  // releaseNav repaints nothing on its own: the next observer/tick signal
-  // renders the fresh rule, so a pointerdown that begins a NEW chip click
-  // never flashes the observer's stale pick before jump() re-arms.
-  assert.match(js, /function releaseNav\(\)\{\s*\n\s*if \(navId === null\) return;\s*\n\s*navId = null;\s*\n\s*\}/);
+  // releaseNav re-applies the selection rule IMMEDIATELY on held→released (the
+  // release-path repaint test below pins why); a pointerdown that begins a NEW
+  // chip click repaints again the moment jump() re-arms in the same gesture.
+  assert.match(js, /function releaseNav\(\)\{\s*\n\s*if \(navId === null\) return;\s*\n\s*navId = null;\s*\n\s*applyLive\(\);\s*\n\s*\}/);
+});
+
+// ---- prepr blocker: releasing navId re-renders immediately ----
+// After user input clears the override, a mid-document scroll may neither flip
+// atEnd nor cross an observer threshold (the current section is ALREADY
+// intersecting the band, so the observer fires nothing new) — no later signal
+// would repaint, and the jump's stale chip stayed lit indefinitely. Every
+// held→released transition must re-apply the selection rule itself, using the
+// current observerId/atEnd, not wait for the next signal.
+test('navId held→released re-applies the selection rule on the release path itself', () => {
+  assert.match(js, /function releaseNav\(\)\{\s*\n\s*if \(navId === null\) return;\s*\n\s*navId = null;\s*\n\s*applyLive\(\);\s*\n\s*\}/);
+  // the observer's destination-arrival release already re-applies in the same
+  // callback: applyLive follows the arrived clear before the callback returns
+  assert.match(js, /if \(arrived\) navId = null;[^]*?\n\s*applyLive\(\);/);
+});
+
+// ---- prepr blocker: the end state is sampled once at initialization ----
+// atEnd was only ever computed inside the scroll tick, so a document that
+// already fits the viewport (no scroll event ever fires) kept the markup's Top
+// chip lit despite the ask sitting on-screen at the document end. ONE shared
+// endState() computation drives the scroll tick AND a startup sample+apply —
+// the two can never drift.
+test('initial atEnd sample: one shared endState() drives the scroll tick and a startup apply', () => {
+  assert.match(js, /function endState\(\)\{\s*\n\s*return ids\.length > 0\s*\n\s*&& window\.innerHeight \+ window\.scrollY >= document\.documentElement\.scrollHeight - 2;\s*\n\s*\}/);
+  assert.equal((js.match(/endState\(\)/g) || []).length, 3,
+    'declaration + scroll tick + startup sample — the same computation everywhere');
+  assert.match(js, /var nowEnd = endState\(\);/);            // the tick reads the shared computation
+  assert.match(js, /atEnd = endState\(\);\s*\n\s*applyLive\(\);/); // the startup sample applies immediately
 });
 
 test('script never references deck-era elements', () => {
