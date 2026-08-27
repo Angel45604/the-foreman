@@ -154,6 +154,30 @@ test('style.css holds font placeholders + the OFL notice, and NO base64 payload'
   assert.ok(css.length < 60000, `style.css stays reviewable (${css.length} bytes)`);
 });
 
+// ---- prepr blocker: the FULL OFL text rides in every artifact ----
+// OFL 1.1 condition 2: every redistributed copy of the Font Software must
+// carry the copyright notice AND this license. Each rendered artifact embeds
+// both woff2 payloads — a standalone redistributed copy — so the sheet itself
+// carries both faces' authoritative copyright lines plus the complete license
+// text. Scheme-stripped: the whole-page no-external-refs greps forbid
+// https?:// anywhere (comments included), and these are plain-text pointers,
+// not fetchable refs.
+test('the sheet carries BOTH copyright notices AND the complete SIL OFL 1.1 text above the @font-face rules', () => {
+  for (const line of [
+    'Copyright 2019 The Sora Project Authors (github.com/sora-xor/sora-font)',
+    'Copyright 2016 The Nunito Sans Project Authors (github.com/Fonthausen/NunitoSans)',
+    'This Font Software is licensed under the SIL Open Font License, Version 1.1',
+    'SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007',
+    'PREAMBLE', 'DEFINITIONS', 'PERMISSION & CONDITIONS', 'TERMINATION', 'DISCLAIMER',
+    'THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND',
+    'OTHER DEALINGS IN THE FONT SOFTWARE',
+  ]) assert.ok(css.includes(line), line);
+  // the license block sits immediately above the faces it licenses
+  assert.ok(css.indexOf('SIL OPEN FONT LICENSE Version 1.1') < css.indexOf('@font-face'), 'license precedes @font-face');
+  // scheme-stripped everywhere in the sheet
+  assert.doesNotMatch(css, /https?:\/\//);
+});
+
 test('embedded fonts: both faces declared with the portfolio weight ranges', () => {
   assert.match(css, /font-family: 'Sora';\s*\n\s*src: url\(data:font\/woff2;base64,/);
   assert.match(css, /font-family: 'Nunito Sans';\s*\n\s*src: url\(data:font\/woff2;base64,/);

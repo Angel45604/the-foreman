@@ -30,6 +30,25 @@ test('the RENDERED page embeds BOTH real font payloads (no placeholder text surv
   const payloads = html.match(/url\(data:font\/woff2;base64,[A-Za-z0-9+/=]{10000,}\) format\('woff2'\)/g) || [];
   assert.equal(payloads.length, 2, 'both woff2 payloads embedded');
 });
+// Each rendered artifact embeds the woff2 payloads, making it a redistributed
+// copy of the Font Software — OFL 1.1 condition 2 requires every such copy to
+// carry the copyright notice AND the license text (it rides in the inlined
+// sheet, scheme-stripped so the no-external-refs invariant still holds).
+test('every RENDERED artifact carries the copyright notices + full OFL text (hosted AND .local variants)', async () => {
+  const f = fixture(base); await render(f.ledgerPath,'planDeck',f.out);
+  const hosted = readFileSync(f.out,'utf8');
+  const local = readFileSync(f.out.replace(/\.html$/, '.local.html'),'utf8');
+  for (const [name, html] of [['hosted', hosted], ['local', local]]) {
+    for (const line of [
+      'Copyright 2019 The Sora Project Authors (github.com/sora-xor/sora-font)',
+      'Copyright 2016 The Nunito Sans Project Authors (github.com/Fonthausen/NunitoSans)',
+      'This Font Software is licensed under the SIL Open Font License, Version 1.1',
+      'PERMISSION & CONDITIONS',
+      'THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND',
+    ]) assert.ok(html.includes(line), `${name}: ${line}`);
+    assert.doesNotMatch(html, /<link|<script src=|https?:\/\//); // the full license rides scheme-free
+  }
+});
 test('escapes <title> (no injection via meta.title)', async () => {
   const f = fixture({ ...base, meta:{ ...base.meta, title:'</title><script>alert(1)</script>' } });
   await render(f.ledgerPath,'planDeck',f.out); const html = readFileSync(f.out,'utf8');
