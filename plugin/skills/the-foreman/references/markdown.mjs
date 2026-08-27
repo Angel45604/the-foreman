@@ -21,13 +21,59 @@
 // without mdEsc(). Static literals I author stay raw.
 import { mdEsc } from './esc.mjs';
 import { blocksToMarkdown } from './blocks.mjs';
+import { firstClause } from './scaffold.mjs';
 
 const fav = (ledger) => (ledger?.meta?.favicon ?? '🛠️');
 
-// Common preamble: the title heading + optional crumb in italics.
-function head(meta) {
+// The effective-ask gate, MIRRORED VERBATIM from templates.mjs (which keeps it
+// module-local): only a well-shaped object counts as meta.ask; anything else
+// falls through to the type's derived ask — so a conflicting meta.ask wins
+// IDENTICALLY in HTML and twin (design §6, Task 11). Keep the two in lockstep.
+const askShape = (a) => (a && typeof a === 'object' && !Array.isArray(a) ? a : null);
+
+// The shared ask serializer: recommendation and attribution reach the twin
+// EXCLUSIVELY through here (never via decisionToMarkdown or a per-type line).
+// Each field renders independently when present — no field gates another —
+// mirroring the HTML ask strip (scaffold.mjs gateBoard).
+function askToMarkdown(ask) {
+  if (!ask) return '';
+  const lines = [];
+  if (ask.headline) lines.push(`> **The ask:** ${mdEsc(ask.headline)}`);
+  if (ask.note) lines.push(`> ${mdEsc(ask.note)}`);
+  if (ask.recommendation) lines.push(`> **Recommendation:** ${mdEsc(ask.recommendation)}`);
+  if (ask.recommendedBy) lines.push(`> (${mdEsc(ask.recommendedBy)})`);
+  return lines.join('\n');
+}
+
+// The decision as EVIDENCE only: question + per-option pros/cons/risk lines.
+// Never the recommendation/attribution — those are askToMarkdown's alone, so a
+// stale decision recommendation can never resurface beside an overriding
+// meta.ask (it survives only inside option evidence text). Shared by planDeck's
+// `## Your call` chapter and decisionCard.
+function decisionToMarkdown(d) {
+  const lines = [`**Decision:** ${mdEsc(d?.question ?? '')}`];
+  const options = Array.isArray(d?.options) ? d.options : [];
+  if (options.length) lines.push('');
+  for (const o of options) {
+    lines.push(`- **Option ${mdEsc(o?.label ?? '')}** — Pros: ${mdEsc(o?.pros ?? '—')} · Cons: ${mdEsc(o?.cons ?? '—')} · Risk: ${mdEsc(o?.risk ?? '—')}`);
+  }
+  return lines;
+}
+
+// Common preamble — the twin's executive gate summary, mirroring the HTML hero
+// (Task 11): title heading, optional crumb in italics, then the verdict line
+// (meta.verdict ?? meta.subtitle, bold), the plain-English lede, the keyStats
+// tiles as a list, and the effective ask via the shared serializer.
+function head(meta, effectiveAsk = null) {
   const lines = [`# ${mdEsc(meta.title ?? '')}`];
   if (meta.crumb) lines.push('', `*${mdEsc(meta.crumb)}*`);
+  const verdict = meta.verdict ?? meta.subtitle;
+  if (verdict) lines.push('', `**${mdEsc(verdict)}**`);
+  if (meta.lede) lines.push('', mdEsc(meta.lede));
+  const keyStats = Array.isArray(meta.keyStats) ? meta.keyStats : [];
+  if (keyStats.length) lines.push('', ...keyStats.map((s) => `- **${mdEsc(s?.value ?? '')}** — ${mdEsc(s?.label ?? '')}`));
+  const askMd = askToMarkdown(effectiveAsk);
+  if (askMd) lines.push('', askMd);
   return lines;
 }
 
@@ -37,11 +83,25 @@ export function toMarkdown(ledger, type) {
   let lines;
 
   if (type === 'planDeck') {
-    lines = head(meta);
-    if (meta.subtitle) lines.push('', mdEsc(meta.subtitle));
+    // The SAME effective ask templates.mjs askOf computes: meta.ask (askShape-
+    // gated) wins; else the decision derives one.
+    const d = ledger?.decision;
+    const effectiveAsk = askShape(meta.ask)
+      ?? (d ? { headline: d.question ?? '', recommendation: d.recommendation, recommendedBy: d.recommendedBy } : null);
+    lines = head(meta, effectiveAsk);
     const slides = Array.isArray(ledger?.slides) ? ledger.slides : [];
     for (const s of slides) {
-      lines.push('', `## ${mdEsc(s?.kicker ?? '')} — ${mdEsc(s?.heading ?? '')}`);
+      lines.push('', `## ${mdEsc(s?.kicker ?? '')} — ${mdEsc(s?.statement ?? s?.heading ?? '')}`);
+      if (s?.lead) lines.push('', mdEsc(s.lead));
+      // The EXPLICIT figure serializes first, before the slide's other content
+      // (mirroring the dominant visual). A FALLBACK figure (promoted from
+      // s.blocks by the template) is NOT serialized here — blocksToMarkdown
+      // over s.blocks below already covers it exactly once (never duplicated),
+      // mirroring templates.mjs figureSplit.
+      if (s?.figure) {
+        const figMd = blocksToMarkdown([s.figure]);
+        if (figMd) lines.push('', figMd);
+      }
       const cards = Array.isArray(s?.cards) ? s.cards : [];
       const bullets = Array.isArray(s?.bullets) ? s.bullets : [];
       if (cards.length || bullets.length) lines.push('');
@@ -53,30 +113,36 @@ export function toMarkdown(ledger, type) {
       const blocksMd = blocksToMarkdown(s?.blocks);
       if (blocksMd) lines.push('', blocksMd);
     }
+    // The decision chapter — evidence only (question + options); the
+    // recommendation already rode in via askToMarkdown above.
+    if (d) lines.push('', '## Your call', '', ...decisionToMarkdown(d));
+    // Evidence-base chips (value bold, then label — the HTML .src chip order).
+    const sources = Array.isArray(ledger?.findings?.sources) ? ledger.findings.sources : [];
+    if (sources.length) {
+      lines.push('', '**Evidence base:**', '');
+      for (const s of sources) lines.push(`- **${mdEsc(s?.value ?? '')}** — ${mdEsc(s?.label ?? '')}`);
+    }
   } else if (type === 'brief') {
     const win = ledger?.win ?? {};
-    lines = head(meta);
+    const effectiveAsk = askShape(meta.ask) ?? (win.next ? { headline: win.next } : null);
+    lines = head(meta, effectiveAsk);
     lines.push('', `**Status:** ${win.verified ? 'Verified ✅' : 'Claimed (not yet verified) ⚠️'}`);
     if (win.landed) lines.push('', `**What landed:** ${mdEsc(win.landed)}`);
     if (win.evidence) lines.push('', `**Evidence:** ${mdEsc(win.evidence)}`);
-    if (win.next) lines.push('', `**The ask / next:** ${mdEsc(win.next)}`);
   } else if (type === 'decisionCard') {
-    const d = ledger?.decision ?? {};
-    lines = head(meta);
-    lines.push('', `**Decision:** ${mdEsc(d.question ?? '')}`);
-    const options = Array.isArray(d.options) ? d.options : [];
-    if (options.length) lines.push('');
-    for (const o of options) {
-      lines.push(`- **Option ${mdEsc(o?.label ?? '')}** — Pros: ${mdEsc(o?.pros ?? '—')} · Cons: ${mdEsc(o?.cons ?? '—')} · Risk: ${mdEsc(o?.risk ?? '—')}`);
-    }
-    lines.push('', `**Recommendation:** ${mdEsc(d.recommendation ?? '—')}${d.recommendedBy ? ` (${mdEsc(d.recommendedBy)})` : ''}`);
+    const d = ledger?.decision ?? null;
+    const effectiveAsk = askShape(meta.ask)
+      ?? (d ? { headline: d.question ?? '', recommendation: d.recommendation, recommendedBy: d.recommendedBy } : null);
+    lines = head(meta, effectiveAsk);
+    if (d) lines.push('', ...decisionToMarkdown(d));
   } else if (type === 'liveRun') {
     const lr = ledger?.liveRun ?? {};
-    lines = head(meta);
+    const effectiveAsk = askShape(meta.ask)
+      ?? { headline: 'Authorize this live run?', note: firstClause(lr.what) };
+    lines = head(meta, effectiveAsk);
     lines.push('', `**What it does:** ${mdEsc(lr.what ?? '')}`);
     lines.push('', `**Cost / blast radius:** ${mdEsc(lr.cost ?? '—')} · ${mdEsc(lr.blastRadius ?? '—')}`);
     lines.push('', `**Cleanup:** ${mdEsc(lr.cleanup ?? '')}`);
-    lines.push('', '> Live-run gate — confirm cost, blast radius, and cleanup before authorizing.');
 
   // ---- Phase 3: twins that build the SAME blocks[] their template composes ----
   } else if (type === 'phaseTracker') {
@@ -87,10 +153,10 @@ export function toMarkdown(ledger, type) {
       { type: 'phaseSteps', steps: phases },
       progress && { type: 'donut', value: progress.value, max: progress.max, label: progress.label },
     ].filter(Boolean);
-    lines = head(meta);
+    const effectiveAsk = askShape(meta.ask) ?? (pt.note ? { headline: pt.note } : null);
+    lines = head(meta, effectiveAsk);
     const md = blocksToMarkdown(blocks);
     if (md) lines.push('', md);
-    if (pt.note) lines.push('', `> ${mdEsc(pt.note)}`);
   } else if (type === 'findings') {
     const f = ledger?.findings ?? {};
     const items = Array.isArray(f.items) ? f.items : [];
@@ -103,10 +169,10 @@ export function toMarkdown(ledger, type) {
       },
       sources && { type: 'rankedRows', rows: sources },
     ].filter(Boolean);
-    lines = head(meta);
+    const effectiveAsk = askShape(meta.ask) ?? (f.summary ? { headline: f.summary } : null);
+    lines = head(meta, effectiveAsk);
     const md = blocksToMarkdown(blocks);
     if (md) lines.push('', md);
-    if (f.summary) lines.push('', `> ${mdEsc(f.summary)}`);
   } else if (type === 'comparison') {
     const c = ledger?.comparison ?? {};
     const criteria = Array.isArray(c.criteria) ? c.criteria : [];
@@ -120,12 +186,13 @@ export function toMarkdown(ledger, type) {
         rows: options.map((o) => [o?.label, ...(Array.isArray(o?.scores) ? o.scores : []), ...(anyNote ? [o?.note ?? ''] : [])]),
       },
     ];
-    lines = head(meta);
+    const effectiveAsk = askShape(meta.ask)
+      ?? (c.recommendation != null
+        ? { headline: 'Pick an option', recommendation: c.recommendation, recommendedBy: c.recommendedBy }
+        : null);
+    lines = head(meta, effectiveAsk);
     const md = blocksToMarkdown(blocks);
     if (md) lines.push('', md);
-    if (c.recommendation != null) {
-      lines.push('', `**Recommendation:** ${mdEsc(c.recommendation)}${c.recommendedBy ? ` (${mdEsc(c.recommendedBy)})` : ''}`);
-    }
   } else if (type === 'dashboard') {
     const d = ledger?.dashboard ?? {};
     const stats = Array.isArray(d.stats) ? d.stats : null;
@@ -135,10 +202,10 @@ export function toMarkdown(ledger, type) {
       d.chart, // straight through => an unknown chart type FAILS CLOSED (parity with the template)
       rows && { type: 'rankedRows', rows },
     ].filter(Boolean);
-    lines = head(meta);
+    const effectiveAsk = askShape(meta.ask) ?? (d.ask ? { headline: d.ask } : null);
+    lines = head(meta, effectiveAsk);
     const md = blocksToMarkdown(blocks);
     if (md) lines.push('', md);
-    if (d.ask) lines.push('', `> ${mdEsc(d.ask)}`);
   } else {
     throw new Error('unknown artifact type: ' + type);
   }
