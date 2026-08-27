@@ -702,6 +702,45 @@ test('no-override case unchanged: the derived ask still badges the decision reco
   assert.doesNotMatch(h, /class="opt opt--rec" aria-label="Option B"/);
 });
 
+// ---- prepr blocker: ONE presence predicate for recommendation/recommendedBy ----
+// recStrip treated an empty string as present (`!= null`) while the hero ask
+// strip and the twin treated it absent — a shaped meta.ask with
+// recommendation:'' emitted an empty Recommendation card only in HTML. The
+// shared hasText predicate (non-empty trimmed STRING) now governs the fields'
+// presence across the hero strip, recStrip, and the twin at once.
+const EMPTYREC_CASES = [
+  ['empty-string recommendation', { headline: 'H', recommendation: '' }],
+  ['whitespace recommendedBy', { headline: 'H', recommendedBy: '   ' }],
+  ['empty rec + whitespace attribution', { headline: 'H', recommendation: '', recommendedBy: '   ' }],
+  ['numeric recommendation', { headline: 'H', recommendation: 42 }],
+];
+for (const [label, ask] of EMPTYREC_CASES) {
+  test(`meta.ask with ${label}: no .rec strip, no hero-strip chip anywhere — HTML and twin agree`, () => {
+    const l = { meta: { title: 't', ask }, slides: [{ heading: 'H1', chapter: 'Work' }] };
+    const h = planDeck(l).bodyHtml;
+    assert.match(h, /class="ask"/);                   // the ask strip itself renders (headline well-shaped)
+    assert.doesNotMatch(h, /class="rec"/);            // no (empty) recommendation strip
+    assert.doesNotMatch(h, /class="ask__by"/);        // no trailing attribution chip in the hero strip
+    assert.doesNotMatch(h, /<strong>\s*<\/strong>/);  // no empty strong in the hero strip
+    const md = toMarkdown(l, 'planDeck').markdown;
+    assert.match(md, /^> \*\*The ask:\*\* H$/m);      // the ask itself still serializes
+    assert.doesNotMatch(md, /\*\*Recommendation:\*\*/);
+    assert.doesNotMatch(md, /^> \(/m);                // no attribution line
+  });
+}
+test('decision-derived ask with recommendation:"" + recommendedBy:"   ": no strip, no chip — HTML and twin agree', () => {
+  const l = { meta: { title: 't' },
+    decision: { question: 'Q?', options: [{ label: 'A', pros: 'p' }], recommendation: '', recommendedBy: '   ' } };
+  const h = decisionCard(l).bodyHtml;
+  assert.deepEqual(chipIds(h), ['top', 'your-call']); // the question still drives the ask chapter
+  assert.doesNotMatch(h, /class="rec"/);
+  assert.doesNotMatch(h, /class="ask__by"/);
+  const md = toMarkdown(l, 'decisionCard').markdown;
+  assert.match(md, /^> \*\*The ask:\*\* Q\?$/m);
+  assert.doesNotMatch(md, /\*\*Recommendation:\*\*/);
+  assert.doesNotMatch(md, /^> \(/m);
+});
+
 // ---- prepr blocker: EVERY derived ask rides the askShape gate ----
 // A type's raw ask source used to reach the board verbatim: a whitespace
 // win.next, a numeric phaseTracker.note, or an object dashboard.ask won the

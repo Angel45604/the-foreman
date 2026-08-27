@@ -27,6 +27,16 @@ export function firstClause(text) {
   return clause.length > 80 ? clause.slice(0, 79) + '…' : clause;
 }
 
+// The ONE presence predicate for the attributed-ask fields: a recommendation /
+// recommendedBy participates ONLY as a non-empty trimmed STRING. Shared —
+// deliberately, one function, not mirrored copies — by the hero ask strip
+// (gateBoard below), templates.mjs recStrip, the markdown twin's askToMarkdown,
+// and templates.mjs/markdown.mjs comparison's derived-ask gate, so an
+// empty/whitespace/non-string value is ABSENT everywhere at once (an empty
+// string used to count as present only in recStrip, emitting an empty card in
+// HTML alone).
+export const hasText = (v) => typeof v === 'string' && v.trim() !== '';
+
 export function drawer(label, innerHtml) {
   if (!innerHtml) return '';
   return `<details class="dw"><summary>${esc(label)} <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 6l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></summary><div class="drawer">${innerHtml}</div></details>`;
@@ -61,11 +71,13 @@ export function gateBoard({ crumb = '', title = '', verdict = '', lede = '', key
       const variant = STAT_VARIANTS.has(s?.variant) ? ` tile--${s.variant}` : ''; // allowlisted, never interpolated raw
       return `<div class="tile${variant}" role="listitem"><b>${esc(s?.value)}</b><span>${esc(s?.label)}</span></div>`;
     }).join('')}</div>` : '';
-  // headline / note / recommendation / attribution each render independently — no field gates another
+  // headline / note / recommendation / attribution each render independently —
+  // no field gates another; recommendation + attribution presence rides the
+  // shared hasText predicate (empty/whitespace/non-string = absent)
   const askBits = ask
     ? [ask.note ? esc(ask.note) : '',
-       ask.recommendation ? `<strong>${esc(ask.recommendation)}</strong>` : '',
-       ask.recommendedBy ? `<span class="ask__by">${esc(ask.recommendedBy)}</span>` : ''].filter(Boolean).join(' ')
+       hasText(ask.recommendation) ? `<strong>${esc(ask.recommendation)}</strong>` : '',
+       hasText(ask.recommendedBy) ? `<span class="ask__by">${esc(ask.recommendedBy)}</span>` : ''].filter(Boolean).join(' ')
     : '';
   const askTarget = ask?.targetId && (ask.targetId === 'top' || ids.includes(ask.targetId)) ? ask.targetId : null;
   const askStrip = ask

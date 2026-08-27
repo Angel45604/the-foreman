@@ -14,7 +14,7 @@
 
 import { esc } from './esc.mjs';
 import { renderBlocks } from './blocks.mjs';
-import { gateBoard, unit, allocateIds, firstClause } from './scaffold.mjs';
+import { gateBoard, unit, allocateIds, firstClause, hasText } from './scaffold.mjs';
 
 // ---- Gate Board shared helpers (Tasks 6–7: every template composes these) ----
 
@@ -134,11 +134,15 @@ function optionCards(d, effectiveRec = d?.recommendation) {
 
 // The SINGLE recommendation strip — renders the EFFECTIVE ask's recommendation
 // and attribution exactly once (a decision's own recommendation line is never
-// separately rendered when meta.ask overrides it).
+// separately rendered when meta.ask overrides it). Field presence rides the
+// SHARED hasText predicate (scaffold.mjs) — the same one the hero ask strip and
+// the twin's askToMarkdown apply — so an empty/whitespace/non-string value is
+// absent here exactly when it is absent there (it used to slip past `!= null`
+// and emit an empty Recommendation card in HTML alone).
 function recStrip(ask) {
-  if (!ask || (ask.recommendation == null && ask.recommendedBy == null)) return '';
-  const b = ask.recommendation != null ? `<b>Recommendation — <span>${esc(ask.recommendation)}</span></b>` : '';
-  const p = ask.recommendedBy != null ? `<p>${esc(ask.recommendedBy)}</p>` : '';
+  if (!ask || (!hasText(ask.recommendation) && !hasText(ask.recommendedBy))) return '';
+  const b = hasText(ask.recommendation) ? `<b>Recommendation — <span>${esc(ask.recommendation)}</span></b>` : '';
+  const p = hasText(ask.recommendedBy) ? `<p>${esc(ask.recommendedBy)}</p>` : '';
   return `<div class="rec"><span class="rec__dot" aria-hidden="true"></span><div class="rec__txt">${b}${p}</div></div>`;
 }
 

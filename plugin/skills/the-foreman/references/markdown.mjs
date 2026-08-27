@@ -21,7 +21,7 @@
 // without mdEsc(). Static literals I author stay raw.
 import { mdEsc } from './esc.mjs';
 import { blocksToMarkdown } from './blocks.mjs';
-import { firstClause } from './scaffold.mjs';
+import { firstClause, hasText } from './scaffold.mjs';
 
 const fav = (ledger) => (ledger?.meta?.favicon ?? '🛠️');
 
@@ -50,14 +50,17 @@ const decisionHasOptions = (d) => Array.isArray(d?.options) && d.options.length 
 // The shared ask serializer: recommendation and attribution reach the twin
 // EXCLUSIVELY through here (never via decisionToMarkdown or a per-type line).
 // Each field renders independently when present — no field gates another —
-// mirroring the HTML ask strip (scaffold.mjs gateBoard).
+// mirroring the HTML ask strip (scaffold.mjs gateBoard). Recommendation +
+// attribution presence rides the SHARED hasText predicate (scaffold.mjs), the
+// same one the hero ask strip and templates.mjs recStrip apply — one
+// predicate, so the twin and the HTML agree on emptiness byte-for-byte.
 function askToMarkdown(ask) {
   if (!ask) return '';
   const lines = [];
   if (ask.headline) lines.push(`> **The ask:** ${mdEsc(ask.headline)}`);
   if (ask.note) lines.push(`> ${mdEsc(ask.note)}`);
-  if (ask.recommendation) lines.push(`> **Recommendation:** ${mdEsc(ask.recommendation)}`);
-  if (ask.recommendedBy) lines.push(`> (${mdEsc(ask.recommendedBy)})`);
+  if (hasText(ask.recommendation)) lines.push(`> **Recommendation:** ${mdEsc(ask.recommendation)}`);
+  if (hasText(ask.recommendedBy)) lines.push(`> (${mdEsc(ask.recommendedBy)})`);
   return lines.join('\n');
 }
 

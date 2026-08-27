@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { gateBoard, unit, drawer, slugify, allocateIds, firstClause } from './scaffold.mjs';
+import { gateBoard, unit, drawer, slugify, allocateIds, firstClause, hasText } from './scaffold.mjs';
 import { FORBIDDEN_BRAND_RE } from './test-helpers.mjs';
 
 test('slugify is stable and safe', () => {
@@ -33,6 +33,23 @@ test('ask attribution renders in .ask__by (the wrapping chip), never the generic
   const { bodyHtml } = gateBoard({ title: 't', ask: { headline: 'H', recommendedBy: long }, chapters: [] });
   assert.match(bodyHtml, new RegExp(`<span class="ask__by">${long}</span>`));
   assert.doesNotMatch(bodyHtml, new RegExp(`<span class="chip">${long}</span>`)); // the clipping chip form is retired here
+});
+
+// ---- prepr blocker: ONE presence predicate for recommendation/recommendedBy ----
+test('hasText: ONLY a non-empty trimmed string counts as present', () => {
+  assert.equal(hasText('x'), true);
+  assert.equal(hasText('  x '), true);
+  for (const v of ['', '   ', 42, {}, [], null, undefined, true]) {
+    assert.equal(hasText(v), false, JSON.stringify(v));
+  }
+});
+
+test('ask strip: empty/whitespace/non-string recommendation and attribution are ABSENT (shared hasText)', () => {
+  const { bodyHtml } = gateBoard({ title: 't', ask: { headline: 'H', recommendation: '', recommendedBy: '   ' }, chapters: [] });
+  assert.doesNotMatch(bodyHtml, /<strong>/);          // no empty recommendation strong
+  assert.doesNotMatch(bodyHtml, /class="ask__by"/);   // no trailing whitespace attribution chip
+  const n = gateBoard({ title: 't', ask: { headline: 'H', recommendation: 42 }, chapters: [] });
+  assert.doesNotMatch(n.bodyHtml, /<strong>/);        // a non-string never renders as a recommendation
 });
 
 test('gateBoard renders rail chips for Top + every chapter, with matching section ids', () => {
