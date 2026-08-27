@@ -69,6 +69,12 @@ const diffOp = (op) => (DIFF_OPS.has(op) ? op : ' ');
 // else (incl. an injection smuggled through `variant`) falls back to bare.
 const PILL_VARIANTS = new Set(['ok', 'warn']);
 
+// verdictFan fate-variant allowlist (Gate Board) — only these pick a modifier
+// class; anything else (incl. an injection smuggled through `variant`) is
+// coerced to 'x'. Same fail-closed posture as the allowlists above.
+const FATE_VARIANTS = new Set(['ok', 'warn', 'x']);
+const fateVariant = (v) => (FATE_VARIANTS.has(v) ? v : 'x');
+
 // Sanitize a fenced-code INFO string (the word after the opening fence) to
 // alphanumeric only, capped at 20 chars — so `lang` can never inject a newline,
 // a backtick, or any structure into the twin.
@@ -459,6 +465,44 @@ const BLOCKS = {
         const ends = (it?.min != null || it?.max != null) ? ` (scale ${mdEsc(it?.min ?? '')}–${mdEsc(it?.max ?? '')})` : '';
         return `- **${mdEsc(it?.label)}**: ${mdEsc(it?.from)} → ${mdEsc(it?.to)}${ends}`;
       }).join('\n');
+    },
+  },
+
+  // { type:'duel', left:{label,value,note?}, right:{label,value,note?}, flatline?:{label, values:[string]} }
+  duel: {
+    html(block) {
+      const lane = (s) => `<div class="duel__lane"><span class="duel__k">${esc(s?.label)}</span>`
+        + `<span class="duel__n">${esc(s?.value)}</span>${s?.note ? `<p>${esc(s.note)}</p>` : ''}</div>`;
+      const fl = block?.flatline && Array.isArray(block.flatline.values)
+        ? `<div class="flatline"><b>${esc(block.flatline.label)}</b>${block.flatline.values
+            .map((v) => `<i>${esc(v)}</i>`).join('<u aria-hidden="true"></u>')}</div>` : '';
+      return `<div class="duel">${lane(block?.left)}<div class="duel__mid" aria-hidden="true"><u></u><span>VS</span><u></u></div>${lane(block?.right)}</div>${fl}`;
+    },
+    md(block) {
+      const s = (x) => `**${mdEsc(x?.value)}** ${mdEsc(x?.label)}${x?.note ? ` (${mdEsc(x.note)})` : ''}`;
+      const fl = block?.flatline && Array.isArray(block.flatline.values)
+        ? `\n${mdEsc(block.flatline.label)}: ${block.flatline.values.map((v) => mdEsc(v)).join(' — ')}` : '';
+      return `${s(block?.left)} vs ${s(block?.right)}${fl}`;
+    },
+  },
+
+  // { type:'verdictFan', verdict:string, fates:[{count:number, label, variant?:'ok'|'warn'|'x'}] }
+  verdictFan: {
+    html(block) {
+      const fates = Array.isArray(block?.fates) ? block.fates : [];
+      const cells = fates.map((f) => {
+        const v = fateVariant(f?.variant);
+        const n = Math.round(safeNum(f?.count, { min: 0, max: 24, fallback: 0 }));
+        return `<div class="fate fate--${v}"><span class="fate__dots" aria-hidden="true">${'<i></i>'.repeat(n)}</span>`
+          + `<b>${esc(safeNum(f?.count, { min: 0, fallback: 0 }))}</b><span>${esc(f?.label)}</span></div>`;
+      }).join('');
+      return `<div class="verdict"><span class="verdict__chip">${esc(block?.verdict)}</span>`
+        + `<div class="fan" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div><div class="fates">${cells}</div></div>`;
+    },
+    md(block) {
+      const fates = Array.isArray(block?.fates) ? block.fates : [];
+      return [`**${mdEsc(block?.verdict)}**`,
+        ...fates.map((f) => `- ${mdEsc(safeNum(f?.count, { min: 0, fallback: 0 }))} — ${mdEsc(f?.label)}`)].join('\n');
     },
   },
 };

@@ -6,7 +6,7 @@ import { BLOCKS, BLOCK_TYPES, renderBlocks, blocksToMarkdown } from './blocks.mj
 // A literal expected list, independent of the module — a new block type added
 // WITHOUT both an html + md renderer fails this, and a coordinated edit can't
 // silently widen the set without updating the oracle here too.
-const EXPECTED_BLOCK_TYPES = ['table', 'rankedRows', 'statRow', 'donut', 'bar', 'lineSpark', 'flow', 'phaseSteps', 'code', 'diff', 'pillRow', 'topo', 'deltaRow'];
+const EXPECTED_BLOCK_TYPES = ['table', 'rankedRows', 'statRow', 'donut', 'bar', 'lineSpark', 'flow', 'phaseSteps', 'code', 'diff', 'pillRow', 'topo', 'deltaRow', 'duel', 'verdictFan'];
 
 test('BLOCK_TYPES is exactly the closed expected set (literal oracle)', () => {
   assert.deepEqual([...BLOCK_TYPES].sort(), [...EXPECTED_BLOCK_TYPES].sort());
@@ -865,9 +865,40 @@ test('deltaRow clamps positions, renders endpoints, never emits NaN', () => {
 });
 
 test('registry closed-set oracle includes the new figure blocks with html+md', () => {
-  for (const t of ['topo', 'deltaRow']) {
+  for (const t of ['topo', 'deltaRow', 'duel', 'verdictFan']) {
     assert.ok(BLOCK_TYPES.includes(t), t);
     assert.equal(typeof BLOCKS[t].html, 'function');
     assert.equal(typeof BLOCKS[t].md, 'function');
   }
+});
+
+// ============================================================================
+// Gate Board figure blocks — duel, verdictFan (neumorphic Gate Board, Task 2)
+// ============================================================================
+
+test('duel renders lanes, optional flatline, escapes', () => {
+  const html = renderBlocks([{ type: 'duel',
+    left: { label: 'Plan', value: '0 / 4', note: '<n>' }, right: { label: 'Code', value: '1 / 1', note: 'ok' },
+    flatline: { label: 'Blockers / round', values: ['8', '7', '8', '7'] } }]);
+  assert.match(html, /class="duel"/); assert.match(html, /&lt;n&gt;/);
+  assert.equal((html.match(/class="flatline"/g) || []).length, 1);
+  const noFlat = renderBlocks([{ type: 'duel', left: { label: 'a', value: '1' }, right: { label: 'b', value: '2' } }]);
+  assert.ok(!noFlat.includes('flatline'));
+});
+
+test('verdictFan allowlists variants and clamps dot counts', () => {
+  const html = renderBlocks([{ type: 'verdictFan', verdict: 'BLOCK', fates: [
+    { count: 6, label: 'fixable', variant: 'ok' },
+    { count: 1e308, label: 'huge', variant: '"><script>' },   // finite over-range → clamp 24
+    { count: 1e999, label: 'inf', variant: 'warn' }] }]);      // non-finite → fallback 0 dots
+  assert.match(html, /BLOCK/);
+  assert.equal((html.match(/class="fate fate--ok"/g) || []).length, 1);
+  assert.equal((html.match(/class="fate fate--x"/g) || []).length, 1);  // injected variant coerced
+  assert.equal((html.match(/class="fate fate--warn"/g) || []).length, 1);
+  // count dots INSIDE the .fate__dots spans only — the static .fan ornament
+  // carries 5 decorative <i></i> strokes of its own (per the reference markup)
+  const dotCount = [...html.matchAll(/class="fate__dots"[^>]*>((?:<i><\/i>)*)</g)]
+    .reduce((n, m) => n + ((m[1].match(/<i><\/i>/g) || []).length), 0);
+  assert.equal(dotCount, 6 + 24 + 0);
+  assert.ok(!html.includes('<script>'));
 });
