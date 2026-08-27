@@ -57,9 +57,12 @@ export function lintLedger(ledger, type) {
     // natural ask source per type, mirroring each template's derivedAsk input —
     // and its GATE: brief's win.next candidate rides the same askShape predicate
     // the renderers apply, so a whitespace / non-string next (which renders NO
-    // strip) counts as missing here too, never as present
+    // strip) counts as missing here too, never as present. liveRun's ask is
+    // ENGINE-DERIVED: the template always emits 'Authorize this live run?' — an
+    // engine literal that passes askShape regardless of ledger.liveRun — so its
+    // natural ask is ALWAYS present (lint must never warn where the render asks).
     const naturalAsk = type === 'brief' ? askShape({ headline: l.win?.next })
-      : type === 'liveRun' ? l.liveRun
+      : type === 'liveRun' ? true
         : decisionShape(l.decision); // planDeck + decisionCard derive ONLY from a well-shaped decision
     if (!askShape(meta.ask) && !naturalAsk) warnings.push('lint: missing-ask meta');
   }

@@ -68,7 +68,11 @@ test('missing-ask fires on a gate type with neither meta.ask nor a natural ask s
   assert.deepEqual(lintLedger({ meta, decision: { question: 'q' } }, 'planDeck'), []);
   assert.deepEqual(lintLedger({ meta, decision: { question: 'q' } }, 'decisionCard'), []);
   assert.deepEqual(lintLedger({ meta, win: { landed: 'x', next: 'ship it' } }, 'brief'), []);
+  // liveRun's ask is ENGINE-DERIVED ('Authorize this live run?' — an engine
+  // literal that always passes askShape), so it never counts as missing —
+  // with OR without a ledger.liveRun section (lint agrees with the render)
   assert.deepEqual(lintLedger({ meta, liveRun: { what: 'w' } }, 'liveRun'), []);
+  assert.deepEqual(lintLedger({ meta }, 'liveRun'), []);
   // a malformed (non-object) meta.ask is NOT an ask source — same askShape gate as the
   // templates — and, being present-but-malformed, it ALSO fires the malformed-ask rule
   assert.deepEqual(lintLedger({ meta: { ...meta, ask: 'approve?' } }, 'decisionCard'),
@@ -122,6 +126,25 @@ test('brief missing-ask fires when win.next fails askShape (whitespace / non-str
   assert.deepEqual(lintLedger({ meta, win: { landed: 'x', next: '   ' } }, 'brief'), ['lint: missing-ask meta']);
   assert.deepEqual(lintLedger({ meta, win: { landed: 'x', next: 42 } }, 'brief'), ['lint: missing-ask meta']);
   assert.deepEqual(lintLedger({ meta, win: { landed: 'x', next: 'ship it' } }, 'brief'), []); // a real ask still counts
+});
+
+// ---- prepr blocker: lint/renderer AGREEMENT on liveRun ----
+// The canonical liveRun template ALWAYS derives 'Authorize this live run?'
+// (even with no ledger.liveRun section — the headline is an engine literal
+// that passes askShape unconditionally), but lint used to check truthiness of
+// l.liveRun, so a metadata-only liveRun ledger drew a missing-ask warning the
+// render itself contradicted. liveRun's ask now counts as always present.
+test('liveRun never fires missing-ask: the render always derives the authorize ask', () => {
+  // metadata-only ledger — no liveRun section at all
+  assert.deepEqual(lintLedger({ meta: { title: 't', verdict: 'v' } }, 'liveRun'), []);
+  // an empty liveRun section is just as fine
+  assert.deepEqual(lintLedger({ meta: { title: 't', verdict: 'v' }, liveRun: {} }, 'liveRun'), []);
+});
+test('a malformed meta.ask on liveRun still fires malformed-ask (but never missing-ask)', () => {
+  for (const ask of [{}, { note: 'x' }, { headline: '' }, 'approve?']) {
+    assert.deepEqual(lintLedger({ meta: { title: 't', verdict: 'v', ask } }, 'liveRun'),
+      ['lint: malformed-ask meta'], JSON.stringify(ask));
+  }
 });
 
 test('keystats-count fires when meta.keyStats is present with length outside 3..5', () => {
