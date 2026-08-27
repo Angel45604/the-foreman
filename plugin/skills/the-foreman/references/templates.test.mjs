@@ -420,6 +420,48 @@ test('dashboard: stats as tiles, chart + ranked rows VISIBLE, ask strip resolves
   assert.deepEqual(chipIds(r.bodyHtml), ['top', 'your-call']);
   assertAskVisible(r.bodyHtml, 'approve budget?');
 });
+// ---- prepr round 1: keyStats coexistence — the both-present rule ----
+// meta.keyStats wins the hero tiles; when BOTH meta.keyStats and the type's
+// derived stats exist, the derived stats render as VISIBLE stat wells (statRow)
+// inside the type's unit body instead of being dropped. Nothing is lost.
+test('dashboard with BOTH meta.keyStats and d.stats: tiles carry meta, d.stats surface as visible wells', () => {
+  const r = dashboard({
+    meta: { ...META3, keyStats: [{ value: '9', label: 'hero stat' }] },
+    dashboard: {
+      stats: [{ value: '$0.12', label: 'Spend', variant: 'ok' }],
+      chart: { type: 'donut', value: 25, max: 100, label: 'Used' },
+      rows: [{ label: 'Tyler', value: '$10' }],
+      ask: 'approve budget?',
+    },
+  });
+  const vis = stripDetails(r.bodyHtml);
+  const tiles = vis.match(/class="tiles"[\s\S]*?<\/div>\s*<\/div>/)?.[0] ?? '';
+  assert.match(tiles, /hero stat/);                       // meta.keyStats wins the hero tiles
+  assert.doesNotMatch(tiles, /Spend/);                    // the derived stats are NOT the tiles…
+  assert.match(vis, /class="wells"/);                     // …they render as visible stat wells
+  assert.match(vis, /class="well__v is-ok"[^>]*>\$0\.12</);
+  assert.match(vis, /class="well__l"[^>]*>Spend</);
+  assert.match(vis, /class="ring" role="img"/);           // chart still visible
+  assert.match(vis, /class="relrow"/);                    // rows still visible
+  assert.ok(vis.indexOf('class="wells"') < vis.indexOf('class="ring"'), 'wells sit above the chart');
+});
+test('dashboard withOUT meta.keyStats keeps d.stats as the hero tiles and adds NO duplicate wells', () => {
+  const h = dashboard({ meta: META3, dashboard: { stats: [{ value: '$0.12', label: 'Spend' }] } }).bodyHtml;
+  assert.match(h, /class="tiles"/);
+  assert.match(h, /\$0\.12/);
+  assert.doesNotMatch(h, /class="wells"/);
+});
+test('liveRun with BOTH meta.keyStats and its synthesized pair: tiles carry meta, the pair surfaces as wells', () => {
+  const h = liveRun({ ...ledger, meta: { ...ledger.meta, keyStats: [{ value: '9', label: 'hero stat' }] } }).bodyHtml;
+  const vis = stripDetails(h);
+  const tiles = vis.match(/class="tiles"[\s\S]*?<\/div>\s*<\/div>/)?.[0] ?? '';
+  assert.match(tiles, /hero stat/);                       // meta.keyStats wins the tiles
+  assert.match(vis, /class="wells"/);                     // synthesized cost + blast-radius pair kept visible
+  assert.match(vis, /class="well__v"[^>]*>\$0\.12</);
+  assert.match(vis, /class="well__l"[^>]*>blast radius</);
+  assert.equal((vis.match(/class="co"/g) || []).length, 4); // the four gate callouts unchanged
+});
+
 test('dashboard without an ask: Dashboard label, NO ask strip', () => {
   const h = dashboard({ meta: META3, dashboard: { stats: [{ value: '1', label: 'x' }] } }).bodyHtml;
   assert.deepEqual(chipIds(h), ['top', 'dashboard']);

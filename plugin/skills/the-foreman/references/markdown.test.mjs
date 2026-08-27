@@ -285,6 +285,20 @@ test('toMarkdown dashboard twin emits stats + chart + rows + ask, no HTML', () =
   assert.doesNotMatch(md, /<[a-zA-Z/]/);
 });
 
+test('toMarkdown dashboard twin with BOTH meta.keyStats and d.stats keeps both: hero in head, derived in section', () => {
+  const md = toMarkdown({
+    meta: { ...META, keyStats: [{ value: '9', label: 'hero stat' }], },
+    dashboard: {
+      stats: [{ value: '$0.12', label: 'Spend' }],
+      ask: 'approve budget?',
+    },
+  }, 'dashboard').markdown;
+  assert.match(md, /^- \*\*9\*\* — hero stat$/m);          // hero keyStats serialized in the head…
+  assert.match(md, /^- \*\*\$0\.12\*\* — Spend$/m);        // …derived stats within the section
+  assert.ok(md.indexOf('hero stat') < md.indexOf('> **The ask:**'), 'keyStats ride the head, before the ask');
+  assert.ok(md.indexOf('> **The ask:**') < md.indexOf('$0.12'), 'derived stats ride the section, after the head');
+});
+
 test('toMarkdown dashboard twin FAILS CLOSED on an unknown chart type', () => {
   assert.throws(
     () => toMarkdown({ meta: META, dashboard: { chart: { type: 'bogusChart' } } }, 'dashboard'),

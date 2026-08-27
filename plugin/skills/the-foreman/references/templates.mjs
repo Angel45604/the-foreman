@@ -155,6 +155,15 @@ function slideUnit(s) {
 // its content label and no ask strip renders (never a dead link). Ids resolve
 // ONCE via allocateIds; the strip's targetId is the resolved id (gateBoard
 // re-derives the same id from the same single-label list).
+// keyStats coexistence (prepr round 1, the BOTH-PRESENT rule): meta.keyStats —
+// whenever it is an array, matching singleBoard's hero pick below — wins the
+// hero tiles; a type whose DERIVED stats would then be dropped (dashboard's
+// d.stats, liveRun's synthesized cost/blast-radius pair) must instead surface
+// them as VISIBLE stat wells (a statRow block) inside its unit body. The twin
+// mirrors the outcome: hero keyStats serialize in the head (markdown.mjs
+// head()), the derived stats within the type's section.
+const heroTakenBy = (ledger) => Array.isArray(ledger?.meta?.keyStats);
+
 function singleBoard(ledger, { fallbackTitle, contentLabel, unitHtml, derivedAsk = null, decision = null, keyStats = null, sources = [] }) {
   const meta = ledger?.meta ?? {};
   const title = String(meta.title ?? fallbackTitle);
@@ -269,16 +278,20 @@ export function decisionCard(ledger) {
 // blast radius, and the authorize ask always present.
 export function liveRun(ledger) {
   const lr = ledger?.liveRun ?? {};
-  const unitHtml = unit({
-    kicker: 'Live run · authorize',
-    statement: 'Live-run gate — authorize before anything runs',
-    figureHtml: coFact('What', lr.what) + coFact('Cost', lr.cost)
-      + coFact('Blast radius', lr.blastRadius) + coFact('Cleanup', lr.cleanup),
-  });
   const keyStats = [
     { value: firstClause(lr.cost), label: 'cost' },
     { value: firstClause(lr.blastRadius), label: 'blast radius' },
   ].filter((s) => s.value);
+  // Both-present rule: meta.keyStats takes the hero tiles, so the synthesized
+  // pair joins the unit body as visible stat wells beneath the four callouts.
+  const statWells = heroTakenBy(ledger) && keyStats.length
+    ? renderBlocks([{ type: 'statRow', stats: keyStats }]) : '';
+  const unitHtml = unit({
+    kicker: 'Live run · authorize',
+    statement: 'Live-run gate — authorize before anything runs',
+    figureHtml: coFact('What', lr.what) + coFact('Cost', lr.cost)
+      + coFact('Blast radius', lr.blastRadius) + coFact('Cleanup', lr.cleanup) + statWells,
+  });
   return singleBoard(ledger, {
     fallbackTitle: 'Live-run brief',
     contentLabel: 'Live run',
@@ -369,6 +382,9 @@ export function dashboard(ledger) {
   const stats = Array.isArray(d.stats) ? d.stats : [];
   const rows = Array.isArray(d.rows) ? d.rows : null;
   const figureHtml = renderBlocks([
+    // Both-present rule: meta.keyStats takes the hero tiles, so d.stats render
+    // as visible stat wells at the top of the unit body (above the chart).
+    heroTakenBy(ledger) && stats.length ? { type: 'statRow', stats } : null,
     d.chart, // passed straight to renderBlocks => an unknown chart type FAILS CLOSED
     rows && { type: 'rankedRows', rows },
   ].filter(Boolean));
