@@ -7,7 +7,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -126,15 +126,29 @@ test('sweep: unparseable json reports FAIL parse-error (fixed category, not the 
   assert.deepEqual(lines, [`${join(root, 'broken.json')}: FAIL parse-error`]);
 });
 
-test('sweep: recurses into subdirectories and NEVER writes anything under the root', () => {
+test('sweep: recurses into subdirectories and PROVES no write — every swept byte identical after', () => {
+  // The WHOLE fixture corpus, spread across nesting depths, then a byte-level
+  // no-write proof: a listing diff alone would miss an in-place rewrite, so
+  // every file's bytes (and mtimeMs) are snapshotted before the sweep and
+  // required byte-identical after.
   const root = mkdtempSync(join(tmpdir(), 'foreman-sweep-'));
   mkdirSync(join(root, 'nested', 'deeper'), { recursive: true });
-  writeFileSync(join(root, 'nested', 'deeper', 'ledger.json'), readFileSync(join(FIXDIR, 'legacy-sections.json')));
-  const before = readdirSync(root, { recursive: true }).map(String).sort();
+  const depths = [root, join(root, 'nested'), join(root, 'nested', 'deeper')];
+  const placed = FIXTURES.map((name, i) => {
+    const dest = join(depths[i % depths.length], name);
+    writeFileSync(dest, readFileSync(join(FIXDIR, name)));
+    return dest;
+  }).sort();
+  const listingBefore = readdirSync(root, { recursive: true }).map(String).sort();
+  const snapshot = new Map(placed.map((p) => [p, { bytes: readFileSync(p), mtimeMs: statSync(p).mtimeMs }]));
   const lines = [];
   const { checked, failures } = sweep(root, (l) => lines.push(l));
-  assert.equal(checked, 1);
+  assert.equal(checked, FIXTURES.length);
   assert.equal(failures, 0);
-  assert.deepEqual(lines, [`${join(root, 'nested', 'deeper', 'ledger.json')}: OK`]);
-  assert.deepEqual(readdirSync(root, { recursive: true }).map(String).sort(), before, 'in-memory only — no file created or removed');
+  assert.deepEqual(lines, placed.map((p) => `${p}: OK`)); // sweep() walks sorted — one OK per fixture
+  assert.deepEqual(readdirSync(root, { recursive: true }).map(String).sort(), listingBefore, 'no file created or removed');
+  for (const [p, before] of snapshot) {
+    assert.equal(Buffer.compare(readFileSync(p), before.bytes), 0, `${p}: byte-identical after the sweep`);
+    assert.equal(statSync(p).mtimeMs, before.mtimeMs, `${p}: mtime untouched by the sweep`);
+  }
 });

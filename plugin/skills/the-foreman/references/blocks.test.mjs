@@ -1015,3 +1015,69 @@ test('ladder allowlists status', () => {
   assert.equal((html.match(/lrow__v--no/g) || []).length, 1);
   assert.ok(!html.includes('evil'));
 });
+
+// ============================================================================
+// prepr round 1 — figure-block HTML+twin injection matrix over ALL SIX new
+// Gate Board figure blocks. For EVERY string-bearing ledger field the payload
+// carries an HTML tag, active Markdown (bold link), and a newline-smuggled
+// heading; html must escape it, md must neutralize it (mdEsc semantics), and
+// each block's md() must carry its data fields (this closes the missing
+// md-behavior coverage for duel / verdictFan / ladder).
+// ============================================================================
+
+const EVIL = '<img x> **[evil](x)** \n# heading';
+const FIGURE_MATRIX = {
+  topo: {
+    evil: { type: 'topo', root: { title: EVIL, note: EVIL }, children: [{ title: EVIL, note: EVIL }], aside: { value: EVIL, note: EVIL } },
+    clean: { type: 'topo', root: { title: 'RootT', note: 'rootN' }, children: [{ title: 'KidT', note: 'kidN' }], aside: { value: '0 → 1,060', note: 'asideN' } },
+    dataBits: ['RootT', 'rootN', 'KidT', 'kidN', '0 → 1,060', 'asideN'],
+  },
+  deltaRow: {
+    evil: { type: 'deltaRow', items: [{ label: EVIL, from: EVIL, to: EVIL, min: EVIL, max: EVIL, fromPos: 36, toPos: 0 }] },
+    clean: { type: 'deltaRow', items: [{ label: 'approve', from: '36%', to: '0%', min: 'lo', max: 'hi', fromPos: 36, toPos: 0 }] },
+    dataBits: ['approve', '36%', '0%', 'lo', 'hi'],
+  },
+  duel: {
+    evil: { type: 'duel', left: { label: EVIL, value: EVIL, note: EVIL }, right: { label: EVIL, value: EVIL, note: EVIL }, flatline: { label: EVIL, values: [EVIL, EVIL] } },
+    clean: { type: 'duel', left: { label: 'Plan', value: '0 / 4', note: 'leftN' }, right: { label: 'Code', value: '1 / 1', note: 'rightN' }, flatline: { label: 'Blockers', values: ['8', '7'] } },
+    dataBits: ['Plan', '0 / 4', 'leftN', 'Code', '1 / 1', 'rightN', 'Blockers', '8', '7'], // BOTH duel values + notes + flatline
+  },
+  verdictFan: {
+    evil: { type: 'verdictFan', verdict: EVIL, fates: [{ count: 3, label: EVIL, variant: 'ok' }] },
+    clean: { type: 'verdictFan', verdict: 'BLOCK', fates: [{ count: 6, label: 'fixable', variant: 'ok' }, { count: 2, label: 'blocked', variant: 'x' }] },
+    dataBits: ['BLOCK', '6', 'fixable', '2', 'blocked'], // verdict + every count + every label
+  },
+  dotMatrix: {
+    evil: { type: 'dotMatrix', columns: [EVIL], rows: [{ label: EVIL, sub: EVIL, marks: [true] }] },
+    clean: { type: 'dotMatrix', columns: ['ColA', 'ColB'], rows: [{ label: 'rowF', sub: 'rowS', marks: [true, false] }] },
+    dataBits: ['ColA', 'ColB', 'rowF', 'rowS', 'yes'],
+  },
+  ladder: {
+    evil: { type: 'ladder', rows: [{ claim: EVIL, cause: EVIL, statusLabel: EVIL, status: 'ok' }] },
+    clean: { type: 'ladder', rows: [{ claim: 'claimA', cause: 'causeA', status: 'ok', statusLabel: 'settled' }, { claim: 'claimB', cause: 'causeB', status: 'mid', statusLabel: 'partly' }] },
+    dataBits: ['claimA', 'causeA', 'settled', 'claimB', 'causeB', 'partly'], // every ladder row, all three fields
+  },
+};
+
+test('the matrix covers exactly the six new figure blocks', () => {
+  assert.deepEqual(Object.keys(FIGURE_MATRIX).sort(), ['topo', 'deltaRow', 'duel', 'verdictFan', 'dotMatrix', 'ladder'].sort());
+});
+
+for (const [type, { evil, clean, dataBits }] of Object.entries(FIGURE_MATRIX)) {
+  test(`${type}: every string field escapes the injection payload in HTML (no raw <img)`, () => {
+    const html = BLOCKS[type].html(evil);
+    assert.ok(!html.includes('<img'), 'no raw <img tag survives');
+    assert.ok(html.includes('&lt;img'), 'the payload is escaped, not dropped');
+  });
+  test(`${type}: the twin neutralizes the payload (no raw <, no unescaped [, no line-start #)`, () => {
+    const md = BLOCKS[type].md(evil);
+    assert.ok(!md.includes('<'), 'no raw < in the twin');
+    assert.ok(md.includes('&lt;img'), 'the payload is escaped, not dropped');
+    assert.doesNotMatch(md, /(?<!\\)\[/, 'every [ is backslash-escaped (no active link/image)');
+    assert.doesNotMatch(md, /^[ \t]*#/m, 'no smuggled line-start heading');
+  });
+  test(`${type}: md() carries every data field (nothing silently dropped from the twin)`, () => {
+    const md = BLOCKS[type].md(clean);
+    for (const bit of dataBits) assert.ok(md.includes(bit), `twin carries ${JSON.stringify(bit)}`);
+  });
+}

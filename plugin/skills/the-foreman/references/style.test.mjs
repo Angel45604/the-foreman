@@ -17,14 +17,38 @@ import { readFileSync } from 'node:fs';
 import { parseRules, oracleOffenders, oracleBadBorders } from './test-helpers.mjs';
 const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8');
 
-test('css carries Blue Graphite in both dark carriers and no old brand', () => {
-  for (const hex of ['#282e39', '#171b24', '#384250', '#6687ff', '#9cb2ff']) {
-    assert.equal((css.match(new RegExp(hex, 'g')) || []).length >= 2, true, hex);
+// The seven-token Blue Graphite dark map, plus the status-token overrides the
+// sheet legitimately carries in the same carriers. Each carrier must hold
+// EXACTLY these declarations — literal counts anywhere in the file could be
+// satisfied by strays outside the carriers (prepr round 1 replaced them).
+const BLUE_GRAPHITE = {
+  '--bg': '#282e39', '--tx': '#eef2f9', '--sb': '#9eabba',
+  '--sd': '#171b24', '--sl': '#384250',
+  '--ac': 'var(--user-ac, #6687ff)', '--acq': '#9cb2ff',
+};
+const STATUS_EXTRAS = { '--okq': '#7ccfa4', '--warnq': '#e0a45e', '--errq': '#e08a8a' };
+
+test('BOTH dark carriers hold exactly the seven-token Blue Graphite map (+ the named status extras)', () => {
+  const rules = parseRules(css);
+  const carriers = [
+    ['media-guarded', rules.filter((r) => r.selector === ':root:not([data-theme="light"])')],
+    ['stamped', rules.filter((r) => r.selector === ':root[data-theme="dark"]')],
+  ];
+  assert.match(css, /prefers-color-scheme: dark/); // the media carrier is inside the dark media query
+  for (const [name, found] of carriers) {
+    assert.equal(found.length, 1, `exactly one ${name} dark carrier rule`);
+    const map = Object.fromEntries(found[0].declarations.map((d) => [d.prop, d.value]));
+    for (const [prop, value] of Object.entries(BLUE_GRAPHITE)) {
+      assert.equal(map[prop], value, `${name} carrier: ${prop}`);
+    }
+    for (const [prop, value] of Object.entries(STATUS_EXTRAS)) {
+      assert.equal(map[prop], value, `${name} carrier extra: ${prop}`);
+    }
+    assert.deepEqual(Object.keys(map).sort(),
+      [...Object.keys(BLUE_GRAPHITE), ...Object.keys(STATUS_EXTRAS)].sort(),
+      `${name} carrier: the seven tokens + the documented extras, nothing else`);
   }
-  assert.ok(!/009ACC|2d323b|23272e|3a414d|8ea6ff/i.test(css));
-  assert.match(css, /prefers-color-scheme: dark/);
-  assert.match(css, /:root:not\(\[data-theme="light"\]\)/);
-  assert.match(css, /:root\[data-theme="dark"\]/);
+  assert.ok(!/009ACC|2d323b|23272e|3a414d|8ea6ff/i.test(css)); // no old brand / retired darks
 });
 
 test('the accent chain: all three --ac declarations consume var(--user-ac', () => {
