@@ -14,7 +14,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseRules, oracleOffenders, oracleBadBorders } from './test-helpers.mjs';
+import { parseRules, oracleOffenders, oracleBadBorders, oracleTokenOffenses } from './test-helpers.mjs';
 import { liveRun } from './templates.mjs';
 const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8');
 
@@ -71,6 +71,27 @@ test('the one rule: no visible borders, no second surface fills, engraved divide
   assert.ok(!/url\(\s*['"]?https?:/.test(css));                  // no external requests (ADR-003)
   assert.match(css, /data:font\/woff2;base64,/);                 // fonts embedded
   assert.match(css, /SIL OPEN FONT LICENSE|OFL/);                // license notice rides in the stylesheet
+});
+
+// ---- prepr blocker: the oracle's three bypasses are closed ----
+// (1) engraved-token fills passed on ANY selector — now only the exact divider
+// allowlist carries var(--lineH)/var(--lineV); (2) nothing pinned the light
+// :root token map — a :root{--bg:#ff0000} redefinition (or a gradient smuggled
+// THROUGH --bg's definition) sailed past; (3) each bypass is a mutation control.
+test('one-rule tightening: engraved fills only on dividers; the light :root token map is pinned', () => {
+  assert.deepEqual(oracleTokenOffenses(css), []);                                    // the real sheet passes the pin
+  // bypass 1: an engraved-token fill off the divider allowlist must offend
+  assert.ok(oracleOffenders(css + '\n.evil{background:var(--lineH);}').length > 0);
+  assert.ok(oracleOffenders(css + '\n.evil{background:var(--lineV);}').length > 0);
+  assert.ok(oracleOffenders(css + '\n.evil{background-image:var(--lineH);}').length > 0);
+  // bypass 2: a token redefinition outside the two dark carriers must offend
+  assert.ok(oracleTokenOffenses(css + '\n:root{--bg:#ff0000;}').length > 0);         // a second :root carrier
+  assert.ok(oracleTokenOffenses(css + '\n.evil{--bg:#ff0000;}').length > 0);         // a non-root smuggle
+  assert.ok(oracleTokenOffenses(css + '\n@media (min-width:600px){:root{--ac:#ff0000;}}').length > 0); // media-nested smuggle
+  // bypass 3: a gradient smuggled THROUGH --bg's own definition must offend
+  assert.ok(oracleTokenOffenses(css.replace('--bg: #eef0f5', '--bg: radial-gradient(#eef0f5, #ff0000)')).length > 0);
+  // positive control: an engraved fill on a REAL divider selector still passes
+  assert.deepEqual(oracleOffenders(css + '\n.lrow__j{background:var(--lineH);}'), []);
 });
 
 test('one-rule oracle mutation checks: forbidden fills and borders are caught', () => {

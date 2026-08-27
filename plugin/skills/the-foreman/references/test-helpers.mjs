@@ -121,6 +121,59 @@ export function debrandOffenses(text) {
   return out;
 }
 
+// Exact engraved-divider allowlist — the ONLY selectors allowed to fill with
+// the engraved tokens var(--lineH)/var(--lineV): the topo bracket's link stub
+// and kid joins, the ladder's __j join, the verdict fan's connectors, the stops
+// track's mobile spine, the duel/flatline spines, and the .t td row separator
+// (background-image). Enumerated from style.css verbatim; adjust ONLY by
+// ADDING an exact selector that is genuinely a divider/connector — the review
+// gate sees any diff to this set.
+export const DIVIDER_SELECTORS = new Set([
+  '.topo__link::after', '.topo__kid::before', '.topo__kid::after',
+  '.lrow__j', '.fan i', '.fan i.fan__x', '.stop__mark u',
+  '.duel__mid u', '.flatline u', '.t td',
+]);
+
+// The seven-token LIGHT map pinned to the sheet's bare :root — the values the
+// one-rule oracle's var(--bg) allowance actually resolves to. Pinning them
+// closes the smuggling hole: without this, :root{--bg:#ff0000} (or a
+// radial-gradient smuggled through --bg's definition) turned every allowed
+// var(--bg) fill hostile while the oracle stayed green. The Blue Graphite dark
+// counterpart is pinned by style.test.mjs's carrier test; the two dark carriers
+// below are the ONLY rules allowed to redefine any of the seven.
+export const LIGHT_TOKENS = {
+  '--bg': '#eef0f5', '--tx': '#262b3a', '--sb': '#5f6579',
+  '--sd': '#c9cdd8', '--sl': '#ffffff',
+  '--ac': 'var(--user-ac, #5b7cfa)', '--acq': '#3a5fc4',
+};
+const DARK_CARRIERS = new Set([':root:not([data-theme="light"])', ':root[data-theme="dark"]']);
+
+// Token pinning: exactly ONE :root rule defines the seven tokens, with exactly
+// the LIGHT_TOKENS literals, and NO rule outside the two dark carriers
+// redefines any of them. Every violation is reported as an offense line.
+export function oracleTokenOffenses(css) {
+  const names = Object.keys(LIGHT_TOKENS);
+  const offenses = [];
+  const defining = [];
+  for (const r of parseRules(css)) {
+    const defs = r.declarations.filter((d) => names.includes(d.prop));
+    if (!defs.length) continue;
+    if (DARK_CARRIERS.has(r.selector)) continue;       // the two dark carriers may redefine all seven
+    if (r.selector === ':root') { defining.push(r); continue; }
+    for (const d of defs) offenses.push(`${r.selector} → ${d.prop}:${d.value}`); // any other rule touching a token
+  }
+  if (defining.length !== 1) {
+    offenses.push(`:root defines the seven tokens in ${defining.length} rules (expected exactly 1)`);
+  }
+  for (const r of defining) {
+    const map = Object.fromEntries(r.declarations.map((d) => [d.prop, d.value]));
+    for (const [prop, value] of Object.entries(LIGHT_TOKENS)) {
+      if (map[prop] !== value) offenses.push(`:root → ${prop}:${map[prop] ?? '(missing)'} (expected ${value})`);
+    }
+  }
+  return offenses;
+}
+
 // Borders: only complete 0/none resets pass — '0.5px solid x' must fail.
 export function oracleBadBorders(css) {
   const bad = [];
@@ -136,18 +189,23 @@ export function oracleBadBorders(css) {
 
 // Backgrounds: ANCHORED whole-value patterns — a value must BE one of these,
 // not merely contain one (radial-gradient(var(--bg),#ff0000) fails: it is not
-// an anchored allowed value). Marker values pass only when EVERY selector in
-// the rule's selector list is in MARKER_SELECTORS.
+// an anchored allowed value). The surface tokens (var(--bg)/transparent/none)
+// pass anywhere; the ENGRAVED tokens (var(--lineH)/var(--lineV)) pass only
+// when EVERY selector in the rule's list is in DIVIDER_SELECTORS; marker
+// values pass only when every selector is in MARKER_SELECTORS.
 export function oracleOffenders(css) {
-  const SURFACE_VALUES = /^(var\(--bg\)|var\(--lineV\)|var\(--lineH\)|transparent|none)$/;
+  const SURFACE_VALUES = /^(var\(--bg\)|transparent|none)$/;
+  const DIVIDER_VALUES = /^(var\(--lineV\)|var\(--lineH\))$/;
   const MARKER_VALUES = /^(var\(--(ac|acq|ok|warn|err|sb|sd|bg)\)|currentColor|transparent|none)$/;
   const offenders = [];
   for (const r of parseRules(css)) {
+    const sels = r.selector.split(',').map((s) => s.trim());
     for (const d of r.declarations) {
       if (!/^background(-color|-image)?$/.test(d.prop)) continue;
       const v = d.value.trim();
       const ok = SURFACE_VALUES.test(v)
-        || (r.selector.split(',').every((s) => MARKER_SELECTORS.has(s.trim())) && MARKER_VALUES.test(v));
+        || (DIVIDER_VALUES.test(v) && sels.every((s) => DIVIDER_SELECTORS.has(s)))
+        || (MARKER_VALUES.test(v) && sels.every((s) => MARKER_SELECTORS.has(s)));
       if (!ok) offenders.push(`${r.selector} → ${d.prop}:${d.value}`);
     }
   }
