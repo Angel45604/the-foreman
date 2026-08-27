@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { BLOCKS, BLOCK_TYPES, renderBlocks, blocksToMarkdown } from './blocks.mjs';
+import { esc, mdEsc } from './esc.mjs';
 
 // ---- oracle: the CLOSED block set (gate-contract literal-oracle style) ----
 // A literal expected list, independent of the module — a new block type added
@@ -1095,65 +1096,131 @@ test('ladder allowlists status', () => {
 });
 
 // ============================================================================
-// prepr round 1 — figure-block HTML+twin injection matrix over ALL SIX new
-// Gate Board figure blocks. For EVERY string-bearing ledger field the payload
-// carries an HTML tag, active Markdown (bold link), and a newline-smuggled
-// heading; html must escape it, md must neutralize it (mdEsc semantics), and
-// each block's md() must carry its data fields (this closes the missing
-// md-behavior coverage for duel / verdictFan / ladder).
+// prepr round 1 (reworked at prepr blocker 5) — figure-block HTML+twin
+// injection matrix over ALL SIX new Gate Board figure blocks, PER FIELD.
+//
+// EVERY string-bearing ledger field gets its OWN unique marker payload
+// (EVIL_<block>_<field> + an HTML tag, active Markdown, and a newline-smuggled
+// heading), and the assertions walk the field list: each marker must appear
+// esc()-escaped in the HTML AND mdEsc-neutralized in the twin. A single shared
+// payload with a single-occurrence assertion would pass even when one field
+// (topo root.note, duel right.value, dotMatrix row.sub, …) were omitted from a
+// renderer — per-field markers make an omission fail by name. The field list
+// per block is the ONLY maintenance point: add the new field's path when a
+// block grows one. Separately, md() must carry every CLEAN data field (closes
+// the md-behavior coverage for duel / verdictFan / ladder).
 // ============================================================================
 
-const EVIL = '<img x> **[evil](x)** \n# heading';
+const FIGURE_BLOCK_TYPES = ['topo', 'deltaRow', 'duel', 'verdictFan', 'dotMatrix', 'ladder'];
+
+// One unique, field-named payload per (block, field) — tag + bold link + a
+// newline-smuggled heading, so every escaping obligation is exercised per field.
+const evilPayload = (type, field) => `EVIL_${type}_${field.replace(/[^A-Za-z0-9]+/g, '_')}<img x> **[evil](x)** \n# heading`;
+
+// Set a dot-path (array indices are numeric segments) on a base-block skeleton.
+function setPath(obj, path, value) {
+  const parts = path.split('.');
+  let cur = obj;
+  for (const p of parts.slice(0, -1)) cur = cur[p];
+  cur[parts[parts.length - 1]] = value;
+}
+
+// The declarative per-block field map: `base()` is the minimal skeleton
+// (structural non-string bits only), `fields` the dot-paths of EVERY
+// string-bearing ledger field the block renders.
+const FIELD_MAP = {
+  topo: {
+    base: () => ({ type: 'topo', root: {}, children: [{}], aside: {} }),
+    fields: ['root.title', 'root.note', 'children.0.title', 'children.0.note', 'aside.value', 'aside.note'],
+  },
+  deltaRow: {
+    base: () => ({ type: 'deltaRow', items: [{ fromPos: 36, toPos: 0 }] }),
+    fields: ['items.0.label', 'items.0.from', 'items.0.to', 'items.0.min', 'items.0.max'],
+  },
+  duel: {
+    base: () => ({ type: 'duel', left: {}, right: {}, flatline: { values: [''] } }),
+    fields: ['left.label', 'left.value', 'left.note', 'right.label', 'right.value', 'right.note', 'flatline.label', 'flatline.values.0'],
+  },
+  verdictFan: {
+    base: () => ({ type: 'verdictFan', fates: [{ count: 3, variant: 'ok' }] }),
+    fields: ['verdict', 'fates.0.label'],
+  },
+  dotMatrix: {
+    base: () => ({ type: 'dotMatrix', columns: [''], rows: [{ marks: [true] }] }),
+    fields: ['columns.0', 'rows.0.label', 'rows.0.sub'],
+  },
+  ladder: {
+    base: () => ({ type: 'ladder', rows: [{ status: 'ok' }] }),
+    fields: ['rows.0.claim', 'rows.0.cause', 'rows.0.statusLabel'],
+  },
+};
+
+// Clean-render twin coverage: md() must carry every data field of a benign block.
 const FIGURE_MATRIX = {
   topo: {
-    evil: { type: 'topo', root: { title: EVIL, note: EVIL }, children: [{ title: EVIL, note: EVIL }], aside: { value: EVIL, note: EVIL } },
     clean: { type: 'topo', root: { title: 'RootT', note: 'rootN' }, children: [{ title: 'KidT', note: 'kidN' }], aside: { value: '0 → 1,060', note: 'asideN' } },
     dataBits: ['RootT', 'rootN', 'KidT', 'kidN', '0 → 1,060', 'asideN'],
   },
   deltaRow: {
-    evil: { type: 'deltaRow', items: [{ label: EVIL, from: EVIL, to: EVIL, min: EVIL, max: EVIL, fromPos: 36, toPos: 0 }] },
     clean: { type: 'deltaRow', items: [{ label: 'approve', from: '36%', to: '0%', min: 'lo', max: 'hi', fromPos: 36, toPos: 0 }] },
     dataBits: ['approve', '36%', '0%', 'lo', 'hi'],
   },
   duel: {
-    evil: { type: 'duel', left: { label: EVIL, value: EVIL, note: EVIL }, right: { label: EVIL, value: EVIL, note: EVIL }, flatline: { label: EVIL, values: [EVIL, EVIL] } },
     clean: { type: 'duel', left: { label: 'Plan', value: '0 / 4', note: 'leftN' }, right: { label: 'Code', value: '1 / 1', note: 'rightN' }, flatline: { label: 'Blockers', values: ['8', '7'] } },
     dataBits: ['Plan', '0 / 4', 'leftN', 'Code', '1 / 1', 'rightN', 'Blockers', '8', '7'], // BOTH duel values + notes + flatline
   },
   verdictFan: {
-    evil: { type: 'verdictFan', verdict: EVIL, fates: [{ count: 3, label: EVIL, variant: 'ok' }] },
     clean: { type: 'verdictFan', verdict: 'BLOCK', fates: [{ count: 6, label: 'fixable', variant: 'ok' }, { count: 2, label: 'blocked', variant: 'x' }] },
     dataBits: ['BLOCK', '6', 'fixable', '2', 'blocked'], // verdict + every count + every label
   },
   dotMatrix: {
-    evil: { type: 'dotMatrix', columns: [EVIL], rows: [{ label: EVIL, sub: EVIL, marks: [true] }] },
     clean: { type: 'dotMatrix', columns: ['ColA', 'ColB'], rows: [{ label: 'rowF', sub: 'rowS', marks: [true, false] }] },
     dataBits: ['ColA', 'ColB', 'rowF', 'rowS', 'yes'],
   },
   ladder: {
-    evil: { type: 'ladder', rows: [{ claim: EVIL, cause: EVIL, statusLabel: EVIL, status: 'ok' }] },
     clean: { type: 'ladder', rows: [{ claim: 'claimA', cause: 'causeA', status: 'ok', statusLabel: 'settled' }, { claim: 'claimB', cause: 'causeB', status: 'mid', statusLabel: 'partly' }] },
     dataBits: ['claimA', 'causeA', 'settled', 'claimB', 'causeB', 'partly'], // every ladder row, all three fields
   },
 };
 
-test('the matrix covers exactly the six new figure blocks', () => {
-  assert.deepEqual(Object.keys(FIGURE_MATRIX).sort(), ['topo', 'deltaRow', 'duel', 'verdictFan', 'dotMatrix', 'ladder'].sort());
+test('the per-field map AND the clean matrix cover exactly the six new figure blocks', () => {
+  assert.deepEqual(Object.keys(FIELD_MAP).sort(), [...FIGURE_BLOCK_TYPES].sort());
+  assert.deepEqual(Object.keys(FIGURE_MATRIX).sort(), [...FIGURE_BLOCK_TYPES].sort());
 });
 
-for (const [type, { evil, clean, dataBits }] of Object.entries(FIGURE_MATRIX)) {
-  test(`${type}: every string field escapes the injection payload in HTML (no raw <img)`, () => {
-    const html = BLOCKS[type].html(evil);
-    assert.ok(!html.includes('<img'), 'no raw <img tag survives');
-    assert.ok(html.includes('&lt;img'), 'the payload is escaped, not dropped');
+test('setPath + evilPayload self-test (the loop rides on them)', () => {
+  const o = { a: { b: [{}] } };
+  setPath(o, 'a.b.0.c', 'x');
+  assert.equal(o.a.b[0].c, 'x');
+  assert.ok(evilPayload('topo', 'root.note').startsWith('EVIL_topo_root_note<img x>'));
+  assert.notEqual(evilPayload('topo', 'root.note'), evilPayload('topo', 'root.title'), 'markers are field-unique');
+});
+
+for (const [type, { base, fields }] of Object.entries(FIELD_MAP)) {
+  const poisoned = () => {
+    const block = base();
+    for (const f of fields) setPath(block, f, evilPayload(type, f));
+    return block;
+  };
+  test(`${type}: EVERY string field escapes its own marker payload in the HTML (an omitted field fails by name)`, () => {
+    const html = BLOCKS[type].html(poisoned());
+    assert.ok(!html.includes('<img'), 'no raw <img tag survives anywhere');
+    for (const f of fields) {
+      assert.ok(html.includes(esc(evilPayload(type, f))), `HTML carries the ${f} marker, escaped`);
+    }
   });
-  test(`${type}: the twin neutralizes the payload (no raw <, no unescaped [, no line-start #)`, () => {
-    const md = BLOCKS[type].md(evil);
+  test(`${type}: EVERY string field reaches the twin mdEsc-neutralized (an omitted field fails by name)`, () => {
+    const md = BLOCKS[type].md(poisoned());
     assert.ok(!md.includes('<'), 'no raw < in the twin');
-    assert.ok(md.includes('&lt;img'), 'the payload is escaped, not dropped');
     assert.doesNotMatch(md, /(?<!\\)\[/, 'every [ is backslash-escaped (no active link/image)');
     assert.doesNotMatch(md, /^[ \t]*#/m, 'no smuggled line-start heading');
+    for (const f of fields) {
+      assert.ok(md.includes(mdEsc(evilPayload(type, f))), `twin carries the ${f} marker, neutralized`);
+    }
   });
+}
+
+for (const [type, { clean, dataBits }] of Object.entries(FIGURE_MATRIX)) {
   test(`${type}: md() carries every data field (nothing silently dropped from the twin)`, () => {
     const md = BLOCKS[type].md(clean);
     for (const bit of dataBits) assert.ok(md.includes(bit), `twin carries ${JSON.stringify(bit)}`);
