@@ -221,6 +221,9 @@ section[id]{ scroll-margin-top: 86px; }
   font-size: clamp(19px, 2vw, 22px); letter-spacing: -0.01em; color: var(--ac); white-space: nowrap;
 }
 .tile span{ display: block; margin-top: 7px; font-size: 10px; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; color: var(--sb); line-height: 1.5; }
+/* allowlisted keyStats variants — color the value via the status TEXT tokens only (no fills) */
+.tile--ok b{ color: var(--okq); }
+.tile--warn b{ color: var(--warnq); }
 
 .ask{
   margin-top: 22px; background: var(--bg); box-shadow: var(--out); border-radius: 20px;

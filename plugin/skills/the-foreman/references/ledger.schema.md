@@ -42,7 +42,7 @@ composites `phaseTracker` → `phaseTracker`, `findings` → `findings`, `compar
     "verdict": "4 rounds, all green",        // the hero verdict line (fallback: meta.subtitle)
     "lede":    "Plain-English summary…",     // one summary paragraph under the verdict (fallback: omitted)
     "keyStats": [                             // hero stat tiles — aim for 3–5 (the render lint flags other counts)
-      { "value": "420/420", "label": "tests green" }
+      { "value": "420/420", "label": "tests green", "variant": "ok" }        // variant?: ""|"ok"|"warn" colors the value (allowlisted, else bare)
     ],
     "ask": {                                  // the ask strip — the author's intent; see "The effective ask"
       "headline":       "Approve the plan?",

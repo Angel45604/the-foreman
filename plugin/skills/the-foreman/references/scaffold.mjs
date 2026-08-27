@@ -8,6 +8,11 @@
 
 import { esc } from './esc.mjs';
 
+// Hero-tile variant allowlist (the blocks.mjs STAT_VARIANTS pattern): only
+// these PICK the static `tile--ok`/`tile--warn` modifier; anything else (incl.
+// an injection smuggled through `variant`) falls back to the bare `.tile`.
+const STAT_VARIANTS = new Set(['ok', 'warn']);
+
 export function slugify(label) {
   const s = String(label ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   return s || 'section';
@@ -52,7 +57,10 @@ export function gateBoard({ crumb = '', title = '', verdict = '', lede = '', key
     .join('');
   const nav = `<nav class="nav" aria-label="Chapters"><div class="nav__track" id="navtrack">${chips}<span class="nav__hint" aria-hidden="true">1&ndash;${Math.min(9, chs.length + 1)} jump &middot; Home / End</span></div></nav>`;
   const tiles = keyStats.length
-    ? `<div class="tiles" role="list" aria-label="The numbers that matter">${keyStats.map((s) => `<div class="tile" role="listitem"><b>${esc(s?.value)}</b><span>${esc(s?.label)}</span></div>`).join('')}</div>` : '';
+    ? `<div class="tiles" role="list" aria-label="The numbers that matter">${keyStats.map((s) => {
+      const variant = STAT_VARIANTS.has(s?.variant) ? ` tile--${s.variant}` : ''; // allowlisted, never interpolated raw
+      return `<div class="tile${variant}" role="listitem"><b>${esc(s?.value)}</b><span>${esc(s?.label)}</span></div>`;
+    }).join('')}</div>` : '';
   // headline / note / recommendation / attribution each render independently — no field gates another
   const askBits = ask
     ? [ask.note ? esc(ask.note) : '',

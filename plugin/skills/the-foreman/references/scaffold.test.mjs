@@ -42,6 +42,20 @@ test('gateBoard renders rail chips for Top + every chapter, with matching sectio
   assert.ok(!FORBIDDEN_BRAND_RE.test(bodyHtml)); // no legacy brand string in the shell
 });
 
+test('keyStats tiles: an allowlisted ok/warn variant picks tile--ok/tile--warn; anything else stays bare', () => {
+  const { bodyHtml } = gateBoard({ title: 't', keyStats: [
+    { value: '70/70', label: 'pass', variant: 'ok' },
+    { value: '2', label: 'fail', variant: 'warn' },
+    { value: '1', label: 'plain' },
+    { value: '3', label: 'inj', variant: 'evil" onmouseover="x' },
+  ], chapters: [] });
+  assert.match(bodyHtml, /class="tile tile--ok" role="listitem"><b>70\/70</);
+  assert.match(bodyHtml, /class="tile tile--warn" role="listitem"><b>2</);
+  assert.equal((bodyHtml.match(/class="tile" role="listitem"/g) || []).length, 2, 'plain + rejected variant fall back to the bare tile');
+  assert.doesNotMatch(bodyHtml, /onmouseover/);   // no attribute smuggled via variant
+  assert.doesNotMatch(bodyHtml, /tile--evil/);    // not an allowlisted class
+});
+
 test('sources survive a zero-chapter board (fall back into #top)', () => {
   const { bodyHtml } = gateBoard({ title: 't', chapters: [], sources: [{ label: 'rounds mined', value: '1,002' }] });
   assert.match(bodyHtml, /Evidence base/); assert.match(bodyHtml, /1,002/);

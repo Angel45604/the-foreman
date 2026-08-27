@@ -104,6 +104,16 @@ test('embedded fonts: both faces declared with the portfolio weight ranges', () 
   assert.equal((css.match(/font-display: swap/g) || []).length, 2);
 });
 
+test('keyStats tile variants color the value via the status TEXT tokens only (dot-token discipline)', () => {
+  const rules = parseRules(css);
+  for (const [sel, token] of [['.tile--ok b', 'var(--okq)'], ['.tile--warn b', 'var(--warnq)']]) {
+    const rs = rules.filter((r) => r.selector === sel);
+    assert.equal(rs.length, 1, `exactly one ${sel} rule`);
+    assert.deepEqual(rs[0].declarations, [{ prop: 'color', value: token }],
+      `${sel} sets color only — no fills, the one-rule oracle stays untouched`);
+  }
+});
+
 test('rail, unit, drawer, and every figure family have styles', () => {
   const selectors = parseRules(css).map((r) => r.selector.trim());
   for (const cls of ['.nav__track', '.nav__chip', '.tiles', '.ask', '.unit', '.drawer',

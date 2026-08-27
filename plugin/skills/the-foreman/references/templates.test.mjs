@@ -462,6 +462,26 @@ test('liveRun with BOTH meta.keyStats and its synthesized pair: tiles carry meta
   assert.equal((vis.match(/class="co"/g) || []).length, 4); // the four gate callouts unchanged
 });
 
+// ---- keyStats variants reach the hero tiles on BOTH hero paths ----
+test('meta.keyStats variants color the hero tiles (allowlisted ok/warn, else bare)', () => {
+  const h = planDeck({ meta: { title: 't', keyStats: [
+    { value: '474/474', label: 'suite', variant: 'ok' },
+    { value: '2', label: 'regressions', variant: 'warn' },
+    { value: '5', label: 'plain' },
+  ] }, slides: [] }).bodyHtml;
+  assert.match(h, /class="tile tile--ok" role="listitem"><b>474\/474</);
+  assert.match(h, /class="tile tile--warn" role="listitem"><b>2</);
+  assert.match(h, /class="tile" role="listitem"><b>5</);
+});
+test('dashboard stats-as-hero: d.stats variants survive into the tiles (they no longer drop)', () => {
+  const h = dashboard({ meta: META3, dashboard: { stats: [
+    { value: '$0.12', label: 'Spend', variant: 'ok' },
+    { value: '3', label: 'Failures', variant: 'warn' },
+  ] } }).bodyHtml;
+  assert.match(h, /class="tile tile--ok" role="listitem"><b>\$0\.12</);
+  assert.match(h, /class="tile tile--warn" role="listitem"><b>3</);
+});
+
 test('dashboard without an ask: Dashboard label, NO ask strip', () => {
   const h = dashboard({ meta: META3, dashboard: { stats: [{ value: '1', label: 'x' }] } }).bodyHtml;
   assert.deepEqual(chipIds(h), ['top', 'dashboard']);
