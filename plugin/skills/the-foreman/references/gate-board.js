@@ -52,12 +52,25 @@
     document.fonts.ready.then(syncOffset);
   }
 
-  /* scrollspy — a thin band around the viewport's middle decides the chapter */
+  /* scrollspy — a thin band around the viewport's middle decides the chapter.
+     TWO tracked signals drive the live chip: observerId (written ONLY by the
+     observer callback) and atEnd (owned by the rAF-throttled scroll tick
+     below). applyLive() recomputes the selection from both, so releasing the
+     end override restores the observer's chapter WITHOUT a fresh observer
+     event — scrolling up from the end may produce none, because the section
+     above the final one can be intersecting the band the whole time. */
+  var observerId = null;
+  var atEnd = false;
+  function applyLive(){
+    var id = atEnd ? ids[ids.length - 1] : observerId;
+    if (id) setLive(id); /* no signal yet (initial callback, nothing in the band) keeps the markup's Top state */
+  }
   if ('IntersectionObserver' in window){
     var spy = new IntersectionObserver(function(entries){
       entries.forEach(function(e){
-        if (e.isIntersecting) setLive(e.target.id);
+        if (e.isIntersecting) observerId = e.target.id;
       });
+      applyLive();
     }, { rootMargin: '-40% 0px -55% 0px', threshold: 0 });
     ids.forEach(function(id){
       var s = document.getElementById(id);
@@ -69,15 +82,22 @@
      for a final section shorter than ~55vh, so the last rail chip could stay
      stale after a jump to the ask. When the viewport bottom reaches the
      document end, the LAST derived chapter is live (passive scroll listener,
-     rAF-throttled; the observer keeps deciding everywhere else). */
+     rAF-throttled; the observer keeps deciding everywhere else). The tick
+     applies only on an atEnd EDGE — entering the end forces the last chip,
+     leaving it restores the observer's pick — so a mid-document click's
+     immediate feedback is never stomped by a tick re-asserting an observerId
+     the observer has not caught up to yet. */
   var endTick = false;
   function onEndScroll(){
     if (endTick) return;
     endTick = true;
     requestAnimationFrame(function(){
       endTick = false;
-      if (ids.length && window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2){
-        setLive(ids[ids.length - 1]);
+      var nowEnd = ids.length > 0
+        && window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2;
+      if (nowEnd !== atEnd){
+        atEnd = nowEnd;
+        applyLive();
       }
     });
   }

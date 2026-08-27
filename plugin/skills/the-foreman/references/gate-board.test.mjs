@@ -42,7 +42,23 @@ test('end-of-document handler: a passive rAF-throttled scroll listener lights th
   assert.match(js, /addEventListener\('scroll', [A-Za-z_$][\w$]*, \{ passive: true \}\)/);
   assert.match(js, /requestAnimationFrame/);
   assert.match(js, /window\.innerHeight \+ window\.scrollY >= document\.documentElement\.scrollHeight - 2/);
-  assert.match(js, /setLive\(ids\[ids\.length - 1\]\)/);   // last-id selection stays DERIVED, never literal
+  // last-id selection stays DERIVED, never literal (via the atEnd selection rule below)
+  assert.match(js, /atEnd \? ids\[ids\.length - 1\]/);
+});
+
+test('end-override RELEASES on scroll-up: observerId + atEnd drive one selection rule, no fresh observer event needed', () => {
+  // Scrolling back up from the forced document-end chip may produce NO new
+  // IntersectionObserver callback (the section above is ALREADY intersecting
+  // the band), so the selection must recompute from tracked state instead:
+  // setLive(atEnd ? last : observerId) on BOTH signal paths.
+  assert.match(js, /var id = atEnd \? ids\[ids\.length - 1\] : observerId;/);
+  assert.match(js, /if \(id\) setLive\(id\);/);   // null-guarded: no signal yet keeps the markup's Top state
+  // observerId is written ONLY by the observer callback (one declaration + one write)
+  assert.equal((js.match(/observerId =/g) || []).length, 2);
+  assert.match(js, /if \(e\.isIntersecting\) observerId = e\.target\.id;/);
+  // atEnd is owned by the rAF-throttled scroll tick, and BOTH paths re-apply the rule
+  assert.match(js, /var atEnd = false;/);
+  assert.equal((js.match(/applyLive\(\);/g) || []).length, 2, 'observer callback + scroll tick each apply');
 });
 
 test('script never references deck-era elements', () => {
