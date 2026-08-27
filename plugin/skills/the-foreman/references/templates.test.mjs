@@ -420,6 +420,29 @@ test('comparison escapes a malicious note (no raw tag survives)', () => {
   assert.match(h, /&lt;img/);
 });
 
+// ---- prepr blocker: comparison derives an ask ONLY from a real recommendation ----
+// Any non-null c.recommendation used to derive the ask: empty/whitespace/
+// numeric/object values spawned a spurious Your-call chapter, an empty (or
+// "[object Object]") recStrip, and twin divergence. The derivation now rides
+// the SAME shared hasText predicate (non-empty trimmed STRING) as the strip
+// itself; a malformed value derives NO ask — content label, no strip — the
+// twin and lint agreeing (lint: malformed-recommendation).
+for (const [label, recommendation] of [['empty-string', ''], ['whitespace', '   '], ['numeric', 42], ['object', {}]]) {
+  test(`comparison with a ${label} recommendation derives NO ask: content label, no strip — twin matches`, () => {
+    const l = { meta: { title: 'C' }, comparison: { criteria: ['C1'], options: [{ label: 'O', scores: ['x'] }], recommendation } };
+    const h = comparison(l).bodyHtml;
+    assert.deepEqual(chipIds(h), ['top', 'comparison']);  // content label, never Your call
+    assert.doesNotMatch(h, /class="ask"/);                // no ask strip at all
+    assert.doesNotMatch(h, /class="rec"/);                // no empty recommendation strip
+    assert.doesNotMatch(h, /id="your-call"/);
+    assert.doesNotMatch(h, /\[object Object\]/);          // no stringified-object garbage
+    const md = toMarkdown(l, 'comparison').markdown;
+    assert.doesNotMatch(md, /\*\*The ask:\*\*/);
+    assert.doesNotMatch(md, /\*\*Recommendation:\*\*/);
+    assert.doesNotMatch(md, /^> /m);                      // no orphan blockquote ask fragment
+  });
+}
+
 // dashboard — d.stats as hero tiles, chart + rows VISIBLE, d.ask as the ask.
 test('dashboard: stats as tiles, chart + ranked rows VISIBLE, ask strip resolves', () => {
   const r = dashboard({

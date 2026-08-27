@@ -147,6 +147,25 @@ test('a malformed meta.ask on liveRun still fires malformed-ask (but never missi
   }
 });
 
+// ---- prepr blocker: comparison's derived ask rides the shared hasText
+// predicate — a present-but-malformed comparison.recommendation derives NO ask
+// in the renderers, so lint flags it (same posture as malformed-ask /
+// malformed-decision; lint and render agree).
+test('malformed-recommendation fires when comparison.recommendation is present but fails hasText', () => {
+  for (const recommendation of ['', '   ', 42, {}, []]) {
+    const out = lintLedger({ meta: { title: 't' }, comparison: { criteria: ['C'], options: [], recommendation } }, 'comparison');
+    assert.deepEqual(out, ['lint: malformed-recommendation comparison'], JSON.stringify(recommendation));
+  }
+});
+test('malformed-recommendation never fires for a real, absent, or sectionless recommendation — and fires cross-type', () => {
+  assert.deepEqual(lintLedger({ meta: { title: 't' }, comparison: { recommendation: 'Option A' } }, 'comparison'), []);
+  assert.deepEqual(lintLedger({ meta: { title: 't' }, comparison: {} }, 'comparison'), []);
+  assert.deepEqual(lintLedger({ meta: { title: 't' } }, 'comparison'), []);
+  // present-but-malformed fires on other types too (same posture as malformed-ask)
+  assert.deepEqual(lintLedger({ meta: { title: 't', verdict: 'v', ask: { headline: 'H' } }, comparison: { recommendation: '' } }, 'planDeck'),
+    ['lint: malformed-recommendation comparison']);
+});
+
 test('keystats-count fires when meta.keyStats is present with length outside 3..5', () => {
   const mk = (n) => ({ meta: { ...clean.meta, keyStats: Array.from({ length: n }, (_, i) => ({ value: String(i), label: 'l' })) }, slides: [] });
   assert.deepEqual(lintLedger(mk(2), 'planDeck'), ['lint: keystats-count meta']);

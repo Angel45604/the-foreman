@@ -432,7 +432,14 @@ export function comparison(ledger) {
     fallbackTitle: 'Comparison',
     contentLabel: 'Comparison',
     unitHtml: unit({ kicker: 'Comparison', statement: 'How the options compare', figureHtml }),
-    derivedAsk: c.recommendation != null
+    // The derived ask rides the SHARED hasText predicate (scaffold.mjs): only
+    // a non-empty trimmed STRING recommendation derives one. Any other
+    // non-null value ('', '   ', 42, {}) used to spawn a spurious Your-call
+    // chapter and an empty (or "[object Object]") recStrip — now it derives NO
+    // ask (content label, no strip). MIRRORED in markdown.mjs's comparison
+    // twin, and lint.mjs's malformed-recommendation rule rides the same
+    // predicate — keep the three in lockstep.
+    derivedAsk: hasText(c.recommendation)
       ? { headline: 'Pick an option', recommendation: c.recommendation, recommendedBy: c.recommendedBy }
       : null,
   });

@@ -252,8 +252,13 @@ export function toMarkdown(ledger, type) {
         rows: options.map((o) => [o?.label, ...scoreCells(o), ...(anyNote ? [o?.note ?? ''] : [])]),
       },
     ];
+    // The derived-ask gate, MIRRORED from templates.mjs comparison (keep in
+    // lockstep): only a recommendation passing the SHARED hasText predicate
+    // (non-empty trimmed STRING) derives an ask — a malformed value ('',
+    // '   ', 42, {}) derives none, so the twin never serializes the spurious
+    // 'Pick an option' block the HTML no longer renders.
     const effectiveAsk = askShape(meta.ask)
-      ?? (c.recommendation != null
+      ?? (hasText(c.recommendation)
         ? askShape({ headline: 'Pick an option', recommendation: c.recommendation, recommendedBy: c.recommendedBy })
         : null);
     lines = head(meta, effectiveAsk);

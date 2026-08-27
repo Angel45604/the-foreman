@@ -9,6 +9,12 @@
 // scan, so nothing derived from the ledger can reach stderr pre-scan; keeping
 // the messages location-only means they stay safe even then.
 
+// The SHARED recommendation-presence predicate (non-empty trimmed string) —
+// genuinely shared, not a mirrored copy: the renderers' comparison derived-ask
+// gate and their recommendation strips ride this exact function, so lint and
+// render can never drift on it. Pure, no IO — the import keeps lint pure.
+import { hasText } from './scaffold.mjs';
+
 // The gate types: artifacts whose whole point is a human decision, so a
 // missing verdict line or missing ask is an authoring smell worth flagging.
 const GATE_TYPES = new Set(['planDeck', 'brief', 'decisionCard', 'liveRun']);
@@ -51,6 +57,14 @@ export function lintLedger(ledger, type) {
   // present-but-malformed decision (fails decisionShape): the renderers derive
   // NO ask from it — flag it on EVERY type, same posture as malformed-ask.
   if (l.decision != null && !decisionShape(l.decision)) warnings.push('lint: malformed-decision decision');
+
+  // present-but-malformed comparison.recommendation (fails the SHARED hasText
+  // predicate — scaffold.mjs, the very gate the renderers ride): the renderers
+  // derive NO ask from it (content label, no strip) — flag it on EVERY type,
+  // same posture as malformed-ask/malformed-decision.
+  if (isObj(l.comparison) && l.comparison.recommendation != null && !hasText(l.comparison.recommendation)) {
+    warnings.push('lint: malformed-recommendation comparison');
+  }
 
   if (GATE_TYPES.has(type)) {
     if (!meta.verdict && !meta.subtitle) warnings.push('lint: missing-verdict meta');
