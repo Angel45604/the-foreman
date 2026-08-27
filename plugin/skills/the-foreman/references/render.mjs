@@ -78,19 +78,34 @@ export async function render(ledgerPath, type, outPath) {
   const theme = (m.theme === 'light' || m.theme === 'dark') ? m.theme : null;
   const themeInit = theme ? `\n<script>document.documentElement.dataset.theme=${JSON.stringify(theme)}</script>` : '';
   const html = `<title>${esc(title)}</title>\n<style>${css}</style>${accentOverride}${themeInit}\n${bodyHtml}\n<script>${js}</script>\n`;
+  // DUAL OUTPUT (prepr round 1). outPath stays SHELL-LESS — the hosted-Artifact
+  // publish contract requires NO doctype/html/head/body wrapper (the host
+  // supplies them). The local Chrome fallback needs a real standards-mode shell
+  // for charset/viewport correctness, so a `.local.html` sibling wraps the SAME
+  // assembled content in a complete document. It goes through the SAME
+  // fail-closed gate, scanned ONCE via `html`: the local variant is a PURE
+  // WRAPPER of already-scanned content — its only additions are engine-authored
+  // shell literals plus esc(title), byte-identical to the <title> already
+  // inside the scanned `html` — so a second scan could catch nothing new.
+  const stem = outPath.endsWith('.html') ? outPath.slice(0, -5) : outPath;
+  const localPath = `${stem}.local.html`;
+  const localHtml = '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
+    + '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+    + `<title>${esc(title)}</title>\n</head>\n<body>\n${html}</body>\n</html>\n`;
   // Portable Markdown twin: a parallel agent can read it from disk / be pasted it.
   const { markdown } = toMarkdown(ledger, type);
-  const mdPath = outPath.endsWith('.html') ? `${outPath.slice(0, -5)}.md` : `${outPath}.md`;
+  const mdPath = `${stem}.md`;
   // FAIL-CLOSED gate (ADR-003) — scan BOTH renderings BEFORE any write. If
-  // EITHER is unclean, throw and write neither file.
+  // EITHER is unclean, throw and write NO file (the local wrapper included).
   const rh = scan(html);
   if (!rh.clean) throw new Error(`fail-closed: rendered artifact contains ${rh.hits.map((h) => h.category).join(', ')}`);
   const rm = scan(markdown);
   if (!rm.clean) throw new Error(`fail-closed: rendered markdown twin contains ${rm.hits.map((h) => h.category).join(', ')}`);
   for (const w of lintWarnings) console.error(w); // both scans passed — the buffered lint may speak now
   await writeFile(outPath, html, 'utf8'); // same path => agent re-publishes => same URL
+  await writeFile(localPath, localHtml, 'utf8'); // the browser-ready sibling (open-artifact.mjs prefers it)
   await writeFile(mdPath, markdown, 'utf8');
-  return { outPath, bytes: html.length, mdPath, mdBytes: markdown.length };
+  return { outPath, bytes: html.length, mdPath, mdBytes: markdown.length, localPath, localBytes: localHtml.length };
 }
 
 export async function cli(argv) {

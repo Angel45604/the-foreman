@@ -5,8 +5,22 @@
 // then the OS default browser. If even that fails, the caller just surfaces the path (§4) — never spirals.
 
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { isMain } from './is-main.mjs';
 import { platform as osPlatform } from 'node:os';
+
+// Prefer the `.local.html` sibling render.mjs writes next to the shell-less
+// hosted variant: it is the complete standards-mode document (doctype, charset,
+// viewport), which a local browser needs for correct parsing — the shell-less
+// outPath exists for the hosted publish contract. Falls back to the given path
+// when no sibling exists (e.g. a pre-dual-output render). `exists` is
+// injectable so tests never touch the filesystem.
+export function resolveLocalPath(path, exists = existsSync) {
+  const p = String(path);
+  if (p.endsWith('.local.html')) return p; // already the local document
+  const sibling = `${p.endsWith('.html') ? p.slice(0, -5) : p}.local.html`;
+  return exists(sibling) ? sibling : p;
+}
 
 // Pure: the ordered [cmd, args] candidates to open `path` in a browser, Chrome-first, per platform.
 export function openCandidates(path, platform = osPlatform()) {
@@ -62,13 +76,15 @@ export function openInBrowser(path, platform = osPlatform(), spawnFn = spawn, wi
   });
 }
 
-// CLI: `node open-artifact.mjs <htmlPath>` -> opens it in a Chrome tab (fallback: default browser).
+// CLI: `node open-artifact.mjs <htmlPath>` -> opens it in a Chrome tab (fallback: default browser),
+// preferring the `.local.html` sibling when render.mjs wrote one.
 if (isMain(import.meta.url)) {
-  const path = process.argv[2];
-  if (!path) {
+  const given = process.argv[2];
+  if (!given) {
     console.error('usage: open-artifact.mjs <htmlPath>');
     process.exit(2);
   }
+  const path = resolveLocalPath(given);
   openInBrowser(path)
     .then((r) => console.log(JSON.stringify({ opened: path, via: `${r.cmd} ${r.args.join(' ')}` })))
     .catch((e) => {

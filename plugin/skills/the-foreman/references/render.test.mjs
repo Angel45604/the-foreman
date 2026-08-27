@@ -45,6 +45,39 @@ test('same outPath overwrites in place (same-URL re-render)', async () => {
   await render(f.ledgerPath,'planDeck',f.out);
   assert.match(readFileSync(f.out,'utf8'), /<title>T2<\/title>/);
 });
+// ---- prepr round 1: dual output — shell-less outPath + a .local.html full document ----
+test('outPath stays SHELL-LESS: no doctype/html/head/body (the hosted-Artifact publish contract)', async () => {
+  const f = fixture(base); await render(f.ledgerPath,'planDeck',f.out);
+  const html = readFileSync(f.out,'utf8');
+  assert.doesNotMatch(html, /<!doctype/i);
+  assert.doesNotMatch(html, /<html[\s>]/i);
+  assert.doesNotMatch(html, /<head[\s>]/i); // <header> is fine — this pins the literal head tag
+  assert.doesNotMatch(html, /<body[\s>]/i);
+});
+test('writes a .local.html sibling: standards-mode shell wrapping the IDENTICAL assembled content', async () => {
+  const f = fixture(base);
+  const r = await render(f.ledgerPath,'planDeck',f.out);
+  const localPath = f.out.replace(/\.html$/, '.local.html');
+  assert.equal(r.localPath, localPath);
+  assert.equal(existsSync(localPath), true);
+  const local = readFileSync(localPath,'utf8');
+  assert.equal(r.localBytes, local.length);
+  assert.match(local, /^<!doctype html>\n<html lang="en">\n<head>/);          // standards mode
+  assert.match(local, /<meta charset="utf-8">/);                              // charset in <head>
+  assert.match(local, /<meta name="viewport" content="width=device-width, initial-scale=1">/);
+  assert.match(local, /<head>[\s\S]*<title>T<\/title>[\s\S]*<\/head>/);       // the title in <head>
+  assert.match(local, /<\/body>\n<\/html>\n$/);
+  // identical inner content: <body> wraps EXACTLY the shell-less outPath bytes
+  const inner = local.slice(local.indexOf('<body>\n') + '<body>\n'.length, local.lastIndexOf('</body>'));
+  assert.equal(inner, readFileSync(f.out,'utf8'));
+});
+test('FAILS CLOSED for the local variant too: a secret writes NONE of the three files', async () => {
+  const f = fixture({ ...base, slides:[{ kicker:'K', heading:'token sk-ant-api03-deadbeefdeadbeefdead', cards:[] }] });
+  await assert.rejects(() => render(f.ledgerPath,'planDeck',f.out), /secret|fail.?closed/i);
+  assert.equal(existsSync(f.out), false);
+  assert.equal(existsSync(f.out.replace(/\.html$/, '.md')), false);
+  assert.equal(existsSync(f.out.replace(/\.html$/, '.local.html')), false);
+});
 test('cli() validates argv and renders', async () => {
   const f = fixture(base);
   await assert.rejects(() => cli([]), /usage/);

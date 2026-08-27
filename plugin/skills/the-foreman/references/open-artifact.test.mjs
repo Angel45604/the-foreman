@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { openCandidates, openInBrowser } from './open-artifact.mjs';
+import { openCandidates, openInBrowser, resolveLocalPath } from './open-artifact.mjs';
 
 // A fake `spawn`: returns an EventEmitter per call and, on the next microtask, emits the planned
 // outcome for that call — 'error' (ENOENT), 'exit0', 'exit1', or 'none' (emit nothing → the survival
@@ -25,6 +25,21 @@ function fakeSpawn(plan) {
   fn.calls = calls;
   return fn;
 }
+
+// ---- prepr round 1: prefer the .local.html sibling (the full standards-mode document) ----
+test('resolveLocalPath prefers the .local.html sibling when it exists', () => {
+  const exists = (p) => p === '/tmp/deck.local.html';
+  assert.equal(resolveLocalPath('/tmp/deck.html', exists), '/tmp/deck.local.html');
+});
+test('resolveLocalPath keeps the given path when no sibling exists, and passes a .local.html through', () => {
+  assert.equal(resolveLocalPath('/tmp/deck.html', () => false), '/tmp/deck.html');
+  assert.equal(resolveLocalPath('/tmp/deck.local.html', () => { throw new Error('must not probe'); }), '/tmp/deck.local.html');
+});
+test('resolveLocalPath handles a non-.html path by appending the sibling suffix', () => {
+  const exists = (p) => p === '/tmp/artifact.local.html';
+  assert.equal(resolveLocalPath('/tmp/artifact', exists), '/tmp/artifact.local.html');
+  assert.equal(resolveLocalPath('/tmp/artifact', () => false), '/tmp/artifact');
+});
 
 test('darwin: Chrome first, then the OS default browser', () => {
   const c = openCandidates('/tmp/a.html', 'darwin');
