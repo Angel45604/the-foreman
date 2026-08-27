@@ -387,6 +387,7 @@ test('planDeck twin: reference ledger gets executive summary + Your call + evide
   assert.match(md, /^> \*\*Recommendation:\*\* A — build the manifest, gate the CODE$/m);
   assert.match(md, /^> \(Claude — on the repo/m);                 // attribution line
   assert.match(md, /^## Your call$/m);                            // the decision chapter
+  assert.match(md, /^\*\*Decision:\*\*/m);                        // derived ask => the question line stays as evidence
   for (const l of ['A — build the manifest, gate the CODE', 'B — fold round 5 and keep gating the plan',
     'C — cut to a spike: manifest with no status contract', 'D — stop Wave 2 here for tonight']) {
     assert.ok(md.includes(`- **Option ${l}**`), l);               // all four options as evidence
@@ -458,7 +459,8 @@ test('twin conflict (planDeck): meta.ask WINS — one recommendation line, decis
   assert.equal((md.match(/\*\*Recommendation:\*\*/g) || []).length, 1); // exactly one — meta.ask's
   assert.doesNotMatch(md, /Codex/);                                     // the decision's stale attribution nowhere
   assert.match(md, /^## Your call$/m);
-  assert.match(md, /^\*\*Decision:\*\* Q\?$/m);                          // the question stays as evidence
+  assert.doesNotMatch(md, /\*\*Decision:\*\*/);                          // the OVERRIDDEN question is omitted (HTML parity)
+  assert.doesNotMatch(md, /Q\?/);                                        // the stale question appears nowhere
   assert.equal((md.match(/A — x/g) || []).length, 1);                    // decision rec text ONLY in its option line
   assert.match(md, /^- \*\*Option A — x\*\* — Pros: p · Cons: c · Risk: low$/m);
 });
@@ -472,7 +474,20 @@ test('twin conflict (decisionCard): meta.ask overrides the decision ask identica
   assert.match(md, /^> \*\*Recommendation:\*\* Owner rec$/m);
   assert.equal((md.match(/\*\*Recommendation:\*\*/g) || []).length, 1);
   assert.doesNotMatch(md, /Codex/);
-  assert.match(md, /^\*\*Decision:\*\* Q\?$/m);                          // the options evidence still renders
+  assert.doesNotMatch(md, /\*\*Decision:\*\*/);                          // the overridden question is omitted here too
+  assert.doesNotMatch(md, /Q\?/);
+  assert.match(md, /^- \*\*Option A\*\* — Pros: p · Cons: c · Risk: low$/m); // the options evidence still renders
+});
+
+// The derived case still carries the question line: when the decision IS the
+// effective ask source, **Decision:** stays as the evidence header on BOTH types.
+test('twin derived case (planDeck + decisionCard): the question line rides the evidence as before', () => {
+  const decision = { question: 'Q?', options: [{ label: 'A', pros: 'p', cons: 'c', risk: 'low' }], recommendation: 'A' };
+  const deck = toMarkdown({ meta: META, slides: [], decision }, 'planDeck').markdown;
+  assert.match(deck, /^## Your call$/m);
+  assert.match(deck, /^\*\*Decision:\*\* Q\?$/m);
+  const card = toMarkdown({ meta: META, decision }, 'decisionCard').markdown;
+  assert.match(card, /^\*\*Decision:\*\* Q\?$/m);
 });
 
 // prepr round 1: the twin's askShape mirror also requires a non-empty string

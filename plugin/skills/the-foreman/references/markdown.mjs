@@ -61,15 +61,18 @@ function askToMarkdown(ask) {
   return lines.join('\n');
 }
 
-// The decision as EVIDENCE only: question + per-option pros/cons/risk lines.
-// Never the recommendation/attribution — those are askToMarkdown's alone, so a
-// stale decision recommendation can never resurface beside an overriding
-// meta.ask (it survives only inside option evidence text). Shared by planDeck's
-// `## Your call` chapter and decisionCard.
-function decisionToMarkdown(d) {
-  const lines = [`**Decision:** ${mdEsc(d?.question ?? '')}`];
+// The decision as EVIDENCE only: per-option pros/cons/risk lines, plus the
+// question line ONLY when the decision IS the effective ask source
+// (withQuestion). Never the recommendation/attribution — those are
+// askToMarkdown's alone — and never the question beside an overriding meta.ask:
+// the HTML omits the overridden question, so the twin must too, or the reader
+// sees the authoritative ask AND the conflicting stale question side by side.
+// Shared by planDeck's `## Your call` chapter and decisionCard. Returns [] for
+// an overridden options-less decision — the caller then serializes nothing.
+function decisionToMarkdown(d, withQuestion) {
+  const lines = withQuestion ? [`**Decision:** ${mdEsc(d?.question ?? '')}`] : [];
   const options = Array.isArray(d?.options) ? d.options : [];
-  if (options.length) lines.push('');
+  if (options.length && lines.length) lines.push('');
   for (const o of options) {
     lines.push(`- **Option ${mdEsc(o?.label ?? '')}** — Pros: ${mdEsc(o?.pros ?? '—')} · Cons: ${mdEsc(o?.cons ?? '—')} · Risk: ${mdEsc(o?.risk ?? '—')}`);
   }
@@ -103,7 +106,8 @@ export function toMarkdown(ledger, type) {
     // gated) wins; else a decisionShape-passing decision derives one.
     const d = ledger?.decision;
     const shapedD = decisionShape(d);
-    const effectiveAsk = askShape(meta.ask)
+    const metaAsk = askShape(meta.ask);
+    const effectiveAsk = metaAsk
       ?? (shapedD ? askShape({ headline: shapedD.question, recommendation: shapedD.recommendation, recommendedBy: shapedD.recommendedBy }) : null);
     lines = head(meta, effectiveAsk);
     const slides = Array.isArray(ledger?.slides) ? ledger.slides : [];
@@ -130,13 +134,16 @@ export function toMarkdown(ledger, type) {
       const blocksMd = blocksToMarkdown(s?.blocks);
       if (blocksMd) lines.push('', blocksMd);
     }
-    // The decision chapter — evidence only (question + options); the
-    // recommendation already rode in via askToMarkdown above. A malformed
-    // decision serializes ONLY when it has options to preserve, and with no
-    // effective ask the chapter keeps a content label (mirrors templates.mjs
-    // planDeck's content-labeled Decision chapter).
-    if (shapedD || decisionHasOptions(d)) {
-      lines.push('', effectiveAsk ? '## Your call' : '## Decision', '', ...decisionToMarkdown(d));
+    // The decision chapter — evidence only; the recommendation already rode in
+    // via askToMarkdown above, and the question line rides ONLY when the
+    // decision is the effective ask source (a meta.ask override omits it —
+    // HTML parity). A malformed decision serializes ONLY when it has options
+    // to preserve, and with no effective ask the chapter keeps a content label
+    // (mirrors templates.mjs planDeck's content-labeled Decision chapter).
+    const decisionEvidence = (shapedD || decisionHasOptions(d))
+      ? decisionToMarkdown(d, Boolean(shapedD) && !metaAsk) : [];
+    if (decisionEvidence.length) {
+      lines.push('', effectiveAsk ? '## Your call' : '## Decision', '', ...decisionEvidence);
     }
     // Evidence-base chips (value bold, then label — the HTML .src chip order).
     const sources = Array.isArray(ledger?.findings?.sources) ? ledger.findings.sources : [];
@@ -157,12 +164,17 @@ export function toMarkdown(ledger, type) {
   } else if (type === 'decisionCard') {
     const d = ledger?.decision ?? null;
     const shapedD = decisionShape(d);
-    const effectiveAsk = askShape(meta.ask)
+    const metaAsk = askShape(meta.ask);
+    const effectiveAsk = metaAsk
       ?? (shapedD ? askShape({ headline: shapedD.question, recommendation: shapedD.recommendation, recommendedBy: shapedD.recommendedBy }) : null);
     lines = head(meta, effectiveAsk);
     // Evidence serializes for a well-shaped decision, or for a malformed one
-    // that still carries options (nothing lost, no orphan empty block).
-    if (shapedD || decisionHasOptions(d)) lines.push('', ...decisionToMarkdown(d));
+    // that still carries options (nothing lost, no orphan empty block). The
+    // question line rides only when the decision IS the effective ask source —
+    // a meta.ask override serializes the option evidence alone (HTML parity).
+    const decisionEvidence = (shapedD || decisionHasOptions(d))
+      ? decisionToMarkdown(d, Boolean(shapedD) && !metaAsk) : [];
+    if (decisionEvidence.length) lines.push('', ...decisionEvidence);
   } else if (type === 'liveRun') {
     const lr = ledger?.liveRun ?? {};
     const effectiveAsk = askShape(meta.ask)
