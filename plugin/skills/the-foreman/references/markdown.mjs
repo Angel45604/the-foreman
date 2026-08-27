@@ -177,12 +177,28 @@ export function toMarkdown(ledger, type) {
     if (decisionEvidence.length) lines.push('', ...decisionEvidence);
   } else if (type === 'liveRun') {
     const lr = ledger?.liveRun ?? {};
+    // The synthesized cost/blast-radius keyStats, MIRRORED VERBATIM from
+    // templates.mjs liveRun (keep the two in lockstep), riding the same
+    // both-present rule the HTML follows: meta.keyStats — whenever it is an
+    // array, the singleBoard hero pick — takes the head's hero list and the
+    // synthesized pair serializes WITHIN the section beneath the gate facts
+    // (the HTML's visible stat wells); with no meta.keyStats the synthesized
+    // pair IS the head's hero list. Either way nothing is dropped.
+    const keyStats = [
+      { value: firstClause(lr.cost), label: 'cost' },
+      { value: firstClause(lr.blastRadius), label: 'blast radius' },
+    ].filter((s) => s.value);
+    const heroTaken = Array.isArray(meta.keyStats);
     const effectiveAsk = askShape(meta.ask)
       ?? askShape({ headline: 'Authorize this live run?', note: firstClause(lr.what) }); // engine literal — always passes; gated for uniformity
-    lines = head(meta, effectiveAsk);
+    lines = head(heroTaken ? meta : { ...meta, keyStats }, effectiveAsk);
     lines.push('', `**What it does:** ${mdEsc(lr.what ?? '')}`);
     lines.push('', `**Cost / blast radius:** ${mdEsc(lr.cost ?? '—')} · ${mdEsc(lr.blastRadius ?? '—')}`);
     lines.push('', `**Cleanup:** ${mdEsc(lr.cleanup ?? '')}`);
+    if (heroTaken && keyStats.length) {
+      const wellsMd = blocksToMarkdown([{ type: 'statRow', stats: keyStats }]);
+      if (wellsMd) lines.push('', wellsMd);
+    }
 
   // ---- Phase 3: twins that build the SAME blocks[] their template composes ----
   } else if (type === 'phaseTracker') {

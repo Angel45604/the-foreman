@@ -77,6 +77,43 @@ test('toMarkdown liveRun shows what/cost/cleanup + the authorize ask', () => {
   assert.match(md, /^> smoke$/m);                                     // note = firstClause(lr.what)
 });
 
+// ---- prepr blocker: the liveRun twin serializes the synthesized keyStats ----
+// The HTML liveRun synthesizes a cost/blast-radius pair: hero tiles when
+// meta.keyStats is absent, visible stat wells inside the unit when meta.keyStats
+// takes the hero (the both-present rule). The twin mirrors the outcome exactly.
+test('toMarkdown liveRun twin withOUT meta.keyStats: the synthesized pair serializes as the head hero list', () => {
+  const md = toMarkdown({ meta: META, liveRun: { what: 'smoke', cost: '$0.12', blastRadius: 'prod write', cleanup: 'purge verified' } }, 'liveRun').markdown;
+  assert.match(md, /^- \*\*\$0\.12\*\* — cost$/m);
+  assert.match(md, /^- \*\*prod write\*\* — blast radius$/m);
+  assert.ok(md.indexOf('— cost') < md.indexOf('> **The ask:**'), 'derived stats ride the head, before the ask (hero position)');
+  assert.equal((md.match(/— cost$/gm) || []).length, 1, 'the pair serializes exactly once');
+});
+
+test('toMarkdown liveRun twin with BOTH meta.keyStats and the synthesized pair keeps both: hero in head, derived in section', () => {
+  const md = toMarkdown({
+    meta: { ...META, keyStats: [{ value: '9', label: 'hero stat' }] },
+    liveRun: { what: 'smoke', cost: '$0.12', blastRadius: 'prod write', cleanup: 'purge verified' },
+  }, 'liveRun').markdown;
+  assert.match(md, /^- \*\*9\*\* — hero stat$/m);             // hero keyStats serialize in the head…
+  assert.match(md, /^- \*\*\$0\.12\*\* — cost$/m);            // …the synthesized pair within the section
+  assert.match(md, /^- \*\*prod write\*\* — blast radius$/m);
+  assert.ok(md.indexOf('hero stat') < md.indexOf('> **The ask:**'), 'keyStats ride the head, before the ask');
+  assert.ok(md.indexOf('> **The ask:**') < md.indexOf('— cost'), 'derived stats ride the section, after the head');
+  assert.ok(md.indexOf('**Cleanup:**') < md.indexOf('— cost'), 'the pair sits beneath the gate facts (the HTML wells position)');
+  assert.equal((md.match(/— cost$/gm) || []).length, 1, 'the pair serializes exactly once');
+  assert.doesNotMatch(md, /<[a-zA-Z/]/);                      // still no raw HTML tag
+});
+
+test('toMarkdown liveRun twin with meta.keyStats but NO cost/blastRadius: hero list only, no empty section pair', () => {
+  const md = toMarkdown({
+    meta: { ...META, keyStats: [{ value: '9', label: 'hero stat' }] },
+    liveRun: { what: 'smoke', cleanup: 'none' },
+  }, 'liveRun').markdown;
+  assert.match(md, /^- \*\*9\*\* — hero stat$/m);
+  assert.doesNotMatch(md, /— cost$/m);                        // nothing to synthesize => nothing serialized
+  assert.doesNotMatch(md, /— blast radius$/m);
+});
+
 test('toMarkdown throws on an unknown type', () => {
   assert.throws(() => toMarkdown({ meta: META }, 'bogus'), /unknown artifact type: bogus/);
 });
