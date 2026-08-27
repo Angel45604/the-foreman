@@ -4,16 +4,50 @@ import { render, cli } from './render.mjs';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { FORBIDDEN_BRAND_RE } from './test-helpers.mjs';
+import { planDeck } from './templates.mjs';
 
 function fixture(ledger){ const d=mkdtempSync(join(tmpdir(),'foreman-')); const lp=join(d,'ledger.json'); writeFileSync(lp,JSON.stringify(ledger)); return {dir:d,ledgerPath:lp,out:join(d,'artifact.html')}; }
-const base = { meta:{ title:'T', crumb:'C', favicon:'🛠️', accent:'#009ACC' }, slides:[{ kicker:'K', heading:'H', cards:[] }] };
+const base = { meta:{ title:'T', crumb:'C', favicon:'🛠️' }, slides:[{ kicker:'K', heading:'H', cards:[] }] };
 
 test('renders a self-contained HTML file with style + engine inlined; no external refs', async () => {
   const f = fixture(base); await render(f.ledgerPath,'planDeck',f.out);
   const html = readFileSync(f.out,'utf8');
-  assert.match(html, /<title>T<\/title>/); assert.match(html, /--accent:#009ACC/);
+  assert.match(html, /<title>T<\/title>/); assert.match(html, /--ac: var\(--user-ac, #5b7cfa\)/); // the sheet is inlined (house-default accent chain)
   assert.match(html, /addEventListener\('keydown'/);
+  assert.match(html, /id="navtrack"/);                              // the Gate Board rail is on the page
+  // deck-era icon sprite + retired page script (its name split so the de-brand scan stays strict)
+  assert.doesNotMatch(html, new RegExp('<svg width="0"|#i-cog|slide-' + 'engine'));
   assert.doesNotMatch(html, /<link|<script src=|https?:\/\//);
+});
+test('the RENDERED page embeds BOTH real font payloads (no placeholder text survives assembly)', async () => {
+  const f = fixture(base); await render(f.ledgerPath,'planDeck',f.out);
+  const html = readFileSync(f.out,'utf8');
+  assert.doesNotMatch(html, /__FONT_/); // the style.css placeholders are substituted at assembly
+  const payloads = html.match(/url\(data:font\/woff2;base64,[A-Za-z0-9+/=]{10000,}\) format\('woff2'\)/g) || [];
+  assert.equal(payloads.length, 2, 'both woff2 payloads embedded');
+});
+// Each rendered artifact embeds the woff2 payloads, making it a redistributed
+// copy of the Font Software — OFL 1.1 condition 2 requires every such copy to
+// carry the copyright notice AND the license text (it rides in the inlined
+// sheet, scheme-stripped so the no-external-refs invariant still holds).
+test('every RENDERED artifact carries the copyright notices + full OFL text (hosted AND .local variants)', async () => {
+  const f = fixture(base); await render(f.ledgerPath,'planDeck',f.out);
+  const hosted = readFileSync(f.out,'utf8');
+  const local = readFileSync(f.out.replace(/\.html$/, '.local.html'),'utf8');
+  for (const [name, html] of [['hosted', hosted], ['local', local]]) {
+    for (const line of [
+      'Copyright 2019 The Sora Project Authors (github.com/sora-xor/sora-font)',
+      'Copyright 2016 The Nunito Sans Project Authors (github.com/Fonthausen/NunitoSans)',
+      'This Font Software is licensed under the SIL Open Font License, Version 1.1',
+      'PERMISSION & CONDITIONS',
+      'THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND',
+    ]) assert.ok(html.includes(line), `${name}: ${line}`);
+    assert.doesNotMatch(html, /<link|<script src=|https?:\/\//); // the full license rides scheme-free
+  }
 });
 test('escapes <title> (no injection via meta.title)', async () => {
   const f = fixture({ ...base, meta:{ ...base.meta, title:'</title><script>alert(1)</script>' } });
@@ -31,6 +65,84 @@ test('same outPath overwrites in place (same-URL re-render)', async () => {
   await render(f.ledgerPath,'planDeck',f.out);
   assert.match(readFileSync(f.out,'utf8'), /<title>T2<\/title>/);
 });
+// ---- prepr round 1: dual output — shell-less outPath + a .local.html full document ----
+// The hosted assembly, pinned BYTE-FOR-BYTE (prepr blocker: head/body split).
+// The expected string is reconstructed here from the same inputs render.mjs
+// reads (templates + style.css + font payloads + gate-board.js), so any
+// refactor of the fragment assembly that changes even one hosted byte fails
+// this test — the publish contract keeps the same-URL re-render byte-stable.
+test('hosted outPath is EXACTLY title + inlined sheet + template body + page script', async () => {
+  const f = fixture(base); await render(f.ledgerPath,'planDeck',f.out);
+  const html = readFileSync(f.out,'utf8');
+  let css = readFileSync(fileURLToPath(new URL('./style.css', import.meta.url)),'utf8');
+  for (const [ph, file] of [['__FONT_SORA_B64__','sora-latin.woff2'],['__FONT_NUNITO_B64__','nunito-sans-latin.woff2']]) {
+    css = css.replace(ph, readFileSync(fileURLToPath(new URL(`./fonts/${file}`, import.meta.url))).toString('base64'));
+  }
+  const js = readFileSync(fileURLToPath(new URL('./gate-board.js', import.meta.url)),'utf8');
+  const { bodyHtml } = planDeck(base); // no accent/theme in `base` => no override/init fragments
+  assert.equal(html, `<title>T</title>\n<style>${css}</style>\n${bodyHtml}\n<script>${js}</script>\n`);
+});
+test('outPath stays SHELL-LESS: no doctype/html/head/body (the hosted-Artifact publish contract)', async () => {
+  const f = fixture(base); await render(f.ledgerPath,'planDeck',f.out);
+  const html = readFileSync(f.out,'utf8');
+  assert.doesNotMatch(html, /<!doctype/i);
+  assert.doesNotMatch(html, /<html[\s>]/i);
+  assert.doesNotMatch(html, /<head[\s>]/i); // <header> is fine — this pins the literal head tag
+  assert.doesNotMatch(html, /<body[\s>]/i);
+});
+// Fragment extraction for the .local.html shell: the two engine fragments as
+// the local document carries them — headHtml after the shell's two meta lines,
+// bodyHtml between <body> and </body>.
+const SHELL_META = '<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n';
+function localFragments(local) {
+  const head = local.slice(local.indexOf('<head>\n') + '<head>\n'.length, local.indexOf('\n</head>'));
+  assert.ok(head.startsWith(SHELL_META), 'the shell metadata leads the <head>');
+  return {
+    head,
+    headHtml: head.slice(SHELL_META.length),
+    bodyHtml: local.slice(local.indexOf('<body>\n') + '<body>\n'.length, local.lastIndexOf('</body>')),
+  };
+}
+test('writes a .local.html sibling: proper head/body split of the SAME assembled fragments', async () => {
+  const f = fixture(base);
+  const r = await render(f.ledgerPath,'planDeck',f.out);
+  const localPath = f.out.replace(/\.html$/, '.local.html');
+  assert.equal(r.localPath, localPath);
+  assert.equal(existsSync(localPath), true);
+  const local = readFileSync(localPath,'utf8');
+  assert.equal(r.localBytes, local.length);
+  assert.match(local, /^<!doctype html>\n<html lang="en">\n<head>\n/);        // standards mode
+  assert.match(local, /<meta charset="utf-8">/);                              // charset in <head>
+  assert.match(local, /<meta name="viewport" content="width=device-width, initial-scale=1">/);
+  assert.match(local, /<\/body>\n<\/html>\n$/);
+  // identical inner content, by FRAGMENT: the local head carries headHtml, the
+  // local body carries bodyHtml, and those SAME two fragments concatenate (in
+  // the same order, joined by the same newline) into the hosted outPath bytes.
+  const { head, headHtml, bodyHtml } = localFragments(local);
+  assert.equal(`${headHtml}\n${bodyHtml}`, readFileSync(f.out,'utf8'));
+  // exactly ONE title, and it lives in <head>; metadata-only elements never in <body>
+  assert.equal((local.match(/<title>/g) || []).length, 1);
+  assert.match(head, /<title>T<\/title>/);
+  assert.ok(!bodyHtml.includes('<title>'), 'no title in <body>');
+  assert.ok(!bodyHtml.includes('<style>'), 'no stylesheet in <body>');
+});
+test('local shell with accent + theme: the override style and theme init ride the HEAD; fragments still recombine', async () => {
+  const f = fixture({ ...base, meta:{ ...base.meta, accent:'#C85C3F', theme:'dark' } });
+  await render(f.ledgerPath,'planDeck',f.out);
+  const local = readFileSync(f.out.replace(/\.html$/, '.local.html'),'utf8');
+  const { head, headHtml, bodyHtml } = localFragments(local);
+  assert.equal(`${headHtml}\n${bodyHtml}`, readFileSync(f.out,'utf8'));       // same fragments, same order
+  assert.match(head, /<style>:root\{--user-ac:#C85C3F\}<\/style>/);           // accent override in <head>
+  assert.match(head, /<script>document\.documentElement\.dataset\.theme="dark"<\/script>/); // theme init in <head>
+  assert.equal((local.match(/<title>/g) || []).length, 1);                    // still exactly one title
+});
+test('FAILS CLOSED for the local variant too: a secret writes NONE of the three files', async () => {
+  const f = fixture({ ...base, slides:[{ kicker:'K', heading:'token sk-ant-api03-deadbeefdeadbeefdead', cards:[] }] });
+  await assert.rejects(() => render(f.ledgerPath,'planDeck',f.out), /secret|fail.?closed/i);
+  assert.equal(existsSync(f.out), false);
+  assert.equal(existsSync(f.out.replace(/\.html$/, '.md')), false);
+  assert.equal(existsSync(f.out.replace(/\.html$/, '.local.html')), false);
+});
 test('cli() validates argv and renders', async () => {
   const f = fixture(base);
   await assert.rejects(() => cli([]), /usage/);
@@ -41,10 +153,10 @@ test('the rendered HTML ships BOTH the auto dark media query AND a forced [data-
   const f = fixture(base); await render(f.ledgerPath,'planDeck',f.out);
   const html = readFileSync(f.out,'utf8');
   assert.match(html, /@media \(prefers-color-scheme: dark\)/); // auto: respects the viewer's OS
-  // auto carrier overrides light unless the deck forces light, and re-paints the canvas dark
-  assert.match(html, /:root:not\(\[data-theme="light"\]\)\s*\{[^}]*--paper:#0F1419/);
-  // FORCED dark rule with an actual body (not just the selector in a comment) — pins the lifted accent too
-  assert.match(html, /:root\[data-theme="dark"\]\s*\{[^}]*--accent:#3BB7E8/);
+  // auto carrier overrides light unless the deck forces light, and re-paints the canvas Blue Graphite
+  assert.match(html, /:root:not\(\[data-theme="light"\]\)\s*\{[^}]*--bg:#282e39/);
+  // FORCED dark rule with an actual body (not just the selector in a comment) — pins the lifted accent chain too
+  assert.match(html, /:root\[data-theme="dark"\]\s*\{[^}]*--ac: var\(--user-ac, #6687ff\)/);
 });
 test('meta.theme:"dark" injects exactly the inline data-theme init script (no src)', async () => {
   const f = fixture({ ...base, meta:{ ...base.meta, theme:'dark' } });
@@ -84,15 +196,108 @@ test('a dark deck STILL has no external refs (inline <script> theme init only) a
   await assert.rejects(() => render(fs.ledgerPath,'planDeck',fs.out), /secret|fail.?closed/i);
   assert.equal(existsSync(fs.out), false);
 });
-test('honors meta.accent (strict hex) by overriding the CSS accent variable', async () => {
+test('honors meta.accent (strict hex) by emitting a --user-ac override', async () => {
   const f = fixture({ ...base, meta:{ ...base.meta, accent:'#FF0000' } });
   await render(f.ledgerPath,'planDeck',f.out);
-  assert.match(readFileSync(f.out,'utf8'), /--accent:#FF0000/);
+  assert.match(readFileSync(f.out,'utf8'), /<style>:root\{--user-ac:#FF0000\}<\/style>/);
 });
-test('ignores a non-hex accent (no CSS injection; #009ACC default stands)', async () => {
+test('ignores a non-hex accent (no CSS injection; the house-default accent chain stands)', async () => {
   const f = fixture({ ...base, meta:{ ...base.meta, accent:'red;}body{display:none}' } });
   await render(f.ledgerPath,'planDeck',f.out); const html = readFileSync(f.out,'utf8');
-  assert.doesNotMatch(html, /body\{display:none\}/); assert.match(html, /--accent:#009ACC/);
+  assert.doesNotMatch(html, /body\{display:none\}/);
+  assert.doesNotMatch(html, /<style>:root\{--user-ac:/);           // no override style emitted
+  assert.match(html, /--ac: var\(--user-ac, #5b7cfa\)/);           // the sheet's default chain stands
+});
+// ---- Task 10: the --user-ac producer, accent normalization, buffered lint, sanitized CLI ----
+test('accent override chain end-to-end: a custom hex controls --ac in all three host states', async () => {
+  for (const theme of [undefined, 'light', 'dark']) {
+    const meta = theme ? { ...base.meta, accent:'#C85C3F', theme } : { ...base.meta, accent:'#C85C3F' };
+    const f = fixture({ ...base, meta });
+    await render(f.ledgerPath,'planDeck',f.out);
+    const html = readFileSync(f.out,'utf8');
+    const override = '<style>:root{--user-ac:#C85C3F}</style>';
+    assert.ok(html.includes(override), `override emitted (theme=${theme})`);
+    // all three --ac carriers resolve through var(--user-ac …) — auto, forced-light, forced-dark
+    assert.match(html, /:root\{[^}]*--ac: var\(--user-ac, #5b7cfa\)/);                                    // bare :root
+    assert.match(html, /:root:not\(\[data-theme="light"\]\)\s*\{[^}]*--ac: var\(--user-ac, #6687ff\)/);   // media-guarded dark
+    assert.match(html, /:root\[data-theme="dark"\]\s*\{[^}]*--ac: var\(--user-ac, #6687ff\)/);            // stamped dark
+    // cascade order: the override style tag rides AFTER the main stylesheet
+    assert.ok(html.indexOf(override) > html.indexOf('--ac: var(--user-ac, #5b7cfa)'), 'override after the sheet');
+    if (theme) assert.match(html, new RegExp(`dataset\\.theme=${JSON.stringify(theme)}`)); // host state stamped where forced
+  }
+});
+test('legacy-default accent (fixtures/legacy-accent.json) emits NO override — normalized to the house default', async () => {
+  const lp = fileURLToPath(new URL('./fixtures/legacy-accent.json', import.meta.url));
+  const out = join(mkdtempSync(join(tmpdir(),'foreman-')), 'artifact.html');
+  await render(lp,'planDeck',out);
+  const html = readFileSync(out,'utf8');
+  assert.doesNotMatch(html, /<style>:root\{--user-ac:/);           // the 89 legacy ledgers re-key automatically
+  assert.match(html, /--ac: var\(--user-ac, #5b7cfa\)/);           // the neumorphic default governs
+});
+test('current-default accent emits NO override, case-insensitively', async () => {
+  for (const accent of ['#5b7cfa', '#5B7CFA']) {
+    const f = fixture({ ...base, meta:{ ...base.meta, accent } });
+    await render(f.ledgerPath,'planDeck',f.out);
+    assert.doesNotMatch(readFileSync(f.out,'utf8'), /<style>:root\{--user-ac:/, accent);
+  }
+});
+test('de-brand: render.mjs source passes the scan predicate (defaults held numerically)', () => {
+  const src = readFileSync(fileURLToPath(new URL('./render.mjs', import.meta.url)),'utf8');
+  assert.doesNotMatch(src, FORBIDDEN_BRAND_RE); // Task 13's actual scan predicate
+});
+test('lint warnings are BUFFERED: a scan-rejected render prints nothing at all', async () => {
+  const statement = 'this statement runs far past the twelve word cap and carries token sk-ant-api03-deadbeefdeadbeefdead too';
+  const f = fixture({ meta:{ title:'T' }, slides:[{ statement, heading:'H' }] });
+  const orig = console.error; const lines = [];
+  console.error = (...a) => { lines.push(a.join(' ')); };
+  try {
+    await assert.rejects(() => render(f.ledgerPath,'planDeck',f.out), /secret|fail.?closed/i);
+  } finally { console.error = orig; }
+  assert.deepEqual(lines, []);                                     // no lint line beat the scan to stderr
+  assert.equal(existsSync(f.out), false);
+});
+test('a clean ledger with a lint violation renders fine; stderr carries rule + location ONLY', async () => {
+  const wordy = 'one two three four five six seven eight nine ten eleven twelve thirteen';
+  const f = fixture({ meta:{ title:'T', verdict:'v', ask:{ headline:'H' } }, slides:[{ statement: wordy }] });
+  const orig = console.error; const lines = [];
+  console.error = (...a) => { lines.push(a.join(' ')); };
+  try {
+    await render(f.ledgerPath,'planDeck',f.out);
+  } finally { console.error = orig; }
+  assert.deepEqual(lines, ['lint: statement-too-long slides[0]']); // the render still proceeded
+  assert.ok(!lines.join('\n').includes('thirteen'));               // never any ledger text
+  assert.equal(existsSync(f.out), true);
+});
+const RENDER_CLI = fileURLToPath(new URL('./render.mjs', import.meta.url));
+const sha8 = (v) => createHash('sha256').update(String(v)).digest('hex').slice(0, 8);
+const runCli = (args) => spawnSync(process.execPath, [RENDER_CLI, ...args], { encoding: 'utf8' });
+test('CLI sanitization: a secret-shaped unknown block type prints unknown-block <sha8>, never the value', () => {
+  const secretType = 'sk-ant-api03-deadbeefdeadbeefdead';
+  const f = fixture({ ...base, slides:[{ kicker:'K', heading:'H', blocks:[{ type: secretType }] }] });
+  const r = runCli([f.ledgerPath,'planDeck',f.out]);
+  assert.equal(r.status, 1);
+  assert.equal(r.stderr.trim(), `unknown-block ${sha8(secretType)}`); // locator only
+  assert.ok(!r.stderr.includes('sk-ant'));                            // the secret is absent
+  assert.equal(existsSync(f.out), false);
+});
+test('CLI category matrix: usage / parse-error / unknown-type / scan-rejected / render-error', () => {
+  let r = runCli([]);
+  assert.equal(r.status, 2); assert.equal(r.stderr.trim(), 'usage');
+  const d = mkdtempSync(join(tmpdir(),'foreman-'));
+  const badLedger = join(d,'bad.json'); writeFileSync(badLedger, '{nope');
+  r = runCli([badLedger,'planDeck',join(d,'o.html')]);
+  assert.equal(r.status, 1); assert.equal(r.stderr.trim(), 'parse-error');
+  const f = fixture(base);
+  r = runCli([f.ledgerPath,'bogusType',f.out]);
+  assert.equal(r.status, 1);
+  assert.equal(r.stderr.trim(), `unknown-type ${sha8('bogusType')}`); // value not echoed, sha8 locator instead
+  assert.ok(!r.stderr.includes('bogusType'));
+  const fs2 = fixture({ ...base, slides:[{ kicker:'K', heading:'token sk-ant-api03-deadbeefdeadbeefdead', cards:[] }] });
+  r = runCli([fs2.ledgerPath,'planDeck',fs2.out]);
+  assert.equal(r.status, 1); assert.equal(r.stderr.trim(), 'scan-rejected');
+  assert.ok(!r.stderr.includes('sk-ant'));                            // the raw scan message never prints
+  r = runCli([join(d,'missing.json'),'planDeck',join(d,'o2.html')]);
+  assert.equal(r.status, 1); assert.equal(r.stderr.trim(), 'render-error');
 });
 test('FAILS CLOSED on a modern token format (sk-proj) in the ledger', async () => {
   const f = fixture({ ...base, slides:[{ kicker:'K', heading:'key sk-proj-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', cards:[] }] });
@@ -136,7 +341,7 @@ test('renders a per-slide table block in BOTH the HTML and the Markdown twin', a
   ] }] });
   await render(f.ledgerPath,'planDeck',f.out);
   const html = readFileSync(f.out,'utf8');
-  assert.match(html, /<div class="scroll"><table>/);
+  assert.match(html, /<div class="scrollx"><table class="t">/);
   assert.match(html, /<td>Tyler<\/td>/);
   const md = readFileSync(f.out.replace(/\.html$/, '.md'),'utf8');
   assert.match(md, /^\| Name \| Spend \|$/m);
@@ -152,9 +357,9 @@ test('renders metrics/chart blocks (donut + bar + lineSpark) with NO external re
   await render(f.ledgerPath,'planDeck',f.out);
   const html = readFileSync(f.out,'utf8');
   // the chart blocks rendered
-  assert.match(html, /class="statrow"/);
+  assert.match(html, /class="wells"/);
   assert.match(html, /<polyline/);
-  assert.match(html, /stroke-dasharray=/);
+  assert.match(html, /class="ring" role="img"/);
   // the existing no-external-refs invariant still holds for the whole page
   assert.doesNotMatch(html, /<link|<script src=|https?:\/\//);
   // NO chart SVG sinks leaked (the deck's own internal <use href="#i-..."> defs are NOT chart sinks)
@@ -186,7 +391,7 @@ test('renders code / diff / pillRow blocks in BOTH the HTML and the Markdown twi
   const html = readFileSync(f.out,'utf8');
   assert.match(html, /<pre><code/);            // code + diff use <pre><code>
   assert.match(html, /class="diff-add"/);
-  assert.match(html, /class="pill ok"/);
+  assert.match(html, /class="pill pill--ok"/);
   assert.doesNotMatch(html, /<div>/);          // the code body's <div> is escaped, not a real tag
   assert.match(html, /&lt;div&gt;/);
   assert.doesNotMatch(html, /<link|<script src=|https?:\/\//); // no-external-refs invariant holds
@@ -206,8 +411,8 @@ test('renders a phaseTracker end-to-end: self-contained, twin written, no extern
   const r = await render(f.ledgerPath, 'phaseTracker', f.out);
   const html = readFileSync(f.out, 'utf8');
   assert.match(html, /<title>PT<\/title>/);
-  assert.match(html, /class="phaseflow"/);                     // phaseSteps signature
-  assert.match(html, /stroke-dasharray=/);                     // donut
+  assert.match(html, /class="stops"/);                         // phaseSteps signature (the stops track)
+  assert.match(html, /class="ring" role="img"/);               // tick-ring donut
   assert.doesNotMatch(html, /<link|<script src=|https?:\/\//); // no external refs
   // the .md twin is written next to the HTML
   assert.equal(existsSync(r.mdPath), true);
@@ -227,8 +432,7 @@ test('phaseTracker renders an optional per-phase detail sub-line end-to-end (HTM
   });
   const r = await render(f.ledgerPath, 'phaseTracker', f.out);
   const html = readFileSync(f.out, 'utf8');
-  assert.match(html, /<span class="phase-detail">6 files touched<\/span>/); // detail sub-line in HTML
-  assert.match(html, /\.phase-detail\{/);                                   // the CSS rule is inlined
+  assert.match(html, /<b>Design<\/b><p>6 files touched<\/p>/);              // detail as the stop body <p>
   assert.doesNotMatch(html, /<img onerror=x>/);                             // malicious detail escaped
   assert.match(html, /&lt;img onerror=x&gt;/);
   const md = readFileSync(r.mdPath, 'utf8');
@@ -243,8 +447,8 @@ test('renders a comparison end-to-end: self-contained, twin GitHub table, no ext
   });
   const r = await render(f.ledgerPath, 'comparison', f.out);
   const html = readFileSync(f.out, 'utf8');
-  assert.match(html, /<div class="scroll"><table>/);
-  assert.match(html, /<th>Option<\/th>/);
+  assert.match(html, /<div class="scrollx"><table class="t">/);
+  assert.match(html, /<th scope="col">Option<\/th>/);
   assert.match(html, /Option A/);
   assert.doesNotMatch(html, /<link|<script src=|https?:\/\//);
   const md = readFileSync(r.mdPath, 'utf8');
@@ -270,7 +474,7 @@ test('FAILS CLOSED: an unknown dashboard chart type makes render() reject and wr
   assert.equal(existsSync(f.out.replace(/\.html$/, '.md')), false);
 });
 
-test('chapters navigator: a deck WITH chapters renders the toc chrome + escaped data-section and STILL has no external refs', async () => {
+test('chapters rail: a board WITH chapters renders rail chips + matching section ids and STILL has no external refs', async () => {
   const f = fixture({ ...base, slides:[
     { kicker:'PLAN', heading:'Intro' },
     { kicker:'BUILD', heading:'Step one', chapter:'Discovery' },
@@ -278,23 +482,26 @@ test('chapters navigator: a deck WITH chapters renders the toc chrome + escaped 
   ] });
   await render(f.ledgerPath,'planDeck',f.out);
   const html = readFileSync(f.out,'utf8');
-  assert.match(html, /id="toctgl"/);                 // toggle button present
-  assert.match(html, /<div id="chapters" role="menu"><\/div>/); // empty container engine fills
-  assert.match(html, /data-section="Discovery"/);    // chapter stamped on the slide
-  assert.match(html, /<use href="#i-list"\/>/);       // internal-fragment icon ref
+  assert.match(html, /id="navtrack"/);               // the sticky chapter rail
+  assert.match(html, /href="#discovery"/);           // rail chip for the ledger chapter…
+  assert.match(html, /id="discovery"/);              // …resolving to a real section id
+  assert.equal((html.match(/id="discovery"/g) || []).length, 1); // consecutive slides share ONE section
   assert.doesNotMatch(html, /<link|<script src=|https?:\/\//); // the no-external-refs invariant holds
 });
-test('chapters panel does NOT force-open on #toctgl focus (Escape + focus-return must visually close)', async () => {
+// Gate Board successor to the retired #toctgl/#chapters panel pin: navigation is
+// now the sticky rail, and the page must degrade cleanly without JS — the same
+// "chrome never wedges/lies" property, in the new system.
+test('gate-board chrome: sticky rail styled; JS-only controls ship hidden until the script lands', async () => {
   const f = fixture(base); await render(f.ledgerPath,'planDeck',f.out);
   const html = readFileSync(f.out,'utf8');
-  // #toctgl:focus must NOT reveal the panel: closePanel(true) removes .open AND refocuses
-  // #toctgl, so a focus-reveal selector would keep it visible despite the close.
-  assert.doesNotMatch(html, /#toctgl:focus\s*\+\s*#chapters/);
-  assert.match(html, /#chapters\.open\{[^}]*visibility:visible/); // still revealed by the .open click-pin
+  assert.match(html, /\.nav\{\s*position: sticky/);               // the rail pins to the viewport top
+  assert.match(html, /\.jsonly\{ display: none; \}/);             // Expand/Collapse-all hidden no-JS
+  assert.match(html, /\.js \.jsonly\{ display: inline-flex; \}/); // revealed only once the script lands
 });
-test('phaseStep detail stacks UNDER the label (full-width new line, not an inline flex item)', async () => {
+// Gate Board successor to the retired .phasestep detail pin: the stops track's
+// detail paragraph stacks under the label (same stacking property, new markup).
+test('phaseSteps stop detail stacks UNDER the label (flex-column stop body)', async () => {
   const f = fixture(base); await render(f.ledgerPath,'planDeck',f.out);
   const html = readFileSync(f.out,'utf8');
-  assert.match(html, /\.phasestep\{[^}]*flex-wrap:wrap/);                 // chip wraps so detail drops to its own line
-  assert.match(html, /\.phasestep \.phase-detail\{[^}]*flex-basis:100%/); // detail forced full-width on a new line
+  assert.match(html, /\.stop__body\{[^}]*flex-direction: column/); // the stop body is a column: label, detail <p>, sign
 });

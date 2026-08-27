@@ -1,0 +1,79 @@
+{
+  "meta": {
+    "title": "Legacy blocks not in the reference ledger",
+    "crumb": "LEGACY · ALL BLOCKS",
+    "favicon": "🧱",
+    "subtitle": "One slide per remaining legacy block type"
+  },
+  "slides": [
+    {
+      "chapter": "Charts",
+      "kicker": "DONUT",
+      "heading": "A progress dial",
+      "blocks": [
+        { "type": "donut", "value": 7, "max": 10, "label": "phases done" }
+      ]
+    },
+    {
+      "chapter": "Charts",
+      "kicker": "BAR",
+      "heading": "A bar figure",
+      "blocks": [
+        {
+          "type": "bar",
+          "bars": [
+            { "label": "alpha", "value": 12 },
+            { "label": "beta", "value": 30 }
+          ],
+          "max": 40
+        }
+      ]
+    },
+    {
+      "chapter": "Charts",
+      "kicker": "SPARK",
+      "heading": "A sparkline",
+      "blocks": [
+        { "type": "lineSpark", "points": [1, 4, 2, 8, 5], "label": "trend" }
+      ]
+    },
+    {
+      "chapter": "Process",
+      "kicker": "FLOW",
+      "heading": "A flow of steps",
+      "blocks": [
+        {
+          "type": "flow",
+          "steps": [
+            { "label": "plan" },
+            { "label": "gate", "kind": "gate" },
+            { "label": "ship", "kind": "go" }
+          ]
+        }
+      ]
+    },
+    {
+      "chapter": "Code",
+      "kicker": "CODE",
+      "heading": "A code listing",
+      "blocks": [
+        { "type": "code", "lang": "js", "code": "const x = 1;\nconsole.log(x);" }
+      ]
+    },
+    {
+      "chapter": "Code",
+      "kicker": "DIFF",
+      "heading": "A unified diff",
+      "blocks": [
+        {
+          "type": "diff",
+          "lines": [
+            { "op": "-", "text": "old line" },
+            { "op": "+", "text": "new line" },
+            { "op": " ", "text": "context line" }
+          ]
+        }
+      ]
+    }
+  ]
+}

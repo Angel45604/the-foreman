@@ -1,54 +1,222 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import * as templates from './templates.mjs';
 import { planDeck, brief, decisionCard, liveRun, phaseTracker, findings, comparison, dashboard } from './templates.mjs';
+import { toMarkdown } from './markdown.mjs';
+import { stripDetails, FORBIDDEN_BRAND_RE } from './test-helpers.mjs';
+
+// ---- shared Gate Board test helpers ----
+
+// rail chips in document order, by their data-sec ids (Top is always first)
+const chipIds = (h) => [...h.matchAll(/data-sec="([^"]+)"/g)].map((m) => m[1]);
+
+// slice one <section> out of the board by its id (sections never nest)
+function sectionOf(h, id) {
+  const at = h.indexOf(`id="${id}"`);
+  assert.notEqual(at, -1, `section #${id} exists`);
+  return h.slice(h.lastIndexOf('<section', at), h.indexOf('</section>', at));
+}
+
+// ask-target contract: the ask strip's jump href must resolve to a REAL section
+// whose VISIBLE (details-stripped) content contains the ask text
+function assertAskVisible(h, askText) {
+  const m = h.match(/class="ask"[\s\S]*?href="#([^"]+)"/);
+  assert.ok(m, 'ask strip renders a jump link');
+  assert.ok(stripDetails(sectionOf(h, m[1])).includes(askText), `ask text visible in #${m[1]}`);
+}
+
+// ---- stripDetails self-tests (the helper the visible-content contract rides on) ----
+
+test('stripDetails drops details content (negative control) and handles nesting', () => {
+  const html = '<p>seen</p><details class="dw"><summary>s</summary><p>HIDDEN-FACT</p>'
+    + '<details><p>DEEP-FACT</p></details><p>AFTER-NESTED</p></details><p>tail</p>';
+  const out = stripDetails(html);
+  assert.match(out, /seen/); assert.match(out, /tail/);
+  assert.ok(!out.includes('HIDDEN-FACT'));   // a fact ONLY inside <details> must NOT survive
+  assert.ok(!out.includes('DEEP-FACT'));     // nested details handled
+  assert.ok(!out.includes('AFTER-NESTED'));  // inner close returns depth to 1, not 0
+  assert.ok(!out.includes('<details'));      // the tags themselves are gone
+});
+test('stripDetails keeps depth-0 content between sibling details and drops an unclosed tail', () => {
+  assert.equal(stripDetails('<details>ONE</details><b>mid</b><details>TWO</details>'), '<b>mid</b>');
+  assert.ok(!stripDetails('<p>ok</p><details><p>SWALLOWED').includes('SWALLOWED'));
+});
 
 const ledger = {
-  meta:{ title:'Cirra run-timing fix', crumb:'GRAVITY · CIRRA', favicon:'🛠️', accent:'#009ACC' },
+  meta:{ title:'Cirra run-timing fix', crumb:'GRAVITY · CIRRA', favicon:'🛠️', accent:'#C85C3F' },
   slides:[{ kicker:'PLAN', heading:'Exclude human-approval wait', cards:[{title:'Scope',body:'1 file'}] }],
   win:{ landed:'Excluded approval wait', evidence:'189/189 green', verified:true, next:'PR' },
   decision:{ question:'Persist events how?', options:[{label:'A',pros:'x',cons:'y',risk:'low'}], recommendation:'A' },
   liveRun:{ what:'smoke c93', cost:'$0.12', blastRadius:'prod write', cleanup:'purge verified' },
 };
-test('planDeck renders title + a slide from the ledger', () => {
-  const r = planDeck(ledger);
-  assert.match(r.title, /Cirra/); assert.match(r.bodyHtml, /Exclude human-approval wait/); assert.match(r.bodyHtml, /class="slide/);
+
+// ---- planDeck on the Gate Board (Task 6) ----
+
+test('planDeck renders a Gate Board: rail, hero fallbacks, chapters, decision chapter', () => {
+  const ref = JSON.parse(readFileSync(new URL('../../../../docs/initiatives/2026-08-26-neumorphic-gate-board/reference-ledger.json', import.meta.url), 'utf8'));
+  const { bodyHtml, title } = planDeck(ref);
+  assert.equal(title, ref.meta.title);
+  assert.match(bodyHtml, /class="nav"/);
+  assert.match(bodyHtml, /id="diagnosis"/);                       // chapter from slide.chapter
+  assert.match(bodyHtml, /id="your-call"/);                       // decision chapter
+  assert.match(bodyHtml, /class="verdictline"/);                  // meta.subtitle fallback
+  assert.ok(!/id="bar"|slide"/i.test(bodyHtml));      // deck-era markup retired
+  assert.ok(!FORBIDDEN_BRAND_RE.test(bodyHtml));      // no legacy brand string on the board
 });
-test('brief surfaces verified-vs-claimed + the ask', () => {
-  const h = brief(ledger).bodyHtml; assert.match(h, /189\/189/); assert.match(h, /verified/i);
+
+test('planDeck escapes ledger text and tolerates a minimal legacy ledger', () => {
+  const { bodyHtml } = planDeck({ meta: { title: '<t>' }, slides: [{ heading: 'H<img>', bullets: ['<b>'] }] });
+  assert.match(bodyHtml, /&lt;t&gt;/); assert.match(bodyHtml, /H&lt;img&gt;/);
+  assert.ok(!bodyHtml.includes('<img>'));
 });
-test('decisionCard lists options + attributed recommendation', () => { assert.match(decisionCard(ledger).bodyHtml, /recommendation/i); });
-test('liveRun shows cost + cleanup', () => { const h = liveRun(ledger).bodyHtml; assert.match(h, /\$0\.12/); assert.match(h, /cleanup/i); });
+// ---- the seven single-section types on the Gate Board (Task 7) ----
+// Rail contract: exactly ONE chapter — Top + one chip. With an effective ask the
+// chapter is `Your call` and carries BOTH the primary content AND the ask; with
+// no ask source it keeps its content label and no ask strip renders.
+
+test('brief: Your call chapter — landed + status pill VISIBLE, ask beneath, evidence in the drawer', () => {
+  const h = brief(ledger).bodyHtml;
+  assert.match(h, /class="nav"/);
+  assert.deepEqual(chipIds(h), ['top', 'your-call']);            // Top + Your call, 2 chips
+  const vis = stripDetails(h);
+  assert.match(vis, /What landed/);                              // the unit statement
+  assert.match(vis, /Excluded approval wait/);                   // win.landed VISIBLE (.co callout)
+  assert.match(vis, /class="pill pill--ok"/);                    // Verified pill, BEM form
+  assert.match(vis, /Verified/);
+  assert.ok(!vis.includes('189/189'));                           // evidence is drawer-only…
+  assert.match(h, /189\/189/);                                   // …but never dropped
+  assertAskVisible(h, 'PR');                                     // effective ask = win.next
+});
+test('brief without win.next keeps the content label and renders NO ask strip (never a dead link)', () => {
+  const h = brief({ meta: { title: 'B' }, win: { landed: 'L', verified: false } }).bodyHtml;
+  assert.deepEqual(chipIds(h), ['top', 'what-landed']);
+  assert.doesNotMatch(h, /class="ask"/);
+  assert.doesNotMatch(h, /id="your-call"/);
+  assert.match(stripDetails(h), /class="pill pill--warn"/);      // Claimed pill still visible
+});
+test('decisionCard: the ask chapter — question visible up top, option cards, ONE .rec strip', () => {
+  const h = decisionCard(ledger).bodyHtml;
+  assert.deepEqual(chipIds(h), ['top', 'your-call']);
+  const vis = stripDetails(h);
+  assert.match(vis, /Persist events how\?/);                     // the question, visible
+  assert.match(vis, /class="opts"/);                             // option cards as evidence
+  assert.equal((h.match(/class="rec"/g) || []).length, 1);       // exactly one recommendation strip
+  assert.match(h, /Recommendation — <span>A<\/span>/);           // derived ask carries the decision's rec
+  assertAskVisible(h, 'Persist events how?');
+});
+test('decisionCard: meta.ask WINS over the decision in strip/target/.rec; options stay as evidence', () => {
+  const h = decisionCard({ ...ledger, meta: { ...ledger.meta,
+    ask: { headline: 'OVERRIDE ASK', recommendation: 'Meta rec', recommendedBy: 'Owner' } } }).bodyHtml;
+  assert.match(h, /OVERRIDE ASK/);
+  assert.equal((h.match(/class="rec"/g) || []).length, 1);
+  assert.match(h, /Recommendation — <span>Meta rec<\/span>/);
+  assert.doesNotMatch(h, /Recommendation — <span>A<\/span>/);    // never the decision's own line
+  assert.match(h, /class="opts"/);
+  assert.doesNotMatch(h, /class="opt__rec"/);                    // 'Meta rec' matches no option — badge NOTHING (the badge follows the effective ask)
+  assert.doesNotMatch(h, /Persist events how\?/);                // stale question out of strip + header
+});
+test('decisionCard escapes a malicious question (no raw tag)', () => {
+  const h = decisionCard({ meta: { title: 't' }, decision: { question: '<img onerror=q>', options: [] } }).bodyHtml;
+  assert.doesNotMatch(h, /<img onerror=q>/); assert.match(h, /&lt;img/);
+});
+test('liveRun: gate facts as four VISIBLE callouts, synthesized keyStats tiles, the authorize ask', () => {
+  const h = liveRun(ledger).bodyHtml;
+  const vis = stripDetails(h);
+  assert.match(vis, /Live-run gate — authorize before anything runs/);
+  for (const fact of ['smoke c93', '$0.12', 'prod write', 'purge verified']) assert.ok(vis.includes(fact), fact);
+  assert.equal((vis.match(/class="co"/g) || []).length, 4);      // What / Cost / Blast radius / Cleanup
+  assert.match(vis, /class="tiles"/);                            // synthesized keyStats…
+  assert.match(vis, /blast radius/);                             // …cost + blast radius labels
+  assert.deepEqual(chipIds(h), ['top', 'your-call']);
+  assertAskVisible(h, 'Authorize this live run?');
+});
+test('liveRun escapes a malicious what (no raw injection)', () => {
+  const h = liveRun({ meta: { title: 't' }, liveRun: { what: '<img src=x onerror=alert(1)>' } }).bodyHtml;
+  assert.doesNotMatch(h, /<img src=x onerror/); assert.match(h, /&lt;img/);
+});
 test('templates HTML-escape ledger text (no raw injection)', () => {
   const h = brief({ ...ledger, win:{ ...ledger.win, landed:'<img src=x onerror=alert(1)>' } }).bodyHtml;
   assert.doesNotMatch(h, /<img src=x onerror/); assert.match(h, /&lt;img/);
 });
-
-// ---- chapters navigator (Phase 1b) ----
-
-test('planDeck stamps an escaped data-section on a slide carrying a chapter', () => {
-  const h = planDeck({ ...ledger, slides:[{ kicker:'K', heading:'H', chapter:'Discovery' }] }).bodyHtml;
-  assert.match(h, /data-section="Discovery"/);
+test('no artifact type emits deck-era markup (slides, callouts, ghost numbers, icon sprites)', () => {
+  const outs = [planDeck(ledger), brief(ledger), decisionCard(ledger), liveRun(ledger),
+    phaseTracker({ meta: { title: 't' }, phaseTracker: { phases: [{ label: 'P', status: 'done' }], note: 'n' } }),
+    findings({ meta: { title: 't' }, findings: { items: [{ title: 'T' }], summary: 's' } }),
+    comparison({ meta: { title: 't' }, comparison: { criteria: ['C'], options: [{ label: 'O', scores: ['x'] }], recommendation: 'O' } }),
+    dashboard({ meta: { title: 't' }, dashboard: { stats: [{ value: '1', label: 'l' }], ask: 'a?' } })];
+  for (const { bodyHtml } of outs) {
+    assert.match(bodyHtml, /class="nav"/);
+    assert.ok(!/class="slide|class="callout"|class="card|ghostnum|id="deck"|id="toctgl"|#i-/.test(bodyHtml));
+  }
 });
-test('planDeck omits data-section on slides without a chapter (and on the title slide)', () => {
-  const h = planDeck({ ...ledger, slides:[{ kicker:'K', heading:'H' }] }).bodyHtml;
-  // title slide + the single chapter-less content slide => zero data-section attrs
-  assert.doesNotMatch(h, /data-section=/);
+
+// ---- chapters: the rail derives from slide.chapter (Gate Board form) ----
+
+test('planDeck groups consecutive slides by chapter into rail-addressable sections', () => {
+  const h = planDeck({ ...ledger, decision: undefined, slides:[
+    { kicker:'K', heading:'H1', chapter:'Discovery' },
+    { kicker:'K', heading:'H2', chapter:'Discovery' },
+    { kicker:'K', heading:'H3', chapter:'Build' },
+  ] }).bodyHtml;
+  assert.match(h, /href="#discovery"/); assert.match(h, /id="discovery"/);
+  assert.match(h, /href="#build"/); assert.match(h, /id="build"/);
+  assert.equal((h.match(/id="discovery"/g) || []).length, 1); // consecutive slides share ONE section
 });
-test('planDeck escapes a malicious chapter into data-section (no raw tag)', () => {
+test('planDeck folds chapter-less slides into a Board chapter (no dead rail)', () => {
+  const h = planDeck({ ...ledger, decision: undefined, slides:[{ kicker:'K', heading:'H' }] }).bodyHtml;
+  assert.match(h, /id="board"/); assert.match(h, /href="#board"/);
+});
+test('planDeck escapes a malicious chapter label; its id stays slug-safe (no raw tag)', () => {
   const h = planDeck({ ...ledger, slides:[{ kicker:'K', heading:'H', chapter:'<img onerror=x>' }] }).bodyHtml;
-  assert.doesNotMatch(h, /data-section="<img onerror=x>"/);
-  assert.match(h, /data-section="&lt;img onerror=x&gt;"/);
+  assert.ok(!h.includes('<img onerror=x>'));
+  assert.match(h, /&lt;img onerror=x&gt;/);   // label esc'd in the rail chip + section heading
+  assert.match(h, /id="img-onerror-x"/);      // slugified id — nothing injected
 });
-test('deck() emits the chapters toggle button + empty #chapters menu container', () => {
-  const h = planDeck(ledger).bodyHtml;
-  assert.match(h, /id="toctgl"[^>]*aria-haspopup="true"/);
-  assert.match(h, /aria-label="Chapters"/);
-  assert.match(h, /<use href="#i-list"\/>/);
-  assert.match(h, /<div id="chapters" role="menu"><\/div>/);
+// deck()/slide()/card() are retired (Task 7): their chrome tests are replaced by
+// the Gate Board rail pins below (same property — navigable chapter chrome).
+test('planDeck(reference ledger) rail = Top + Diagnosis + Experiment + Decision + Plan + Your call', () => {
+  const ref = JSON.parse(readFileSync(new URL('../../../../docs/initiatives/2026-08-26-neumorphic-gate-board/reference-ledger.json', import.meta.url), 'utf8'));
+  const { bodyHtml } = planDeck(ref);
+  assert.deepEqual(chipIds(bodyHtml), ['top', 'diagnosis', 'experiment', 'decision', 'plan', 'your-call']);
+  assertAskVisible(bodyHtml, 'Change the artifact class rather than the scope?');
 });
-test('deck() wires #toctgl to the panel via aria-controls="chapters" (a11y)', () => {
-  const h = planDeck(ledger).bodyHtml;
-  assert.match(h, /id="toctgl"[^>]*aria-controls="chapters"/);
+
+// ---- ask resolution: effectiveAsk = meta.ask ?? derived-from-decision ----
+
+test('planDeck with meta.ask and NO decision renders a Your call chapter the strip links to', () => {
+  const { bodyHtml } = planDeck({
+    meta: { title: 't', ask: { headline: 'Approve the plan?', note: 'one note', recommendation: 'Go', recommendedBy: 'Claude' } },
+    slides: [{ heading: 'H', chapter: 'Work' }],
+  });
+  assert.match(bodyHtml, /href="#your-call"/);   // ask strip jump target…
+  assert.match(bodyHtml, /id="your-call"/);      // …resolves to a real section
+  assert.match(bodyHtml, /Approve the plan\?/);
+  assert.match(bodyHtml, /one note/);
+  assert.match(bodyHtml, /class="rec"/);         // the single recommendation strip
+  assert.doesNotMatch(bodyHtml, /class="opts"/); // no decision => no option cards
+});
+test('planDeck with BOTH meta.ask and decision: meta.ask wins strip/target/.rec; options stay as evidence', () => {
+  const { bodyHtml } = planDeck({
+    meta: { title: 't', ask: { headline: 'OVERRIDE ASK', recommendation: 'Meta rec', recommendedBy: 'Owner' } },
+    slides: [],
+    decision: { question: 'Old q?', options: [{ label: 'A', pros: 'pro text', cons: 'con text', risk: 'low' }],
+      recommendation: 'A', recommendedBy: 'Codex' },
+  });
+  assert.match(bodyHtml, /OVERRIDE ASK/);                       // meta.ask headline in strip + target header
+  assert.equal((bodyHtml.match(/class="rec"/g) || []).length, 1); // exactly one .rec strip
+  assert.match(bodyHtml, /Recommendation — <span>Meta rec<\/span>/); // …carrying meta.ask's recommendation
+  assert.doesNotMatch(bodyHtml, /Recommendation — <span>A<\/span>/); // never the decision's own line
+  assert.match(bodyHtml, /class="opts"/);                       // options still render as evidence
+  assert.doesNotMatch(bodyHtml, /class="opt__rec"/);            // the badge follows the EFFECTIVE ask — 'Meta rec' matches no option
+  assert.match(bodyHtml, /pro text/); assert.match(bodyHtml, /con text/);
+});
+test('planDeck derives the ask from the decision when meta.ask is absent (question drives the strip)', () => {
+  const { bodyHtml } = planDeck(ledger); // base ledger: decision, no meta.ask
+  assert.match(bodyHtml, /Persist events how\?/);
+  assert.match(bodyHtml, /href="#your-call"/); assert.match(bodyHtml, /id="your-call"/);
+  assert.match(bodyHtml, /class="opts"/);
+  assert.match(bodyHtml, /opt__risk opt__risk--low/);           // risk chip allowlisted
 });
 
 // ---- per-slide content blocks (Phase 2a) ----
@@ -57,8 +225,8 @@ test('planDeck renders a per-slide table block (scroll wrapper + escaped cells)'
   const h = planDeck({ ...ledger, slides: [{ kicker: 'K', heading: 'H', blocks: [
     { type: 'table', columns: ['Name', 'Spend'], rows: [['<b>Tyler</b>', '$10']] },
   ] }] }).bodyHtml;
-  assert.match(h, /<div class="scroll"><table>/);
-  assert.match(h, /<th>Name<\/th>/);
+  assert.match(h, /<div class="scrollx"><table class="t">/);
+  assert.match(h, /<th scope="col">Name<\/th>/);
   assert.doesNotMatch(h, /<b>Tyler<\/b>/);     // cell value is escaped, not raw markup
   assert.match(h, /&lt;b&gt;Tyler/);
 });
@@ -76,15 +244,15 @@ test('planDeck: a block-less slide renders identically (no blocks markup leaks i
   const withKey = planDeck({ ...ledger, slides }).bodyHtml;
   const withUndef = planDeck({ ...ledger, slides: [{ ...slides[0], blocks: undefined }] }).bodyHtml;
   assert.equal(withKey, withUndef);             // omitting vs explicit-undefined are byte-identical
-  assert.doesNotMatch(withKey, /class="scroll"/); // no stray block scaffold
+  assert.doesNotMatch(withKey, /class="scrollx"/); // no stray block scaffold
 });
 
 // ---- Phase 3: four new artifact types, each composing already-built blocks ----
 
-const META3 = { title: 'Phase 3 art', crumb: 'GRAVITY · FOREMAN', favicon: '🛠️', accent: '#009ACC' };
+const META3 = { title: 'Phase 3 art', crumb: 'GRAVITY · FOREMAN', favicon: '🛠️', accent: '#C85C3F' };
 
-// phaseTracker — phaseSteps block (+ optional donut + optional note callout).
-test('phaseTracker renders a phaseSteps block (+ progress donut + note)', () => {
+// phaseTracker — the stops figure VISIBLE (+ optional donut); pt.note drives the ask.
+test('phaseTracker: stops figure + donut VISIBLE, note as the ask (Your call chapter)', () => {
   const r = phaseTracker({
     meta: META3,
     phaseTracker: {
@@ -94,18 +262,19 @@ test('phaseTracker renders a phaseSteps block (+ progress donut + note)', () => 
     },
   });
   assert.match(r.title, /Phase 3 art/);
-  assert.match(r.bodyHtml, /class="phaseflow"/);   // phaseSteps signature
-  assert.match(r.bodyHtml, /Design/);
-  assert.match(r.bodyHtml, /class="slide/);
-  assert.match(r.bodyHtml, /stroke-dasharray=/);    // donut rendered
-  assert.match(r.bodyHtml, /class="callout"/);      // note callout
-  assert.match(r.bodyHtml, /on track/);
+  const vis = stripDetails(r.bodyHtml);
+  assert.match(vis, /class="stops"/);              // phaseSteps figure, visible
+  assert.match(vis, /Design/);
+  assert.match(vis, /class="ring" role="img"/);    // tick-ring donut rendered beside it
+  assert.deepEqual(chipIds(r.bodyHtml), ['top', 'your-call']);
+  assertAskVisible(r.bodyHtml, 'on track');        // derivedAsk.headline = pt.note
 });
-test('phaseTracker omits the donut when no progress and omits callout when no note', () => {
+test('phaseTracker without progress/note: Progress label, no donut, NO ask strip', () => {
   const h = phaseTracker({ meta: META3, phaseTracker: { phases: [{ label: 'P1', status: 'done' }] } }).bodyHtml;
-  assert.match(h, /class="phaseflow"/);
-  assert.doesNotMatch(h, /stroke-dasharray=/);  // no donut
-  assert.doesNotMatch(h, /class="callout"/);    // no note callout
+  assert.match(h, /class="stops stops--solo"/);    // one phase = a solo track (rail hidden on desktop)
+  assert.deepEqual(chipIds(h), ['top', 'progress']);
+  assert.doesNotMatch(h, /class="ring"/);       // no donut
+  assert.doesNotMatch(h, /class="ask"/);        // no ask source => no strip (never a dead link)
 });
 test('phaseTracker escapes a malicious phase label (no raw tag) and a malicious note', () => {
   const h = phaseTracker({
@@ -117,8 +286,8 @@ test('phaseTracker escapes a malicious phase label (no raw tag) and a malicious 
   assert.match(h, /&lt;img/);
 });
 
-// findings — table block (+ optional rankedRows sources + optional summary callout).
-test('findings renders a table with a finding title + sources + summary', () => {
+// findings — the table figure VISIBLE, statRow wells + chips from sources, summary as the ask.
+test('findings: table VISIBLE, wells above from sources, evidence chips, summary as the ask', () => {
   const r = findings({
     meta: META3,
     findings: {
@@ -127,19 +296,24 @@ test('findings renders a table with a finding title + sources + summary', () => 
       summary: 'root cause found',
     },
   });
-  assert.match(r.bodyHtml, /<table>/);
-  assert.match(r.bodyHtml, /Cache miss/);
-  assert.match(r.bodyHtml, /<th>Finding<\/th>/);
-  assert.match(r.bodyHtml, /class="relrow"/);  // rankedRows sources
-  assert.match(r.bodyHtml, /app\.log/);
-  assert.match(r.bodyHtml, /class="callout"/); // summary
-  assert.match(r.bodyHtml, /root cause found/);
+  const vis = stripDetails(r.bodyHtml);
+  assert.match(vis, /<table class="t">/);          // the findings table, visible
+  assert.match(vis, /Cache miss/);
+  assert.match(vis, /<th scope="col">Finding<\/th>/);
+  assert.match(vis, /class="wells"/);              // statRow wells from f.sources
+  assert.match(vis, /app\.log/);
+  assert.match(r.bodyHtml, /class="src"/);         // sources → evidence-base chips too
+  assert.deepEqual(chipIds(r.bodyHtml), ['top', 'your-call']);
+  assertAskVisible(r.bodyHtml, 'root cause found');
+  assert.ok(vis.indexOf('class="wells"') < vis.indexOf('<table class="t">')); // wells sit ABOVE the table
 });
-test('findings omits sources block when none and omits summary callout when none', () => {
+test('findings without sources/summary: Findings label, no wells, no chips, NO ask strip', () => {
   const h = findings({ meta: META3, findings: { items: [{ title: 'Only', confidence: 'Low' }] } }).bodyHtml;
-  assert.match(h, /<table>/);
-  assert.doesNotMatch(h, /class="relrow"/);  // no sources
-  assert.doesNotMatch(h, /class="callout"/); // no summary
+  assert.match(h, /<table class="t">/);
+  assert.deepEqual(chipIds(h), ['top', 'findings']);
+  assert.doesNotMatch(h, /class="wells"/);   // no sources
+  assert.doesNotMatch(h, /class="src"/);     // no chips
+  assert.doesNotMatch(h, /class="ask"/);     // no summary => no ask strip
 });
 test('findings escapes a malicious finding title (no raw tag) and summary', () => {
   const h = findings({
@@ -151,8 +325,8 @@ test('findings escapes a malicious finding title (no raw tag) and summary', () =
   assert.match(h, /&lt;img/);
 });
 
-// comparison — table (Option + criteria columns), recommendation callout.
-test('comparison renders a table with an option label, criterion header + recommendation', () => {
+// comparison — the options × criteria table VISIBLE; recommendation drives the ask.
+test('comparison: table VISIBLE with criterion headers; recommendation as the attributed ask', () => {
   const r = comparison({
     meta: META3,
     comparison: {
@@ -162,20 +336,31 @@ test('comparison renders a table with an option label, criterion header + recomm
       recommendedBy: 'Codex',
     },
   });
-  assert.match(r.bodyHtml, /<table>/);
-  assert.match(r.bodyHtml, /Option A/);     // option label
-  assert.match(r.bodyHtml, /<th>Cost<\/th>/); // criterion header
-  assert.match(r.bodyHtml, /<th>Option<\/th>/);
-  assert.match(r.bodyHtml, /class="callout"/);
-  assert.match(r.bodyHtml, /Option A/);
-  assert.match(r.bodyHtml, /Codex/);          // attribution
+  const vis = stripDetails(r.bodyHtml);
+  assert.match(vis, /<table class="t">/);
+  assert.match(vis, /Option A/);                            // option label
+  assert.match(vis, /<th scope="col">Cost<\/th>/);          // criterion header
+  assert.match(vis, /<th scope="col">Option<\/th>/);
+  assert.match(r.bodyHtml, /Recommendation — <span>Option A<\/span>/); // the single .rec strip
+  assert.match(r.bodyHtml, /Codex/);                        // attribution
+  assert.deepEqual(chipIds(r.bodyHtml), ['top', 'your-call']);
+  assertAskVisible(r.bodyHtml, 'Pick an option');
+});
+test('comparison without a recommendation: Comparison label, NO ask strip', () => {
+  const h = comparison({
+    meta: META3,
+    comparison: { criteria: ['Cost'], options: [{ label: 'Option A', scores: ['low'] }] },
+  }).bodyHtml;
+  assert.deepEqual(chipIds(h), ['top', 'comparison']);
+  assert.doesNotMatch(h, /class="ask"/);
+  assert.doesNotMatch(h, /class="rec"/);
 });
 test('comparison normalizes ragged scores (table block pads short rows; no throw)', () => {
   const h = comparison({
     meta: META3,
     comparison: { criteria: ['C1', 'C2', 'C3'], options: [{ label: 'O', scores: ['only one'] }] },
   }).bodyHtml;
-  assert.match(h, /<table>/);
+  assert.match(h, /<table class="t">/);
   assert.match(h, /only one/);
 });
 test('comparison escapes a malicious option label (no raw tag) and recommendation', () => {
@@ -198,7 +383,7 @@ test('comparison adds a trailing Notes column when ANY option has a note', () =>
       ],
     },
   }).bodyHtml;
-  assert.match(h, /<th>Notes<\/th>/);    // the trailing Notes header
+  assert.match(h, /<th scope="col">Notes<\/th>/);    // the trailing Notes header
   assert.match(h, /<td>preferred<\/td>/); // A's note cell
 });
 test('comparison OMITS the Notes column when no option has a note (table unchanged)', () => {
@@ -206,20 +391,60 @@ test('comparison OMITS the Notes column when no option has a note (table unchang
     meta: META3,
     comparison: { criteria: ['Cost'], options: [{ label: 'Option A', scores: ['low'] }] },
   }).bodyHtml;
-  assert.doesNotMatch(h, /<th>Notes<\/th>/);
+  assert.doesNotMatch(h, /<th scope="col">Notes<\/th>/);
+});
+// ---- ragged scores + a note: scores normalize to criteria.length BEFORE the
+// note is appended, so the note always lands in the Notes column ----
+test('comparison with SHORT scores + a note: criteria cells pad empty, the note lands in the Notes column', () => {
+  const h = comparison({
+    meta: META3,
+    comparison: { criteria: ['C1', 'C2'], options: [{ label: 'O', scores: ['s1'], note: 'note-a' }] },
+  }).bodyHtml;
+  assert.match(h, /<tr><td>O<\/td><td>s1<\/td><td><\/td><td>note-a<\/td><\/tr>/);
+});
+test('comparison with OVERLONG scores + a note: extras truncate, the note still lands in the Notes column', () => {
+  const h = comparison({
+    meta: META3,
+    comparison: { criteria: ['C1'], options: [{ label: 'O', scores: ['s1', 's2-extra', 's3-extra'], note: 'note-a' }] },
+  }).bodyHtml;
+  assert.match(h, /<tr><td>O<\/td><td>s1<\/td><td>note-a<\/td><\/tr>/);
+  assert.doesNotMatch(h, /s2-extra/); // the overflow score never displaces the note
 });
 test('comparison escapes a malicious note (no raw tag survives)', () => {
   const h = comparison({
     meta: META3,
     comparison: { criteria: ['C'], options: [{ label: 'O', scores: ['x'], note: '<img src=x onerror=note>' }] },
   }).bodyHtml;
-  assert.match(h, /<th>Notes<\/th>/);
+  assert.match(h, /<th scope="col">Notes<\/th>/);
   assert.doesNotMatch(h, /<img src=x onerror=note>/);
   assert.match(h, /&lt;img/);
 });
 
-// dashboard — statRow (+ chart passthrough + rankedRows + ask callout).
-test('dashboard renders a statRow (+ chart + rows + ask)', () => {
+// ---- prepr blocker: comparison derives an ask ONLY from a real recommendation ----
+// Any non-null c.recommendation used to derive the ask: empty/whitespace/
+// numeric/object values spawned a spurious Your-call chapter, an empty (or
+// "[object Object]") recStrip, and twin divergence. The derivation now rides
+// the SAME shared hasText predicate (non-empty trimmed STRING) as the strip
+// itself; a malformed value derives NO ask — content label, no strip — the
+// twin and lint agreeing (lint: malformed-recommendation).
+for (const [label, recommendation] of [['empty-string', ''], ['whitespace', '   '], ['numeric', 42], ['object', {}]]) {
+  test(`comparison with a ${label} recommendation derives NO ask: content label, no strip — twin matches`, () => {
+    const l = { meta: { title: 'C' }, comparison: { criteria: ['C1'], options: [{ label: 'O', scores: ['x'] }], recommendation } };
+    const h = comparison(l).bodyHtml;
+    assert.deepEqual(chipIds(h), ['top', 'comparison']);  // content label, never Your call
+    assert.doesNotMatch(h, /class="ask"/);                // no ask strip at all
+    assert.doesNotMatch(h, /class="rec"/);                // no empty recommendation strip
+    assert.doesNotMatch(h, /id="your-call"/);
+    assert.doesNotMatch(h, /\[object Object\]/);          // no stringified-object garbage
+    const md = toMarkdown(l, 'comparison').markdown;
+    assert.doesNotMatch(md, /\*\*The ask:\*\*/);
+    assert.doesNotMatch(md, /\*\*Recommendation:\*\*/);
+    assert.doesNotMatch(md, /^> /m);                      // no orphan blockquote ask fragment
+  });
+}
+
+// dashboard — d.stats as hero tiles, chart + rows VISIBLE, d.ask as the ask.
+test('dashboard: stats as tiles, chart + ranked rows VISIBLE, ask strip resolves', () => {
   const r = dashboard({
     meta: META3,
     dashboard: {
@@ -229,18 +454,87 @@ test('dashboard renders a statRow (+ chart + rows + ask)', () => {
       ask: 'approve budget?',
     },
   });
-  assert.match(r.bodyHtml, /class="statrow"/);   // statRow signature
-  assert.match(r.bodyHtml, /\$0\.12/);
-  assert.match(r.bodyHtml, /stroke-dasharray=/);  // chart (donut) passthrough rendered
-  assert.match(r.bodyHtml, /class="relrow"/);     // rankedRows
-  assert.match(r.bodyHtml, /class="callout"/);    // ask
-  assert.match(r.bodyHtml, /approve budget\?/);
+  const vis = stripDetails(r.bodyHtml);
+  assert.match(vis, /class="tiles"/);            // d.stats render as hero tiles
+  assert.match(vis, /\$0\.12/);
+  assert.match(vis, /class="ring" role="img"/);  // chart (tick-ring donut) passthrough, visible
+  assert.match(vis, /class="relrow"/);           // rankedRows, visible
+  assert.deepEqual(chipIds(r.bodyHtml), ['top', 'your-call']);
+  assertAskVisible(r.bodyHtml, 'approve budget?');
+});
+// ---- prepr round 1: keyStats coexistence — the both-present rule ----
+// meta.keyStats wins the hero tiles; when BOTH meta.keyStats and the type's
+// derived stats exist, the derived stats render as VISIBLE stat wells (statRow)
+// inside the type's unit body instead of being dropped. Nothing is lost.
+test('dashboard with BOTH meta.keyStats and d.stats: tiles carry meta, d.stats surface as visible wells', () => {
+  const r = dashboard({
+    meta: { ...META3, keyStats: [{ value: '9', label: 'hero stat' }] },
+    dashboard: {
+      stats: [{ value: '$0.12', label: 'Spend', variant: 'ok' }],
+      chart: { type: 'donut', value: 25, max: 100, label: 'Used' },
+      rows: [{ label: 'Tyler', value: '$10' }],
+      ask: 'approve budget?',
+    },
+  });
+  const vis = stripDetails(r.bodyHtml);
+  const tiles = vis.match(/class="tiles"[\s\S]*?<\/div>\s*<\/div>/)?.[0] ?? '';
+  assert.match(tiles, /hero stat/);                       // meta.keyStats wins the hero tiles
+  assert.doesNotMatch(tiles, /Spend/);                    // the derived stats are NOT the tiles…
+  assert.match(vis, /class="wells"/);                     // …they render as visible stat wells
+  assert.match(vis, /class="well__v is-ok"[^>]*>\$0\.12</);
+  assert.match(vis, /class="well__l"[^>]*>Spend</);
+  assert.match(vis, /class="ring" role="img"/);           // chart still visible
+  assert.match(vis, /class="relrow"/);                    // rows still visible
+  assert.ok(vis.indexOf('class="wells"') < vis.indexOf('class="ring"'), 'wells sit above the chart');
+});
+test('dashboard withOUT meta.keyStats keeps d.stats as the hero tiles and adds NO duplicate wells', () => {
+  const h = dashboard({ meta: META3, dashboard: { stats: [{ value: '$0.12', label: 'Spend' }] } }).bodyHtml;
+  assert.match(h, /class="tiles"/);
+  assert.match(h, /\$0\.12/);
+  assert.doesNotMatch(h, /class="wells"/);
+});
+test('liveRun with BOTH meta.keyStats and its synthesized pair: tiles carry meta, the pair surfaces as wells', () => {
+  const h = liveRun({ ...ledger, meta: { ...ledger.meta, keyStats: [{ value: '9', label: 'hero stat' }] } }).bodyHtml;
+  const vis = stripDetails(h);
+  const tiles = vis.match(/class="tiles"[\s\S]*?<\/div>\s*<\/div>/)?.[0] ?? '';
+  assert.match(tiles, /hero stat/);                       // meta.keyStats wins the tiles
+  assert.match(vis, /class="wells"/);                     // synthesized cost + blast-radius pair kept visible
+  assert.match(vis, /class="well__v"[^>]*>\$0\.12</);
+  assert.match(vis, /class="well__l"[^>]*>blast radius</);
+  assert.equal((vis.match(/class="co"/g) || []).length, 4); // the four gate callouts unchanged
+});
+
+// ---- keyStats variants reach the hero tiles on BOTH hero paths ----
+test('meta.keyStats variants color the hero tiles (allowlisted ok/warn, else bare)', () => {
+  const h = planDeck({ meta: { title: 't', keyStats: [
+    { value: '474/474', label: 'suite', variant: 'ok' },
+    { value: '2', label: 'regressions', variant: 'warn' },
+    { value: '5', label: 'plain' },
+  ] }, slides: [] }).bodyHtml;
+  assert.match(h, /class="tile tile--ok" role="listitem"><b>474\/474</);
+  assert.match(h, /class="tile tile--warn" role="listitem"><b>2</);
+  assert.match(h, /class="tile" role="listitem"><b>5</);
+});
+test('dashboard stats-as-hero: d.stats variants survive into the tiles (they no longer drop)', () => {
+  const h = dashboard({ meta: META3, dashboard: { stats: [
+    { value: '$0.12', label: 'Spend', variant: 'ok' },
+    { value: '3', label: 'Failures', variant: 'warn' },
+  ] } }).bodyHtml;
+  assert.match(h, /class="tile tile--ok" role="listitem"><b>\$0\.12</);
+  assert.match(h, /class="tile tile--warn" role="listitem"><b>3</);
+});
+
+test('dashboard without an ask: Dashboard label, NO ask strip', () => {
+  const h = dashboard({ meta: META3, dashboard: { stats: [{ value: '1', label: 'x' }] } }).bodyHtml;
+  assert.deepEqual(chipIds(h), ['top', 'dashboard']);
+  assert.doesNotMatch(h, /class="ask"/);
 });
 test('dashboard FAILS CLOSED on an unknown chart type (chart passed straight to renderBlocks)', () => {
   assert.throws(
     () => dashboard({ meta: META3, dashboard: { chart: { type: 'bogusChart' } } }),
     /unknown block type: bogusChart/,
   );
+  assert.throws(() => templates.dashboard({ dashboard: { chart: { type: 'nope' } } })); // meta-less ledger too
 });
 test('dashboard escapes a malicious stat value (no raw tag) and ask', () => {
   const h = dashboard({
@@ -251,3 +545,248 @@ test('dashboard escapes a malicious stat value (no raw tag) and ask', () => {
   assert.doesNotMatch(h, /<img onerror=ask>/);
   assert.match(h, /&lt;img/);
 });
+
+// ---- prepr blocker: option-label robustness (the label never splits) ----
+// The FULL label ALWAYS renders as the visible .opt__t title; the 38px letter
+// well derives independently — a recognized single-character prefix (first char
+// when the label opens "X<sep>", sep ∈ space/·/—/:/./-) else the option's
+// 1-based index letter. A legacy 'A · Title' or a plain descriptive label must
+// never dump the whole label into the well and lose its title.
+const OPT_LEDGER = (labels, recommendation) => ({
+  meta: { title: 'D' },
+  decision: { question: 'Pick?', options: labels.map((label) => ({ label, pros: 'p' })), recommendation },
+});
+test('option label "A — build it": the FULL label is the .opt__t title, the well shows the A prefix', () => {
+  const h = decisionCard(OPT_LEDGER(['A — build it'])).bodyHtml;
+  assert.match(h, /<b class="opt__t">A — build it<\/b>/);
+  assert.match(h, /<span class="opt__ltr">A<\/span>/);
+  assert.match(h, /aria-label="Option A"/);
+});
+test('option label "A · build it" (legacy separator): full label titled, prefix well — never the whole label in the well', () => {
+  const h = decisionCard(OPT_LEDGER(['A · build it'], 'A · build it')).bodyHtml;
+  assert.match(h, /<b class="opt__t">A · build it<\/b>/);
+  assert.match(h, /<span class="opt__ltr">A<\/span>/);
+  assert.doesNotMatch(h, /<span class="opt__ltr">A · build it<\/span>/);
+  assert.match(h, /class="opt opt--rec"/); // recommended marker still keys off the FULL label
+});
+test('descriptive labels with no prefix: full label titled, wells fall back to the index letters A, B', () => {
+  const h = decisionCard(OPT_LEDGER(['Just build it', 'Do nothing'])).bodyHtml;
+  assert.match(h, /<b class="opt__t">Just build it<\/b>/);
+  assert.match(h, /<b class="opt__t">Do nothing<\/b>/);
+  assert.match(h, /<span class="opt__ltr">A<\/span>/);
+  assert.match(h, /<span class="opt__ltr">B<\/span>/);
+  assert.doesNotMatch(h, /<span class="opt__ltr">Just build it<\/span>/);
+});
+test('the markdown twin is unaffected: the FULL option label serializes untouched', () => {
+  const { markdown } = toMarkdown(OPT_LEDGER(['A · build it', 'Just build it']), 'decisionCard');
+  assert.match(markdown, /\*\*Option A · build it\*\*/);
+  assert.match(markdown, /\*\*Option Just build it\*\*/);
+});
+test('legacy-plandeck fixture: every decision option renders a TITLED card (no title-less letter dump)', () => {
+  const fixture = JSON.parse(readFileSync(new URL('./fixtures/legacy-plandeck.json', import.meta.url), 'utf8'));
+  const h = decisionCard(fixture).bodyHtml;
+  const cards = (h.match(/<section class="opt[ "]/g) || []).length;
+  const titles = (h.match(/<b class="opt__t">/g) || []).length;
+  assert.equal(cards, 4, 'the fixture carries four options');
+  assert.equal(titles, cards, 'every option card carries a visible .opt__t title');
+  assert.match(h, /<b class="opt__t">A — build the manifest, gate the CODE<\/b>/);
+});
+
+// ---- askShape: malformed meta.ask never silently drops content (wave-B review P2/P3) ----
+const ASK_DECISION = { question: 'Ship it?', options: [{ label: 'A', pros: 'p', cons: 'c', risk: 'low' }], recommendation: 'A', recommendedBy: 'Claude' };
+test('empty-string meta.ask falls through to the derived ask — the decision still renders in full', () => {
+  const h = decisionCard({ meta: { title: 'D', ask: '' }, decision: ASK_DECISION }).bodyHtml;
+  assert.deepEqual(chipIds(h), ['top', 'your-call']);
+  const vis = stripDetails(h);
+  assert.match(vis, /Ship it\?/);                       // question visible at the target
+  assert.match(vis, /class="opt\b/);                    // option cards render
+  assert.equal((h.match(/class="rec"/g) || []).length, 1);
+});
+test('plain-string meta.ask is malformed: no empty-headline strip, derived ask wins', () => {
+  const h = decisionCard({ meta: { title: 'D', ask: 'Approve the plan?' }, decision: ASK_DECISION }).bodyHtml;
+  assert.doesNotMatch(h, /<b><\/b>/);                   // never an empty ask headline
+  assert.match(stripDetails(h), /Ship it\?/);           // derived headline drives strip + target
+});
+test('decisionCard with NO ask source: content label, no ask strip, no dead link', () => {
+  const h = decisionCard({ meta: { title: 'D' } }).bodyHtml;
+  assert.deepEqual(chipIds(h), ['top', 'decision']);
+  assert.doesNotMatch(h, /class="ask"/);
+});
+
+// ---- prepr round 1: askShape requires a NON-EMPTY string headline ----
+// An object meta.ask without one ({}, {note:'x'}, {headline:''}) used to win the
+// nullish pick, blank the strip, and drop decision.question. Each must fall
+// through to the derived decision ask exactly like the non-object malformed cases.
+for (const [label, ask] of [['empty object', {}], ['note-only object', { note: 'x' }], ['empty-string headline', { headline: '' }]]) {
+  test(`${label} meta.ask is malformed: falls through to the derived decision ask (nothing dropped)`, () => {
+    const h = decisionCard({ meta: { title: 'D', ask }, decision: ASK_DECISION }).bodyHtml;
+    assert.deepEqual(chipIds(h), ['top', 'your-call']);
+    const vis = stripDetails(h);
+    assert.match(vis, /Ship it\?/);                          // decision.question drives strip + target
+    assert.doesNotMatch(h, /<b><\/b>/);                      // never an empty ask headline
+    assert.match(vis, /class="opt\b/);                       // option cards render
+    assert.equal((h.match(/class="rec"/g) || []).length, 1); // the decision's own .rec strip
+    assert.match(h, /Recommendation — <span>A<\/span>/);
+  });
+}
+test('note-only meta.ask does not smuggle its note into the derived ask (planDeck path too)', () => {
+  const { bodyHtml } = planDeck({ meta: { title: 't', ask: { note: 'orphan note' } }, slides: [],
+    decision: { question: 'Q?', options: [], recommendation: 'A' } });
+  assert.match(bodyHtml, /Q\?/);                             // derived ask headline
+  assert.doesNotMatch(bodyHtml, /orphan note/);              // the malformed ask participates not at all
+});
+
+// ---- prepr blocker 1: decisionShape — a malformed decision derives NO ask ----
+// Any truthy ledger.decision ({}, an array, a blank/whitespace/missing question)
+// used to satisfy the bare `if (d)` check and derive an EMPTY-headline ask —
+// rendering a blank hard-gate strip. Each shape must contribute NO derived ask;
+// an options-carrying malformed decision keeps its options VISIBLE in a
+// content-labeled chapter (nothing lost).
+const MALFORMED_DECISIONS = [
+  ['empty object', {}],
+  ['array', []],
+  ['empty-string question', { question: '' }],
+  ['whitespace question', { question: '  ' }],
+];
+for (const [label, decision] of MALFORMED_DECISIONS) {
+  test(`${label} decision derives NO ask on decisionCard: content label, no strip, no dead link`, () => {
+    const h = decisionCard({ meta: { title: 'D' }, decision }).bodyHtml;
+    assert.deepEqual(chipIds(h), ['top', 'decision']);       // content label, never Your call
+    assert.doesNotMatch(h, /class="ask"/);                   // no empty ask strip ever renders
+    assert.doesNotMatch(h, /<b><\/b>/);                      // never an empty headline anywhere
+    assert.doesNotMatch(h, /class="rec"/);                   // no orphan recommendation strip
+  });
+  test(`${label} decision derives NO ask on planDeck either (no Your call chapter)`, () => {
+    const h = planDeck({ meta: { title: 't' }, slides: [{ heading: 'H', chapter: 'Work' }], decision }).bodyHtml;
+    assert.deepEqual(chipIds(h), ['top', 'work']);
+    assert.doesNotMatch(h, /class="ask"/);
+    assert.doesNotMatch(h, /id="your-call"/);
+  });
+}
+test('options-only decision (no question) on decisionCard: no ask, options VISIBLE in the Decision chapter', () => {
+  const h = decisionCard({ meta: { title: 'D' },
+    decision: { options: [{ label: 'A', pros: 'pro text', cons: 'con text', risk: 'low' }], recommendation: 'A' } }).bodyHtml;
+  assert.deepEqual(chipIds(h), ['top', 'decision']);         // content-labeled chapter
+  assert.doesNotMatch(h, /class="ask"/);                     // no empty ask strip
+  const vis = stripDetails(h);
+  assert.match(vis, /class="opts"/);                         // option cards render, visible
+  assert.match(vis, /class="opt__rec"/);                     // recommended marker still keys off d.recommendation
+  assert.match(vis, /pro text/);                             // gist visible
+  assert.match(h, /con text/);                               // verbatim cons kept (drawer)
+});
+test('options-only decision on planDeck: options land in a content-labeled Decision chapter (nothing lost)', () => {
+  const h = planDeck({ meta: { title: 't' }, slides: [{ heading: 'H', chapter: 'Work' }],
+    decision: { options: [{ label: 'A', pros: 'pro text' }] } }).bodyHtml;
+  assert.deepEqual(chipIds(h), ['top', 'work', 'decision']);
+  assert.doesNotMatch(h, /class="ask"/);
+  assert.match(stripDetails(h), /class="opts"/);
+});
+test('well-shaped meta.ask + malformed decision: options render ONCE as Your call evidence (no duplicate)', () => {
+  const h = decisionCard({ meta: { title: 'D', ask: { headline: 'Approve?' } },
+    decision: { options: [{ label: 'A', pros: 'pro text' }] } }).bodyHtml;
+  assert.deepEqual(chipIds(h), ['top', 'your-call']);
+  assert.match(h, /Approve\?/);
+  assert.equal((h.match(/class="opts"/g) || []).length, 1);
+});
+
+// ---- prepr blocker: the Recommended badge follows the EFFECTIVE ask ----
+// Option cards used to badge from decision.recommendation even when a valid
+// meta.ask overrode it — the board could badge option A while the .rec strip
+// said B. The badge now keys off the EFFECTIVE ask's recommendation (same
+// label-equality matching rule); a recommendation matching no option badges
+// nothing, and the no-override case is unchanged.
+const CONFLICT_DECISION = {
+  question: 'Q?',
+  options: [{ label: 'A — x', pros: 'p' }, { label: 'B — y', pros: 'p2' }],
+  recommendation: 'A — x', recommendedBy: 'Codex',
+};
+test('meta.ask recommending B: the badge lands on B, never on the decision\'s stale A', () => {
+  const h = decisionCard({ meta: { title: 'D', ask: { headline: 'H', recommendation: 'B — y' } },
+    decision: CONFLICT_DECISION }).bodyHtml;
+  assert.match(h, /class="opt opt--rec" aria-label="Option B"/);     // badge on B…
+  assert.doesNotMatch(h, /class="opt opt--rec" aria-label="Option A"/); // …never on A
+  assert.equal((h.match(/class="opt__rec"/g) || []).length, 1);
+  assert.match(h, /Recommendation — <span>B — y<\/span>/);           // strip and badge agree
+});
+test('meta.ask recommendation matching NO option label: no badge anywhere', () => {
+  const h = decisionCard({ meta: { title: 'D', ask: { headline: 'H', recommendation: 'Something else' } },
+    decision: CONFLICT_DECISION }).bodyHtml;
+  assert.doesNotMatch(h, /opt--rec/);
+  assert.doesNotMatch(h, /class="opt__rec"/);
+});
+test('meta.ask override WITHOUT a recommendation: the stale decision badge does not resurface', () => {
+  const h = decisionCard({ meta: { title: 'D', ask: { headline: 'H' } }, decision: CONFLICT_DECISION }).bodyHtml;
+  assert.doesNotMatch(h, /opt--rec/);
+  assert.doesNotMatch(h, /class="rec"/); // the effective ask carries no recommendation — no strip either
+});
+test('no-override case unchanged: the derived ask still badges the decision recommendation', () => {
+  const h = decisionCard({ meta: { title: 'D' }, decision: CONFLICT_DECISION }).bodyHtml;
+  assert.match(h, /class="opt opt--rec" aria-label="Option A"/);
+  assert.doesNotMatch(h, /class="opt opt--rec" aria-label="Option B"/);
+});
+
+// ---- prepr blocker: ONE presence predicate for recommendation/recommendedBy ----
+// recStrip treated an empty string as present (`!= null`) while the hero ask
+// strip and the twin treated it absent — a shaped meta.ask with
+// recommendation:'' emitted an empty Recommendation card only in HTML. The
+// shared hasText predicate (non-empty trimmed STRING) now governs the fields'
+// presence across the hero strip, recStrip, and the twin at once.
+const EMPTYREC_CASES = [
+  ['empty-string recommendation', { headline: 'H', recommendation: '' }],
+  ['whitespace recommendedBy', { headline: 'H', recommendedBy: '   ' }],
+  ['empty rec + whitespace attribution', { headline: 'H', recommendation: '', recommendedBy: '   ' }],
+  ['numeric recommendation', { headline: 'H', recommendation: 42 }],
+];
+for (const [label, ask] of EMPTYREC_CASES) {
+  test(`meta.ask with ${label}: no .rec strip, no hero-strip chip anywhere — HTML and twin agree`, () => {
+    const l = { meta: { title: 't', ask }, slides: [{ heading: 'H1', chapter: 'Work' }] };
+    const h = planDeck(l).bodyHtml;
+    assert.match(h, /class="ask"/);                   // the ask strip itself renders (headline well-shaped)
+    assert.doesNotMatch(h, /class="rec"/);            // no (empty) recommendation strip
+    assert.doesNotMatch(h, /class="ask__by"/);        // no trailing attribution chip in the hero strip
+    assert.doesNotMatch(h, /<strong>\s*<\/strong>/);  // no empty strong in the hero strip
+    const md = toMarkdown(l, 'planDeck').markdown;
+    assert.match(md, /^> \*\*The ask:\*\* H$/m);      // the ask itself still serializes
+    assert.doesNotMatch(md, /\*\*Recommendation:\*\*/);
+    assert.doesNotMatch(md, /^> \(/m);                // no attribution line
+  });
+}
+test('decision-derived ask with recommendation:"" + recommendedBy:"   ": no strip, no chip — HTML and twin agree', () => {
+  const l = { meta: { title: 't' },
+    decision: { question: 'Q?', options: [{ label: 'A', pros: 'p' }], recommendation: '', recommendedBy: '   ' } };
+  const h = decisionCard(l).bodyHtml;
+  assert.deepEqual(chipIds(h), ['top', 'your-call']); // the question still drives the ask chapter
+  assert.doesNotMatch(h, /class="rec"/);
+  assert.doesNotMatch(h, /class="ask__by"/);
+  const md = toMarkdown(l, 'decisionCard').markdown;
+  assert.match(md, /^> \*\*The ask:\*\* Q\?$/m);
+  assert.doesNotMatch(md, /\*\*Recommendation:\*\*/);
+  assert.doesNotMatch(md, /^> \(/m);
+});
+
+// ---- prepr blocker: EVERY derived ask rides the askShape gate ----
+// A type's raw ask source used to reach the board verbatim: a whitespace
+// win.next, a numeric phaseTracker.note, or an object dashboard.ask won the
+// derived-ask slot and rendered a BLANK (or garbage) ask strip plus an empty
+// Your-call chapter. Each candidate now passes the SAME askShape gate as
+// meta.ask; a failing candidate means NO ask — content chapter label, no
+// strip, never a dead link.
+const DERIVED_ASK_CASES = [
+  ['brief', 'whitespace win.next', brief,
+    { meta: { title: 'B' }, win: { landed: 'L', verified: true, next: '   ' } }, 'what-landed'],
+  ['phaseTracker', 'numeric note', phaseTracker,
+    { meta: { title: 'P' }, phaseTracker: { phases: [{ label: 'P1', status: 'done' }], note: 42 } }, 'progress'],
+  ['findings', 'empty-string summary', findings,
+    { meta: { title: 'F' }, findings: { items: [{ title: 'T', confidence: 'High' }], summary: '' } }, 'findings'],
+  ['dashboard', 'object ask', dashboard,
+    { meta: { title: 'D' }, dashboard: { stats: [{ value: '1', label: 'x' }], ask: {} } }, 'dashboard'],
+];
+for (const [type, label, fn, l, contentId] of DERIVED_ASK_CASES) {
+  test(`${type} with a ${label}: the derived ask fails askShape — content label, NO blank strip`, () => {
+    const h = fn(l).bodyHtml;
+    assert.deepEqual(chipIds(h), ['top', contentId]);   // content label, never Your call
+    assert.doesNotMatch(h, /class="ask"/);              // no ask strip at all
+    assert.doesNotMatch(h, /<b><\/b>/);                 // never an empty headline anywhere
+    assert.doesNotMatch(h, /id="your-call"/);
+  });
+}

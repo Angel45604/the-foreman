@@ -1,7 +1,12 @@
 // the-foreman artifact templates.
 // Each template: (ledger) => { title, favicon, bodyHtml }.
 // bodyHtml is the inner markup only; render.mjs wraps it with <title>, the
-// inlined style.css, the svg <defs> SYMBOLS, and slide-engine.js.
+// inlined style.css, and the page script.
+//
+// ALL EIGHT types render the Gate Board (design.md §3/§6): one scrolling
+// verdict-first page composed via scaffold.mjs — planDeck as the full
+// multi-chapter board, the other seven as single-section boards (singleBoard).
+// The deck()/slide()/card() era is retired (Task 7).
 //
 // SAFETY: esc() escapes every ledger-derived string before it reaches the
 // markup. The "templates HTML-escape ledger text" test pins this — never
@@ -9,277 +14,397 @@
 
 import { esc } from './esc.mjs';
 import { renderBlocks } from './blocks.mjs';
+import { gateBoard, unit, allocateIds, firstClause, hasText } from './scaffold.mjs';
 
-// ---- shared markup components (mirror plan-deck-reference.html) ----
-
-// A single deck slide. `on` adds the initial-visible class the slide-engine toggles.
-// `chapter` (optional) stamps an escaped data-section the chapters navigator groups on.
-function slide({ icon = 'i-cog', kicker = '', heading = '', inner = '', num = '', on = false, chapter = '' }) {
-  const sectionAttr = chapter ? ` data-section="${esc(chapter)}"` : '';
-  return `  <section class="slide${on ? ' on' : ''}"${sectionAttr}>
-    <p class="kicker"><svg><use href="#${esc(icon)}"/></svg> ${esc(kicker)}</p>
-    <h2>${esc(heading)}</h2>
-${inner}
-    ${num ? `<span class="ghostnum">${esc(num)}</span>` : ''}
-  </section>`;
-}
-
-// A .card tile. variant '' | 'ok' | 'warn' picks the icon-tile color.
-function card({ icon = 'i-cog', title = '', body = '', variant = '' }) {
-  const cls = variant ? ` ${esc(variant)}` : '';
-  return `<div class="card${cls}"><h3><svg><use href="#${esc(icon)}"/></svg> ${esc(title)}</h3><p>${esc(body)}</p></div>`;
-}
-
-function callout(html) {
-  return `<div class="callout">${html}</div>`;
-}
-
-// Wrap a list of slide sections in the deck scaffold the slide-engine drives
-// (#bar, #crumb, #deck/.stage, #ctl with #dots/#pg/#prev/#next).
-function deck(crumb, sections) {
-  return `<div id="bar"></div>
-<div id="crumb">${esc(crumb)}</div>
-<button id="toctgl" aria-label="Chapters" aria-haspopup="true" aria-controls="chapters" aria-expanded="false"><svg><use href="#i-list"/></svg></button>
-<div id="chapters" role="menu"></div>
-
-<div id="deck"><div class="stage">
-
-${sections.join('\n\n')}
-
-</div>
-
-<div id="ctl">
-  <div class="dots" id="dots"></div>
-  <div class="nav"><span class="pg" id="pg"></span><button class="btn" id="prev">&#8249;</button><button class="btn" id="next">&#8250;</button></div>
-</div></div>`;
-}
+// ---- Gate Board shared helpers (Tasks 6–7: every template composes these) ----
 
 const fav = (ledger) => (ledger?.meta?.favicon ?? '🛠️');
-const crumbOf = (ledger) => (ledger?.meta?.crumb ?? 'MINDCLOUD · DEV WORKFLOW');
+const crumbOf = (ledger) => (ledger?.meta?.crumb ?? 'THE-FOREMAN · DEV WORKFLOW');
+
+// Hero fields (design §4 fallbacks): verdict falls back to meta.subtitle, then
+// to the type's own fallback line; lede is optional.
+function heroOf(meta, fallbackVerdict = '') {
+  return {
+    verdict: meta?.verdict ?? meta?.subtitle ?? fallbackVerdict,
+    lede: meta?.lede ?? '',
+  };
+}
+
+// The effective ask (AUTHORITATIVE rule, design §6): meta.ask is the author's
+// intent and WINS over any derived ask. With no meta.ask, a decision derives
+// one from its question + recommendation. One computation drives the ask
+// strip, the target chapter's visible header, AND the single .rec strip.
+//
+// askShape is the ONE gate deciding whether meta.ask participates: only an
+// object with a NON-EMPTY string headline counts. A malformed meta.ask (empty
+// string, plain string, number, OR an object without a real headline — {},
+// {note:'x'}, {headline:''}) must fall through to the derived ask — such an
+// object would otherwise win the nullish check, blank the ask strip, and
+// silently drop decision.question (a decisionCard's entire payload). Both
+// templates' paths (askOf here, singleBoard below) MUST use this same
+// normalizer. MIRRORED in markdown.mjs (its module-local copy — two copies by
+// design; keep the two in lockstep), and lint.mjs's malformed-ask rule rides
+// the same predicate.
+const askShape = (a) => (a && typeof a === 'object' && !Array.isArray(a)
+  && typeof a.headline === 'string' && a.headline.trim() !== '' ? a : null);
+
+// decisionShape is askShape's decision-side twin (same discipline): a decision
+// derives an ask ONLY as a non-array object with a NON-EMPTY string question.
+// Any other truthy ledger.decision ({}, an array, {question:''}, options with
+// no question) used to satisfy a bare `if (d)` check and derive an ask with an
+// EMPTY headline — a blank hard-gate strip, while lint counted the ask as
+// present. A decision failing this gate contributes NO derived ask; its option
+// cards (when any) still render as evidence in a content-labeled chapter, so
+// nothing is lost. MIRRORED in markdown.mjs (its module-local copy — two
+// copies by design; keep the two in lockstep), and lint.mjs's
+// malformed-decision rule rides the same predicate.
+const decisionShape = (d) => (d && typeof d === 'object' && !Array.isArray(d)
+  && typeof d.question === 'string' && d.question.trim() !== '' ? d : null);
+
+function askOf(ledger) {
+  const shaped = askShape(ledger?.meta?.ask);
+  if (shaped) return shaped;
+  const d = decisionShape(ledger?.decision); // decisionShape guarantees a non-empty question
+  // the derived CANDIDATE rides the same askShape gate as meta.ask (every
+  // derived ask does — see singleBoard); here it is defense-in-depth, since
+  // decisionShape already pinned a non-empty string question
+  if (d) return askShape({ headline: d.question, recommendation: d.recommendation, recommendedBy: d.recommendedBy });
+  return null;
+}
+
+// The figure-capable set (design §4): a unit's dominant visual is the explicit
+// `figure` when given, else the FIRST block whose type is in this set (that
+// block is promoted out of the drawer); everything else stays drawer evidence.
+const FIGURE_TYPES = ['statRow', 'bar', 'donut', 'phaseSteps', 'topo', 'deltaRow', 'duel', 'verdictFan', 'dotMatrix', 'ladder'];
+
+function figureSplit(blocks, explicitFigure) {
+  const list = Array.isArray(blocks) ? blocks : [];
+  if (explicitFigure) return { figureHtml: renderBlocks([explicitFigure]), drawerBlocks: list };
+  const idx = list.findIndex((b) => FIGURE_TYPES.includes(b?.type));
+  if (idx === -1) return { figureHtml: '', drawerBlocks: list };
+  return { figureHtml: renderBlocks([list[idx]]), drawerBlocks: list.filter((_, i) => i !== idx) };
+}
+
+// Option-card risk chip allowlist — `risk` only ever PICKS a static modifier
+// class (unknown/absent-from-list values, e.g. legacy 'medium', coerce to
+// 'med'); the risk TEXT itself is esc'd. Same fail-closed posture as blocks.mjs.
+const RISK_LEVELS = new Set(['low', 'med', 'high']);
+const riskLevel = (r) => (RISK_LEVELS.has(r) ? r : 'med');
+
+// Decision option cards (reference lines ~1161–1229): letter well, recommended
+// marker (keyed off the EFFECTIVE ask's recommendation matching the option
+// label — the badge must always agree with the single .rec strip, so a valid
+// meta.ask override moves it; a recommendation matching no option badges
+// nothing), allowlisted risk chip, one-line gist via firstClause, and the
+// verbatim pros/cons collapsed in <details class="optpc">. When no effective
+// ask exists (the orphan content-labeled chapters), effectiveRec defaults to
+// the decision's own recommendation — the only source there is.
+//
+// Label robustness (prepr blocker): the label NEVER splits — the FULL label is
+// always the visible .opt__t title, so a legacy 'A · Title' / a plain
+// descriptive label can never dump itself into the 38px letter well and lose
+// its title. The well derives independently: a recognized single-character
+// prefix (first char when the label opens "X<sep>" — X alphanumeric, sep one
+// of space/·/—/:/./-) else the option's 1-based index letter (A, B, C, …; the
+// index is engine-derived, wrapped mod 26 so it stays a single letter).
+const wellLetter = (label, index) =>
+  (/^[A-Za-z0-9][\s·—:.-]/.test(label) ? label[0] : String.fromCharCode(65 + (index % 26)));
+
+function optionCards(d, effectiveRec = d?.recommendation) {
+  const options = Array.isArray(d?.options) ? d.options : [];
+  if (!options.length) return '';
+  const cards = options.map((o, i) => {
+    const label = String(o?.label ?? '');
+    const ltr = wellLetter(label, i);
+    const optTitle = label ? `<b class="opt__t">${esc(label)}</b>` : '';
+    const recommended = effectiveRec != null && label === effectiveRec;
+    const recMark = recommended ? '<span class="opt__rec"><i></i>Recommended</span>' : '';
+    const risk = o?.risk != null && o.risk !== ''
+      ? `<span class="opt__risk opt__risk--${riskLevel(o.risk)}"><i></i>${esc(o.risk)} risk</span>` : '';
+    const gist = o?.pros ? `<p class="opt__gist">${esc(firstClause(o.pros))}</p>` : '';
+    const pc = (o?.pros || o?.cons)
+      ? '<details class="optpc"><summary>Pros &amp; cons</summary><div class="optpc__b">'
+        + `<h4>Pros</h4><p>${esc(o?.pros ?? '—')}</p><h4 class="con">Cons</h4><p>${esc(o?.cons ?? '—')}</p></div></details>`
+      : '';
+    return `<section class="opt${recommended ? ' opt--rec' : ''}" aria-label="Option ${esc(ltr)}">`
+      + `<div class="opt__top"><span class="opt__ltr">${esc(ltr)}</span>${recMark}${risk}</div>${optTitle}${gist}${pc}</section>`;
+  }).join('');
+  return `<div class="opts">${cards}</div>`;
+}
+
+// The SINGLE recommendation strip — renders the EFFECTIVE ask's recommendation
+// and attribution exactly once (a decision's own recommendation line is never
+// separately rendered when meta.ask overrides it). Field presence rides the
+// SHARED hasText predicate (scaffold.mjs) — the same one the hero ask strip and
+// the twin's askToMarkdown apply — so an empty/whitespace/non-string value is
+// absent here exactly when it is absent there (it used to slip past `!= null`
+// and emit an empty Recommendation card in HTML alone).
+function recStrip(ask) {
+  if (!ask || (!hasText(ask.recommendation) && !hasText(ask.recommendedBy))) return '';
+  const b = hasText(ask.recommendation) ? `<b>Recommendation — <span>${esc(ask.recommendation)}</span></b>` : '';
+  const p = hasText(ask.recommendedBy) ? `<p>${esc(ask.recommendedBy)}</p>` : '';
+  return `<div class="rec"><span class="rec__dot" aria-hidden="true"></span><div class="rec__txt">${b}${p}</div></div>`;
+}
+
+// The ask chapter's unit: the effective ask VISIBLE up top (headline + note —
+// never inside a drawer), option cards as evidence when a decision exists,
+// then the single .rec strip.
+function askChapterHtml(effectiveAsk, decision) {
+  const head = '<header class="unit__head"><span class="kick">The ask</span>'
+    + `<h3 class="hline">${esc(effectiveAsk.headline ?? '')}</h3>`
+    + `${effectiveAsk.note ? `<p class="lead">${esc(effectiveAsk.note)}</p>` : ''}</header>`;
+  // ?? null: an effective ask WITHOUT a recommendation badges nothing — never
+  // let the default parameter resurface the overridden decision.recommendation
+  return `<article class="unit">${head}${decision ? optionCards(decision, effectiveAsk.recommendation ?? null) : ''}${recStrip(effectiveAsk)}</article>`;
+}
+
+// One ledger slide -> one Gate Board unit: plain-statement headline, dominant
+// figure, pill rows OUTSIDE the drawer, and the full evidence (bullets, cards,
+// callout, remaining blocks) inside the collapsed drawer. Every legacy field
+// still renders somewhere — nothing is dropped.
+function slideUnit(s) {
+  const { figureHtml, drawerBlocks } = figureSplit(s?.blocks, s?.figure);
+  const pillBlocks = drawerBlocks.filter((b) => b?.type === 'pillRow');
+  const rest = drawerBlocks.filter((b) => b?.type !== 'pillRow');
+  const bullets = Array.isArray(s?.bullets) && s.bullets.length
+    ? `<ul>${s.bullets.map((b) => `<li>${esc(b)}</li>`).join('')}</ul>` : '';
+  const cardsHtml = Array.isArray(s?.cards) && s.cards.length
+    ? s.cards.map((c) => `<div class="co"><b>${esc(c?.title)}</b><p>${esc(c?.body)}</p></div>`).join('') : '';
+  const note = s?.callout ? `<div class="co co--warn"><p>${esc(s.callout)}</p></div>` : '';
+  const drawerHtml = [bullets, cardsHtml, note, renderBlocks(rest)].filter(Boolean).join('');
+  return unit({
+    kicker: s?.kicker ?? '',
+    statement: s?.statement ?? s?.heading ?? '',
+    lead: s?.lead ?? '',
+    figureHtml,
+    pillsHtml: renderBlocks(pillBlocks),
+    drawerHtml,
+  });
+}
+
+// ---- the single-section Gate Board (Task 7 — the seven non-planDeck types) ----
+//
+// Ask-target + rail contract (design §6): a single-section type renders exactly
+// ONE chapter — the rail is Top + one chip, never a separate content chip and
+// ask chip. When the type has an effective ask (meta.ask ?? its derived ask),
+// that chapter is labeled `Your call` and carries BOTH the type's visible
+// primary content AND the ask; when the ask source is absent, the chapter keeps
+// its content label and no ask strip renders (never a dead link). Ids resolve
+// ONCE via allocateIds; the strip's targetId is the resolved id (gateBoard
+// re-derives the same id from the same single-label list).
+// keyStats coexistence (prepr round 1, the BOTH-PRESENT rule): meta.keyStats —
+// whenever it is an array, matching singleBoard's hero pick below — wins the
+// hero tiles; a type whose DERIVED stats would then be dropped (dashboard's
+// d.stats, liveRun's synthesized cost/blast-radius pair) must instead surface
+// them as VISIBLE stat wells (a statRow block) inside its unit body. The twin
+// mirrors the outcome: hero keyStats serialize in the head (markdown.mjs
+// head()), the derived stats within the type's section.
+const heroTakenBy = (ledger) => Array.isArray(ledger?.meta?.keyStats);
+
+function singleBoard(ledger, { fallbackTitle, contentLabel, unitHtml, derivedAsk = null, decision = null, keyStats = null, sources = [] }) {
+  const meta = ledger?.meta ?? {};
+  const title = String(meta.title ?? fallbackTitle);
+  // BOTH candidates ride the ONE askShape gate (design §6): the author's
+  // meta.ask wins only when well-shaped, and a type's derived candidate (built
+  // from a raw ledger field — win.next, pt.note, f.summary, d.ask) counts only
+  // when well-shaped too. A whitespace / non-string / object source used to
+  // reach the board verbatim and render a BLANK ask strip; now it means NO ask.
+  const effectiveAsk = askShape(meta.ask) ?? askShape(derivedAsk);
+  const label = effectiveAsk ? 'Your call' : contentLabel;
+  const [targetId] = allocateIds([label]);
+  const unitsHtml = `${unitHtml}${effectiveAsk ? askChapterHtml(effectiveAsk, decision) : ''}`;
+  const { verdict, lede } = heroOf(meta);
+  const { bodyHtml } = gateBoard({
+    crumb: crumbOf(ledger),
+    title,
+    verdict,
+    lede,
+    // meta.keyStats (author intent) wins over a type's derived stats
+    keyStats: Array.isArray(meta.keyStats) ? meta.keyStats : (keyStats ?? []),
+    ask: effectiveAsk ? { ...effectiveAsk, targetId } : null,
+    chapters: [{ label, unitsHtml }],
+    sources,
+  });
+  return { title, favicon: fav(ledger), bodyHtml };
+}
+
+// A labeled `.co` callout — the visible-fact carrier for gate-critical prose
+// (the label is an engine-authored literal; the value is esc'd here).
+const coFact = (label, value) => `<div class="co"><b>${label}</b><p>${esc(value ?? '—')}</p></div>`;
 
 // ---- templates ----
 
-// Full plan deck: title slide + overview + one slide per ledger slide.
+// Full plan board: verdict hero + stat tiles + ask strip + one chapter per
+// consecutive run of slide.chapter (+ the appended `Your call` ask chapter).
 export function planDeck(ledger) {
   const meta = ledger?.meta ?? {};
   const title = String(meta.title ?? 'the-foreman plan');
   const slides = Array.isArray(ledger?.slides) ? ledger.slides : [];
+  const { verdict, lede } = heroOf(meta);
 
-  const sections = [];
+  // Chapters group CONSECUTIVE slides by `chapter ?? 'Board'` (non-consecutive
+  // repeats become separate sections; allocateIds keeps their ids unique).
+  const groups = [];
+  for (const s of slides) {
+    const label = String(s?.chapter ?? 'Board');
+    const last = groups[groups.length - 1];
+    if (last && last.label === label) last.slides.push(s);
+    else groups.push({ label, slides: [s] });
+  }
 
-  // Title slide.
-  sections.push(
-    slide({
-      icon: 'i-cog',
-      kicker: 'Plan · the-foreman',
-      heading: title,
-      on: true,
-      num: '01',
-      inner: `    <p class="lead">${esc(meta.subtitle ?? 'A gated plan, rendered as a MindCloud deck.')}</p>`,
-    }),
-  );
+  // Ask resolution (single source of truth): build the FULL chapter-label list
+  // — content chapters plus the appended `Your call` chapter whenever an
+  // effective ask exists — then allocate ids ONCE. gateBoard re-derives the
+  // same ids from the same list, so the strip's targetId always resolves.
+  const effectiveAsk = askOf(ledger);
+  // Content preservation (decisionShape): with an effective ask the decision's
+  // option cards ride the Your call chapter as evidence (below). With NO
+  // effective ask the decision is malformed-or-absent by construction — a
+  // malformed decision that still carries options gets a content-labeled
+  // Decision chapter of its own, so its options are never silently dropped.
+  const orphanOptionsHtml = effectiveAsk ? '' : optionCards(ledger?.decision);
+  const labels = groups.map((g) => g.label);
+  const tailLabel = effectiveAsk ? 'Your call' : (orphanOptionsHtml ? 'Decision' : null);
+  const ids = allocateIds(tailLabel ? [...labels, tailLabel] : labels);
+  const askTargetId = effectiveAsk ? ids[ids.length - 1] : null;
 
-  // One content slide per ledger slide.
-  slides.forEach((s, idx) => {
-    const cards = Array.isArray(s?.cards) ? s.cards : [];
-    const cardsHtml = cards.length
-      ? `    <div class="grid g2">\n      ${cards
-          .map((c) => card({ icon: c.icon ?? 'i-route', title: c.title, body: c.body, variant: c.variant }))
-          .join('\n      ')}\n    </div>`
-      : '';
-    const bullets = Array.isArray(s?.bullets) && s.bullets.length
-      ? `    <ul>\n      ${s.bullets.map((b) => `<li>${esc(b)}</li>`).join('\n      ')}\n    </ul>`
-      : '';
-    const note = s?.callout ? `    ${callout(esc(s.callout))}` : '';
-    // Per-slide content blocks (Phase 2a). renderBlocks() returns '' for a
-    // block-less slide (filtered out below => block-less slides stay byte-identical).
-    const blocksHtml = renderBlocks(s?.blocks);
-    const inner = [cardsHtml, bullets, note, blocksHtml].filter(Boolean).join('\n');
-    sections.push(
-      slide({
-        icon: s?.icon ?? 'i-flag',
-        kicker: s?.kicker ?? '',
-        heading: s?.heading ?? '',
-        inner,
-        num: String(idx + 2).padStart(2, '0'),
-        chapter: s?.chapter,
-      }),
-    );
+  const chapters = groups.map((g) => ({ label: g.label, unitsHtml: g.slides.map(slideUnit).join('') }));
+  if (effectiveAsk) chapters.push({ label: 'Your call', unitsHtml: askChapterHtml(effectiveAsk, ledger?.decision) });
+  else if (orphanOptionsHtml) chapters.push({ label: 'Decision', unitsHtml: `<article class="unit">${orphanOptionsHtml}</article>` });
+
+  const sources = Array.isArray(ledger?.findings?.sources) ? ledger.findings.sources : [];
+
+  const { bodyHtml } = gateBoard({
+    crumb: crumbOf(ledger),
+    title,
+    verdict,
+    lede,
+    keyStats: Array.isArray(meta.keyStats) ? meta.keyStats : [],
+    ask: effectiveAsk ? { ...effectiveAsk, targetId: askTargetId } : null,
+    chapters,
+    sources,
   });
-
-  return { title, favicon: fav(ledger), bodyHtml: deck(crumbOf(ledger), sections) };
+  return { title, favicon: fav(ledger), bodyHtml };
 }
 
-// Win / pause brief: landed + evidence, verified-vs-claimed, the ask.
+// Win / pause brief: `win.landed` VISIBLE as the unit's callout, status pill
+// visible, the ask (win.next) visible beneath; the verbatim evidence in a drawer.
 export function brief(ledger) {
-  const meta = ledger?.meta ?? {};
   const win = ledger?.win ?? {};
-  const title = String(meta.title ?? 'Brief');
   const statusVariant = win.verified ? 'ok' : 'warn';
   const statusLabel = win.verified ? 'Verified' : 'Claimed (not yet verified)';
-
-  const cards = [
-    card({ icon: 'i-check', title: 'What landed', body: win.landed ?? '', variant: 'ok' }),
-    card({ icon: 'i-shield', title: 'Evidence', body: win.evidence ?? '', variant: statusVariant }),
-  ].join('\n      ');
-
-  const inner = `    <div class="grid g2">
-      ${cards}
-    </div>
-    <div class="pillrow">
-      <span class="pill ${statusVariant}">${esc(statusLabel)}</span>
-    </div>
-    ${callout(`<b>The ask:</b> ${esc(win.next ?? '—')}`)}`;
-
-  const section = slide({
-    icon: win.verified ? 'i-check' : 'i-warn',
+  const unitHtml = unit({
     kicker: win.verified ? 'Win' : 'Pause · waiting on you',
-    heading: title,
-    inner,
-    num: '01',
-    on: true,
+    statement: 'What landed',
+    figureHtml: `<div class="co"><p>${esc(win.landed ?? '')}</p></div>`,
+    pillsHtml: renderBlocks([{ type: 'pillRow', pills: [{ label: statusLabel, variant: statusVariant }] }]),
+    drawerLabel: 'Evidence',
+    drawerHtml: win.evidence ? `<p>${esc(win.evidence)}</p>` : '',
   });
-
-  return { title, favicon: fav(ledger), bodyHtml: deck(crumbOf(ledger), [section]) };
+  return singleBoard(ledger, {
+    fallbackTitle: 'Brief',
+    contentLabel: 'What landed',
+    unitHtml,
+    derivedAsk: { headline: win.next }, // singleBoard askShape-gates the candidate (absent/blank/non-string => no ask)
+  });
 }
 
-// Decision card: the question, options with pros/cons/risk, attributed recommendation.
+// Decision card: the ask chapter alone — question visible up top, option cards
+// as evidence (gists + risk chips visible, verbatim pros/cons collapsed), the
+// single attributed `.rec` strip.
 export function decisionCard(ledger) {
-  const meta = ledger?.meta ?? {};
-  const d = ledger?.decision ?? {};
-  const title = String(meta.title ?? 'Decision');
-  const options = Array.isArray(d.options) ? d.options : [];
-
-  const optionCards = options.length
-    ? `    <div class="grid g2">\n      ${options
-        .map((o) =>
-          card({
-            icon: 'i-fork',
-            title: `Option ${o.label ?? ''}`,
-            body: `Pros: ${o.pros ?? '—'} · Cons: ${o.cons ?? '—'} · Risk: ${o.risk ?? '—'}`,
-          }),
-        )
-        .join('\n      ')}\n    </div>`
-    : '';
-
-  const inner = `    <p class="lead">${esc(d.question ?? '')}</p>
-${optionCards}
-    ${callout(`<b>Recommendation:</b> ${esc(d.recommendation ?? '—')}${d.recommendedBy ? ` <span class="num">(${esc(d.recommendedBy)})</span>` : ''}`)}`;
-
-  const section = slide({
-    icon: 'i-fork',
-    kicker: 'Decision · your call',
-    heading: title,
-    inner,
-    num: '01',
-    on: true,
+  const d = ledger?.decision ?? null;
+  const shaped = decisionShape(d);
+  // Content preservation (decisionShape): a malformed decision derives NO ask.
+  // Its option cards still render exactly once — as Your call evidence when a
+  // well-shaped meta.ask exists (singleBoard passes `decision` through), else
+  // VISIBLE inside the content-labeled Decision chapter here.
+  const orphanOptionsHtml = !shaped && !askShape(ledger?.meta?.ask) ? optionCards(d) : '';
+  return singleBoard(ledger, {
+    fallbackTitle: 'Decision',
+    contentLabel: 'Decision',
+    unitHtml: orphanOptionsHtml ? `<article class="unit">${orphanOptionsHtml}</article>` : '',
+    derivedAsk: shaped ? { headline: shaped.question, recommendation: shaped.recommendation, recommendedBy: shaped.recommendedBy } : null,
+    decision: d,
   });
-
-  return { title, favicon: fav(ledger), bodyHtml: deck(crumbOf(ledger), [section]) };
 }
 
-// Live-run brief: what it does, cost / blast-radius, cleanup proof.
+// Live-run brief: What / Cost / Blast radius / Cleanup as four VISIBLE callouts
+// (gate-critical facts never in a drawer), keyStats synthesized from cost +
+// blast radius, and the authorize ask always present.
 export function liveRun(ledger) {
-  const meta = ledger?.meta ?? {};
   const lr = ledger?.liveRun ?? {};
-  const title = String(meta.title ?? 'Live-run brief');
-
-  const cards = [
-    card({ icon: 'i-route', title: 'What it does', body: lr.what ?? '' }),
-    card({ icon: 'i-warn', title: 'Cost / blast radius', body: `${lr.cost ?? '—'} · ${lr.blastRadius ?? '—'}`, variant: 'warn' }),
-    card({ icon: 'i-check', title: 'Cleanup', body: lr.cleanup ?? '', variant: 'ok' }),
-  ].join('\n      ');
-
-  const inner = `    <div class="grid g3">
-      ${cards}
-    </div>
-    ${callout('<b>Live-run gate:</b> a hard human gate — confirm cost, blast radius, and the cleanup proof before authorizing.')}`;
-
-  const section = slide({
-    icon: 'i-shield',
-    kicker: 'Live-run · 🚦 authorize',
-    heading: title,
-    inner,
-    num: '01',
-    on: true,
+  const keyStats = [
+    { value: firstClause(lr.cost), label: 'cost' },
+    { value: firstClause(lr.blastRadius), label: 'blast radius' },
+  ].filter((s) => s.value);
+  // Both-present rule: meta.keyStats takes the hero tiles, so the synthesized
+  // pair joins the unit body as visible stat wells beneath the four callouts.
+  const statWells = heroTakenBy(ledger) && keyStats.length
+    ? renderBlocks([{ type: 'statRow', stats: keyStats }]) : '';
+  const unitHtml = unit({
+    kicker: 'Live run · authorize',
+    statement: 'Live-run gate — authorize before anything runs',
+    figureHtml: coFact('What', lr.what) + coFact('Cost', lr.cost)
+      + coFact('Blast radius', lr.blastRadius) + coFact('Cleanup', lr.cleanup) + statWells,
   });
-
-  return { title, favicon: fav(ledger), bodyHtml: deck(crumbOf(ledger), [section]) };
+  return singleBoard(ledger, {
+    fallbackTitle: 'Live-run brief',
+    contentLabel: 'Live run',
+    unitHtml,
+    derivedAsk: { headline: 'Authorize this live run?', note: firstClause(lr.what) },
+    keyStats,
+  });
 }
 
-// ---- Phase 3: thin single-slide templates that COMPOSE the validated blocks ----
-// Each builds a blocks[] array from its typed ledger section, renders it via
-// renderBlocks() into the slide inner (optionally + a callout whose ledger parts
-// are esc'd here), and wraps with deck(). The block builders escape every value
-// INSIDE a block; only the values I interpolate directly into a callout need esc().
+// ---- the four composite types — same singleBoard, figures from the validated
+// blocks registry (the block builders escape every value inside a block) ----
 
-// phaseTracker: a progress strip — phaseSteps (+ optional progress donut), note.
+// phaseTracker: the stops track VISIBLE (+ optional progress donut beside it);
+// pt.note drives the ask (Your call chapter) when present, else Progress.
 export function phaseTracker(ledger) {
-  const meta = ledger?.meta ?? {};
   const pt = ledger?.phaseTracker ?? {};
-  const title = String(meta.title ?? 'Phase tracker');
   const phases = Array.isArray(pt.phases) ? pt.phases : [];
   const progress = pt.progress;
-
-  const blocks = [
+  const figureHtml = renderBlocks([
     { type: 'phaseSteps', steps: phases },
     progress && { type: 'donut', value: progress.value, max: progress.max, label: progress.label },
-  ].filter(Boolean);
-
-  const inner = [renderBlocks(blocks), pt.note ? `    ${callout(esc(pt.note))}` : '']
-    .filter(Boolean)
-    .join('\n');
-
-  const section = slide({
-    icon: 'i-layers',
-    kicker: 'Phase tracker',
-    heading: title,
-    inner,
-    num: '01',
-    on: true,
+  ].filter(Boolean));
+  return singleBoard(ledger, {
+    fallbackTitle: 'Phase tracker',
+    contentLabel: 'Progress',
+    unitHtml: unit({ kicker: 'Phase tracker', statement: 'Where the work stands', figureHtml }),
+    derivedAsk: { headline: pt.note }, // askShape-gated in singleBoard
   });
-
-  return { title, favicon: fav(ledger), bodyHtml: deck(crumbOf(ledger), [section]) };
 }
 
-// findings: a findings table (+ optional sources rankedRows), summary callout.
+// findings: the findings table VISIBLE; statRow wells from f.sources above it
+// when present, sources doubling as evidence-base chips; f.summary drives the ask.
 export function findings(ledger) {
-  const meta = ledger?.meta ?? {};
   const f = ledger?.findings ?? {};
-  const title = String(meta.title ?? 'Findings');
   const items = Array.isArray(f.items) ? f.items : [];
-  const sources = Array.isArray(f.sources) ? f.sources : null;
-
-  const blocks = [
+  const sources = Array.isArray(f.sources) ? f.sources : [];
+  const figureHtml = renderBlocks([
+    sources.length ? { type: 'statRow', stats: sources.map((s) => ({ value: s?.value, label: s?.label })) } : null,
     {
       type: 'table',
       columns: ['Finding', 'Confidence', 'Evidence', 'Verdict'],
       rows: items.map((i) => [i?.title, i?.confidence, i?.evidence, i?.verdict]),
     },
-    sources && { type: 'rankedRows', rows: sources },
-  ].filter(Boolean);
-
-  const inner = [renderBlocks(blocks), f.summary ? `    ${callout(esc(f.summary))}` : '']
-    .filter(Boolean)
-    .join('\n');
-
-  const section = slide({
-    icon: 'i-list',
-    kicker: 'Findings',
-    heading: title,
-    inner,
-    num: '01',
-    on: true,
+  ].filter(Boolean));
+  return singleBoard(ledger, {
+    fallbackTitle: 'Findings',
+    contentLabel: 'Findings',
+    unitHtml: unit({ kicker: 'Findings', statement: 'What the evidence shows', figureHtml }),
+    derivedAsk: { headline: f.summary }, // askShape-gated in singleBoard
+    sources,
   });
-
-  return { title, favicon: fav(ledger), bodyHtml: deck(crumbOf(ledger), [section]) };
 }
 
-// comparison: an options × criteria table, recommendation callout (+ optional by).
+// comparison: the options × criteria table VISIBLE; c.recommendation drives the
+// attributed ask (`Pick an option` + the .rec strip).
 export function comparison(ledger) {
-  const meta = ledger?.meta ?? {};
   const c = ledger?.comparison ?? {};
-  const title = String(meta.title ?? 'Comparison');
   const criteria = Array.isArray(c.criteria) ? c.criteria : [];
   const options = Array.isArray(c.options) ? c.options : [];
 
@@ -287,60 +412,58 @@ export function comparison(ledger) {
   // note; otherwise the table is unchanged (no Notes column). The table block
   // escapes every cell, so the note text is neutralized there.
   const anyNote = options.some((o) => o?.note != null && o.note !== '');
-
-  const blocks = [
+  // Normalize each scores array to EXACTLY criteria.length BEFORE the note is
+  // appended (pad ''/truncate): a ragged row would otherwise shift the note
+  // into a criteria cell (short scores) or drop it (overlong scores) when the
+  // table block later normalizes the whole row. MIRRORED in markdown.mjs's
+  // comparison twin — keep the two in lockstep.
+  const scoreCells = (o) => {
+    const scores = Array.isArray(o?.scores) ? o.scores : [];
+    return Array.from({ length: criteria.length }, (_, i) => scores[i] ?? '');
+  };
+  const figureHtml = renderBlocks([
     {
       type: 'table',
       columns: ['Option', ...criteria, ...(anyNote ? ['Notes'] : [])],
-      // ragged scores are normalized by the table block (normalizeRow) — just map.
-      rows: options.map((o) => [o?.label, ...(Array.isArray(o?.scores) ? o.scores : []), ...(anyNote ? [o?.note ?? ''] : [])]),
+      rows: options.map((o) => [o?.label, ...scoreCells(o), ...(anyNote ? [o?.note ?? ''] : [])]),
     },
-  ];
-
-  const note = c.recommendation != null
-    ? `    ${callout(`<b>Recommendation:</b> ${esc(c.recommendation)}${c.recommendedBy ? ` <span class="num">(${esc(c.recommendedBy)})</span>` : ''}`)}`
-    : '';
-  const inner = [renderBlocks(blocks), note].filter(Boolean).join('\n');
-
-  const section = slide({
-    icon: 'i-fork',
-    kicker: 'Comparison',
-    heading: title,
-    inner,
-    num: '01',
-    on: true,
+  ]);
+  return singleBoard(ledger, {
+    fallbackTitle: 'Comparison',
+    contentLabel: 'Comparison',
+    unitHtml: unit({ kicker: 'Comparison', statement: 'How the options compare', figureHtml }),
+    // The derived ask rides the SHARED hasText predicate (scaffold.mjs): only
+    // a non-empty trimmed STRING recommendation derives one. Any other
+    // non-null value ('', '   ', 42, {}) used to spawn a spurious Your-call
+    // chapter and an empty (or "[object Object]") recStrip — now it derives NO
+    // ask (content label, no strip). MIRRORED in markdown.mjs's comparison
+    // twin, and lint.mjs's malformed-recommendation rule rides the same
+    // predicate — keep the three in lockstep.
+    derivedAsk: hasText(c.recommendation)
+      ? { headline: 'Pick an option', recommendation: c.recommendation, recommendedBy: c.recommendedBy }
+      : null,
   });
-
-  return { title, favicon: fav(ledger), bodyHtml: deck(crumbOf(ledger), [section]) };
 }
 
-// dashboard: stats (statRow) + a chart passed STRAIGHT THROUGH (unknown chart type
-// fails closed, same contract) + optional rows (rankedRows), an ask callout.
+// dashboard: d.stats as hero tiles, the chart passed STRAIGHT THROUGH (unknown
+// chart type fails closed, same contract) + optional ranked rows, both VISIBLE;
+// d.ask drives the ask.
 export function dashboard(ledger) {
-  const meta = ledger?.meta ?? {};
   const d = ledger?.dashboard ?? {};
-  const title = String(meta.title ?? 'Dashboard');
-  const stats = Array.isArray(d.stats) ? d.stats : null;
+  const stats = Array.isArray(d.stats) ? d.stats : [];
   const rows = Array.isArray(d.rows) ? d.rows : null;
-
-  const blocks = [
-    stats && { type: 'statRow', stats },
+  const figureHtml = renderBlocks([
+    // Both-present rule: meta.keyStats takes the hero tiles, so d.stats render
+    // as visible stat wells at the top of the unit body (above the chart).
+    heroTakenBy(ledger) && stats.length ? { type: 'statRow', stats } : null,
     d.chart, // passed straight to renderBlocks => an unknown chart type FAILS CLOSED
     rows && { type: 'rankedRows', rows },
-  ].filter(Boolean);
-
-  const inner = [renderBlocks(blocks), d.ask ? `    ${callout(esc(d.ask))}` : '']
-    .filter(Boolean)
-    .join('\n');
-
-  const section = slide({
-    icon: 'i-deck',
-    kicker: 'Dashboard',
-    heading: title,
-    inner,
-    num: '01',
-    on: true,
+  ].filter(Boolean));
+  return singleBoard(ledger, {
+    fallbackTitle: 'Dashboard',
+    contentLabel: 'Dashboard',
+    unitHtml: unit({ kicker: 'Dashboard', statement: 'The numbers right now', figureHtml }),
+    derivedAsk: { headline: d.ask }, // askShape-gated in singleBoard
+    keyStats: stats,
   });
-
-  return { title, favicon: fav(ledger), bodyHtml: deck(crumbOf(ledger), [section]) };
 }

@@ -1,0 +1,11 @@
+{
+  "meta": {
+    "title": "Legacy accent ledger",
+    "crumb": "LEGACY",
+    "favicon": "🛠️",
+    "accent": "#009ACC"
+  },
+  "slides": [
+    { "kicker": "LEGACY", "heading": "Carries the old house-default accent" }
+  ]
+}

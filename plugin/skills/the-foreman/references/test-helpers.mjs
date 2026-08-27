@@ -1,0 +1,242 @@
+// Shared TEST helpers — imported by *.test.mjs only, never by shipping engine
+// code (the engine's own modules must not depend on test infrastructure).
+//
+// stripDetails(html): returns only the content OUTSIDE every <details> element
+// — the "visible without interaction" surface. The visible-content contract
+// (execution plan Task 7) pins that a gate's decision-critical facts are NEVER
+// inside <details>; tests assert those facts appear in stripDetails(bodyHtml).
+//
+// Mechanism: scan the string for <details…> / </details> tags tracking nesting
+// depth; keep only text at depth 0. The tags themselves and everything between
+// an opening tag and its matching close are dropped. An unclosed <details>
+// swallows the rest of the string (still "not visible without interaction").
+// Its negative-control self-test lives in templates.test.mjs.
+export function stripDetails(html) {
+  const s = String(html ?? '');
+  const re = /<details\b[^>]*>|<\/details\s*>/gi;
+  let out = '';
+  let depth = 0;
+  let pos = 0;
+  for (let m = re.exec(s); m !== null; m = re.exec(s)) {
+    if (depth === 0) out += s.slice(pos, m.index);
+    depth = m[0][1] === '/' ? Math.max(0, depth - 1) : depth + 1;
+    pos = re.lastIndex;
+  }
+  return depth === 0 ? out + s.slice(pos) : out;
+}
+
+// ---- Gate Board CSS one-rule oracle (execution plan Task 8) ----
+//
+// parseRules(css): a brace-depth walker over the stylesheet. Comments are
+// stripped first; every `{` pushes the pending prelude as a selector and every
+// `}` pops it, flushing one {selector, declarations, atAncestry} record — so
+// rules nested inside @media / @supports bodies are captured with their OWN
+// selectors (a naive split('}') skips the first nested rule and would let a
+// media-query fill through). atAncestry (additive, prepr blocker) is the
+// rule's enclosing at-rule preludes outermost-first (e.g.
+// ['@media (prefers-color-scheme: dark)']) — WITHOUT it the walker flattens
+// at-rules and nothing can assert WHERE a rule sits, so a dark carrier hoisted
+// to top level (dark forced on everyone) parsed identically to the guarded
+// one. Declarations split on ';' then on the FIRST ':'; fragments without a
+// colon (e.g. the tail of a semicolon-bearing data: URI) are skipped — they
+// can never carry a background/border prop.
+export function parseRules(css) {
+  const s = String(css ?? '').replace(/\/\*[\s\S]*?\*\//g, '');
+  const rules = [];
+  const stack = [];
+  let buf = '';
+  const flush = (selector, text) => {
+    if (!selector) return;
+    const declarations = text
+      .split(';')
+      .map((d) => d.trim())
+      .filter(Boolean)
+      .flatMap((d) => {
+        const idx = d.indexOf(':');
+        if (idx === -1) return [];
+        const rawProp = d.slice(0, idx).trim();
+        // standard property names are case-insensitive in CSS (BACKGROUND: is valid);
+        // custom properties (--lineV) are case-SENSITIVE by spec and must not be folded
+        const prop = rawProp.startsWith('--') ? rawProp : rawProp.toLowerCase();
+        return [{ prop, value: d.slice(idx + 1).trim() }];
+      });
+    // the caller pops the rule's own prelude BEFORE flushing, so the stack now
+    // holds exactly the enclosing preludes; the at-rules among them are the ancestry
+    rules.push({ selector, declarations, atAncestry: stack.filter((sel) => sel.startsWith('@')) });
+  };
+  for (const ch of s) {
+    if (ch === '{') {
+      stack.push(buf.trim());
+      buf = '';
+    } else if (ch === '}') {
+      flush(stack.pop() ?? '', buf);
+      buf = '';
+    } else {
+      buf += ch;
+    }
+  }
+  return rules;
+}
+
+// Exact documented marker allowlist — selectors whose fills are dots / ticks /
+// meter cores / scrollbar thumbs / toggle glyph bars. Everything else must be
+// var(--bg) / engraved / transparent / none. Adjust ONLY by ADDING an exact
+// selector that is genuinely such a marker — the review gate sees any diff to
+// this set. Entries past the plan's baseline set (each a real reference-sheet
+// marker the baseline missed): '.pill i' (the bare pill dot), '.arm--ok span i'
+// and '.arm--bad span i' (the arm status dots as actually written in the
+// reference), '.mx__d.miss i::after' (the unfilled matrix dot core),
+// '.ev__tog::before' / '.ev__tog::after' (the +/- toggle glyph bars,
+// currentColor).
+export const MARKER_SELECTORS = new Set([
+  '.track b', '.track i.now::after', '.track i::after', '.brow__rail i', '.pmeter i',
+  '.seclab span', '.rec__dot::after', '.stop__mark i::after', '.mx__d i::after',
+  '.ring__t', '.ring__t.on', '.ring__legend i', '.ring__legend span + span i',
+  '.fate--ok .fate__dots i::after', '.fate--warn .fate__dots i::after', '.fate--x .fate__dots i::after',
+  '.pill i.is-ok', '.pill i.is-warn', '.pill--ok i', '.pill--warn i', '.arm i', '.arm--bad i',
+  '.tag i', '.tag--spawn i', '.tag--code i', '.opt__rec i', '.opt__risk i',
+  '.opt__risk--low i', '.opt__risk--med i', '.opt__risk--high i',
+  '.lrow__v i', '.lrow__v--ok i', '.lrow__v--mid i', '.lrow__v--no i',
+  '.blt i', '.scrollx::-webkit-scrollbar-thumb', '.flatline i',
+  '.pill i', '.arm--ok span i', '.arm--bad span i', '.mx__d.miss i::after',
+  '.ev__tog::before', '.ev__tog::after',
+]);
+
+// ---- de-brand scan predicate (execution plan Task 13; Global Constraints) ----
+//
+// The forbidden legacy strings for shipping engine sources + engine-owned docs:
+// the old brand name (any casing), the old accent + canvas hex literals, and
+// the retired page-script name. Every alternative is assembled from split
+// halves at runtime, so this helper — which sits INSIDE the scan scope
+// (references/*.mjs) — can never trip its own scan; the same split-halves
+// technique is the sanctioned way for any test to write a NEGATIVE assertion
+// against one of these strings (never a per-file carve-out in the scan).
+// render.mjs holds the legacy accent NUMERICALLY (0x…), which the #-anchored
+// hex pattern deliberately does not match.
+export const FORBIDDEN_BRAND_RE = new RegExp(
+  ['Mind' + 'Cloud', '#009' + 'ACC', '#2d' + '323b', 'slide-' + 'engine'].join('|'),
+  'i',
+);
+
+// Every offending line of `text`, as "<lineNo>: <content>" — [] when clean.
+// Content is capped so a single-line data-URI can't flood a failure report.
+export function debrandOffenses(text) {
+  const out = [];
+  String(text ?? '').split('\n').forEach((line, i) => {
+    if (FORBIDDEN_BRAND_RE.test(line)) out.push(`${i + 1}: ${line.trim().slice(0, 100)}`);
+  });
+  return out;
+}
+
+// Exact engraved-divider allowlist — the ONLY selectors allowed to fill with
+// the engraved tokens var(--lineH)/var(--lineV): the topo bracket's link stub
+// and kid joins, the ladder's __j join, the verdict fan's connectors, the stops
+// track's mobile spine, the duel/flatline spines, and the .t td row separator
+// (background-image). Enumerated from style.css verbatim; adjust ONLY by
+// ADDING an exact selector that is genuinely a divider/connector — the review
+// gate sees any diff to this set.
+export const DIVIDER_SELECTORS = new Set([
+  '.topo__link::after', '.topo__kid::before', '.topo__kid::after',
+  '.lrow__j', '.fan i', '.fan i.fan__x', '.stop__mark u',
+  '.duel__mid u', '.flatline u', '.t td',
+]);
+
+// The seven-token LIGHT map pinned to the sheet's bare :root — the values the
+// one-rule oracle's var(--bg) allowance actually resolves to. Pinning them
+// closes the smuggling hole: without this, :root{--bg:#ff0000} (or a
+// radial-gradient smuggled through --bg's definition) turned every allowed
+// var(--bg) fill hostile while the oracle stayed green. The Blue Graphite dark
+// counterpart is pinned by style.test.mjs's carrier test; the two dark carriers
+// below are the ONLY rules allowed to redefine any of the seven.
+export const LIGHT_TOKENS = {
+  '--bg': '#eef0f5', '--tx': '#262b3a', '--sb': '#5f6579',
+  '--sd': '#c9cdd8', '--sl': '#ffffff',
+  '--ac': 'var(--user-ac, #5b7cfa)', '--acq': '#3a5fc4',
+};
+const DARK_CARRIERS = new Set([':root:not([data-theme="light"])', ':root[data-theme="dark"]']);
+
+// Token pinning: exactly ONE :root rule defines the seven tokens, with exactly
+// the LIGHT_TOKENS literals, and NO rule outside the two dark carriers
+// redefines any of them. Every violation is reported as an offense line.
+export function oracleTokenOffenses(css) {
+  const names = Object.keys(LIGHT_TOKENS);
+  const offenses = [];
+  const defining = [];
+  for (const r of parseRules(css)) {
+    const defs = r.declarations.filter((d) => names.includes(d.prop));
+    if (!defs.length) continue;
+    if (DARK_CARRIERS.has(r.selector)) continue;       // the two dark carriers may redefine all seven
+    if (r.selector === ':root') { defining.push(r); continue; }
+    for (const d of defs) offenses.push(`${r.selector} → ${d.prop}:${d.value}`); // any other rule touching a token
+  }
+  if (defining.length !== 1) {
+    offenses.push(`:root defines the seven tokens in ${defining.length} rules (expected exactly 1)`);
+  }
+  for (const r of defining) {
+    const map = Object.fromEntries(r.declarations.map((d) => [d.prop, d.value]));
+    for (const [prop, value] of Object.entries(LIGHT_TOKENS)) {
+      if (map[prop] !== value) offenses.push(`:root → ${prop}:${map[prop] ?? '(missing)'} (expected ${value})`);
+    }
+  }
+  return offenses;
+}
+
+// Auto-dark containment (prepr blocker): the media-guarded dark carrier
+// :root:not([data-theme="light"]) OVERRIDES light for every viewer wherever it
+// applies — its entire safety is the @media (prefers-color-scheme: dark)
+// guard. This oracle pins that containment: every rule whose selector list
+// carries the auto carrier must have the dark media query in its atAncestry.
+// A top-level copy (or one smuggled under any OTHER at-rule) is an offense.
+// The stamped carrier :root[data-theme="dark"] is deliberately NOT covered —
+// it is unconditional by design (the explicit toggle must win in both themes).
+const AUTO_DARK_CARRIER = ':root:not([data-theme="light"])';
+const DARK_MEDIA_RE = /^@media[^{]*prefers-color-scheme:\s*dark/;
+export function oracleAutoDarkOffenses(css) {
+  const offenses = [];
+  for (const r of parseRules(css)) {
+    const sels = r.selector.split(',').map((s) => s.trim());
+    if (!sels.includes(AUTO_DARK_CARRIER)) continue;
+    if (!r.atAncestry.some((a) => DARK_MEDIA_RE.test(a))) {
+      offenses.push(`${r.selector} → outside @media (prefers-color-scheme: dark) [${r.atAncestry.join(' > ') || 'top level'}]`);
+    }
+  }
+  return offenses;
+}
+
+// Borders: only complete 0/none resets pass — '0.5px solid x' must fail.
+export function oracleBadBorders(css) {
+  const bad = [];
+  for (const r of parseRules(css)) {
+    for (const d of r.declarations) {
+      const isBorderProp = /^border(-(top|right|bottom|left|width|style|color|block|inline)(-(start|end))?(-(width|style|color))?)?$/.test(d.prop)
+        || /^border-image(-source|-slice|-width|-outset|-repeat)?$/.test(d.prop);
+      if (isBorderProp && !/^(0|none)$/.test(d.value.trim())) bad.push(`${r.selector} → ${d.prop}:${d.value}`);
+    }
+  }
+  return bad;
+}
+
+// Backgrounds: ANCHORED whole-value patterns — a value must BE one of these,
+// not merely contain one (radial-gradient(var(--bg),#ff0000) fails: it is not
+// an anchored allowed value). The surface tokens (var(--bg)/transparent/none)
+// pass anywhere; the ENGRAVED tokens (var(--lineH)/var(--lineV)) pass only
+// when EVERY selector in the rule's list is in DIVIDER_SELECTORS; marker
+// values pass only when every selector is in MARKER_SELECTORS.
+export function oracleOffenders(css) {
+  const SURFACE_VALUES = /^(var\(--bg\)|transparent|none)$/;
+  const DIVIDER_VALUES = /^(var\(--lineV\)|var\(--lineH\))$/;
+  const MARKER_VALUES = /^(var\(--(ac|acq|ok|warn|err|sb|sd|bg)\)|currentColor|transparent|none)$/;
+  const offenders = [];
+  for (const r of parseRules(css)) {
+    const sels = r.selector.split(',').map((s) => s.trim());
+    for (const d of r.declarations) {
+      if (!/^background(-color|-image)?$/.test(d.prop)) continue;
+      const v = d.value.trim();
+      const ok = SURFACE_VALUES.test(v)
+        || (DIVIDER_VALUES.test(v) && sels.every((s) => DIVIDER_SELECTORS.has(s)))
+        || (MARKER_VALUES.test(v) && sels.every((s) => MARKER_SELECTORS.has(s)));
+      if (!ok) offenders.push(`${r.selector} → ${d.prop}:${d.value}`);
+    }
+  }
+  return offenders;
+}

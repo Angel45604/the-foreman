@@ -1,0 +1,893 @@
+{
+ "meta": {
+  "title": "Plan gates don't converge. Code gates do.",
+  "crumb": "THE-FOREMAN · ISSUES #30 / #31",
+  "favicon": "🔬",
+  "theme": "auto",
+  "verdict": "4 rounds, 8-7-8-7 flat. Every plan chain in this repo: 0 for 4. Every code chain: 1 for 1.",
+  "lede": "The gate was not made stricter by design. On 2026-07-09 its reviewer moved to the ultra effort tier, which silently spawns ~3 sub-reviewers every round and copies the entire growing history into each. Under a zero-blocker approval rule, that is a loop that cannot terminate — and the model family is not what separates the eras. The effort dial is.",
+  "keyStats": [
+   {
+    "value": "36% → 0%",
+    "label": "approve rate"
+   },
+   {
+    "value": "1 → 13",
+    "label": "blockers / round"
+   },
+   {
+    "value": "154s → 815s",
+    "label": "median round"
+   },
+   {
+    "value": "77% → 0%",
+    "label": "chains converging"
+   },
+   {
+    "value": "0 → 1,060",
+    "label": "hidden sub-reviewer spawns"
+   }
+  ],
+  "ask": {
+   "headline": "One call is open tonight: keep gating the Wave 2a plan, or change the artifact class and gate the code instead?",
+   "note": "Three further owner calls — fast-mode spend, the 2-defect recall loss, and which runtime is authoritative — are queued in the plan below.",
+   "recommendation": "A — build the manifest, gate the CODE",
+   "recommendedBy": "Claude — on the repo's own convergence record, and it is #31's remedy applied to #31's own successor"
+  }
+ },
+ "findings": {
+  "items": [
+   {
+    "title": "ROOT CAUSE — the 'ultra' effort dial, not sol-vs-terra",
+    "confidence": "High",
+    "evidence": "spawn_agent calls by reviewer pair: gpt-5.5@xhigh 0 across 639 threads; gpt-5.6-sol@HIGH 0 across 3 threads; gpt-5.6-sol@ultra 988 across 1,147; gpt-5.6-terra@ultra 72 across 68. The sol@high row is the decisive natural control — same model family, non-ultra effort, zero delegation.",
+    "verdict": "Confirmed"
+   },
+   {
+    "title": "'ultra' silently turns a single-lens gate into a ~3-child ensemble",
+    "confidence": "High",
+    "evidence": "Codex's model cache defines ultra as 'Maximum reasoning with automatic task delegation'. Traces show ~3 auto-spawned reviewers per nominal round (impl_audit / contract_audit / test_audit), created by the MODEL — not by the wrapper. CODEX_GATE_FANOUT and --multi do not bound them.",
+    "verdict": "Confirmed"
+   },
+   {
+    "title": "Children inherit fork_turns=all, so each round re-copies a growing history",
+    "confidence": "Medium",
+    "evidence": "3,508 fork_turns occurrences under sol@ultra, 250 under terra@ultra, 0 under gpt-5.5@xhigh. A Steward round-1 child received ~50.8k user-message chars; the round-5 child received 609k — every packet plus prior root replies. Cost and latency grow superlinearly per round.",
+    "verdict": "Confirmed"
+   },
+   {
+    "title": "Changepoint is 2026-07-09 — the day the pair changed to sol@ultra",
+    "confidence": "High",
+    "evidence": "gpt-5.5@xhigh on every run through Jul 8; sol@ultra from Jul 9; terra@ultra from Aug 10. Effort was xhigh on 100% of gpt-5.5 runs and ultra on 100% of sol/terra runs, so observational data alone cannot split model from effort — the spawn counts above are what split it.",
+    "verdict": "Confirmed"
+   },
+   {
+    "title": "Approve rate collapsed 36% to 0%; blockers per round rose 1 to 13",
+    "confidence": "High",
+    "evidence": "gpt-5.5@xhigh: 657 rounds, median 1 blocker, 35.6% approve. sol@ultra: 215 rounds, median 5, 4.7% approve. terra@ultra: 14 rounds, median 13, 0% approve.",
+    "verdict": "Confirmed"
+   },
+   {
+    "title": "Holds under three independent mode controls — not a work-mix artifact",
+    "confidence": "High",
+    "evidence": "prepr (same task shape throughout): 1.2 to 6.6 mean blockers, 31.5% to 1.2% approve. bundle: 2.1 to 14.2, 27.5% to 0%. phase: 1.2 to 7.8, 34.2% to 0%. Every mode steps the same way at the same date.",
+    "verdict": "Confirmed"
+   },
+   {
+    "title": "Convergence per review chain fell 77% to 19% to 0%",
+    "confidence": "High",
+    "evidence": "282 chains under gpt-5.5 reached approve 77% of the time (median 2 rounds). 54 chains under sol: 19%. 6 chains under terra: 0%. Longest chain rose from 19 rounds to 34.",
+    "verdict": "Confirmed"
+   },
+   {
+    "title": "Severity inflated, not just volume: P1s per round went 0.75 to 9.6",
+    "confidence": "High",
+    "evidence": "Per-round means — P1: 0.75 / 3.24 / 9.57 across the three eras. Decision-class blockers (the ones that cannot be auto-fixed and force an owner stop): 0.04 / 0.32 / 1.64, a 40x rise.",
+    "verdict": "Confirmed"
+   },
+   {
+    "title": "Latency rose 5x — median round 154s to 815s, p90 to 6,623s",
+    "confidence": "Medium",
+    "evidence": "Median wall-clock per round: 154s (gpt-5.5) to 632s (sol) to 815s (terra). This is the literal 'slowing things down'. Duration is a file-mtime proxy, so medians are trustworthy but individual outliers are not.",
+    "verdict": "Confirmed"
+   },
+   {
+    "title": "Fast-mode OFF (Aug 10) is a real but SECONDARY latency contributor",
+    "confidence": "Medium",
+    "evidence": "Shipped v1.1.0 pins CODEX_GATE_FAST=1; the live skill pins 0. But per-round wall time is broadly similar across the fast-ON sol era and fast-OFF terra era (12.5-15.1 min), so hidden fan-out x repeated rounds dominates, not fast mode. Not isolated by existing data.",
+    "verdict": "Open"
+   },
+   {
+    "title": "The 8-round cap is prose only — the wrapper never enforces it",
+    "confidence": "High",
+    "evidence": "CODEX_GATE_MAX_ROUNDS occurs 3x in SKILL.md and 0x in codex-gate.sh. Nothing computes blocker fingerprints, trend, or introduced-by-fix relationships, so a driver can reach 13 rounds against a documented backstop of 8.",
+    "verdict": "Confirmed"
+   },
+   {
+    "title": "Issue #31's 'the code gate converged' claim is factually wrong",
+    "confidence": "High",
+    "evidence": "Cartographer Phase 1 raw verdicts were 15 -> 5 -> 11 -> 5, ALL request_changes. It never reached APPROVE; it stopped on owner judgement with five recorded residuals. The issue should be narrowed to 'code review started lower and produced more executable evidence'.",
+    "verdict": "Confirmed"
+   },
+   {
+    "title": "Issues #30 and #31 describe real doctrine gaps but misattribute the trigger",
+    "confidence": "High",
+    "evidence": "The same doctrine converged 77% of chains before Jul 9. The doctrine gaps (no trend guard, no legal exits, unscoped phase review, no subtraction pressure) are worth closing on their own merits, but they are amplifiers — the trigger is the effort dial.",
+    "verdict": "Confirmed"
+   },
+   {
+    "title": "Two independent minings agree exactly on the bundle-mode split",
+    "confidence": "High",
+    "evidence": "This analysis and the separate Codex investigation, run with different methods, both found 102 pre-Jul-9 bundle verdicts with 28 APPROVE, and 47 post-switch bundle verdicts with 0 APPROVE. Spawn totals differ slightly (988 vs 693) only because of gate-thread vs all-rollout counting.",
+    "verdict": "Confirmed"
+   }
+  ],
+  "sources": [
+   {
+    "label": "Gate verdict rounds mined",
+    "value": "1,002"
+   },
+   {
+    "label": "Codex session rollouts mined",
+    "value": "1,873"
+   },
+   {
+    "label": "spawn_agent calls under ultra",
+    "value": "1,060"
+   },
+   {
+    "label": "spawn_agent calls under xhigh/high",
+    "value": "0"
+   },
+   {
+    "label": "Independent mode controls agreeing",
+    "value": "3 of 3"
+   }
+  ],
+  "summary": "The gate was not made stricter by design — on 2026-07-09 its reviewer moved to 'ultra', an effort tier that automatically spawns ~3 sub-reviewers per round and forks the entire growing history into each. Zero spawns in 639 gpt-5.5@xhigh threads and zero in 3 sol@high threads; 1,060 under ultra. That ensemble finds a fresh crop of real-but-ever-remoter defects every round, which under a zero-blocker approval rule is a loop that cannot terminate. Model family (sol vs terra) is not the discriminator; the effort dial is."
+ },
+ "liveRun": {
+  "what": "Frozen-packet effort sweep, per the Codex investigation's P0 recommendation. ONE frozen copy of the-cartographer bundle (1,861 lines), reviewed by codex-gate under a fresh root thread per cell — no resume across variants, fast mode held OFF throughout so it cannot confound. Core arms: terra@ultra (current default, control), terra@max, terra@xhigh. Optional extension: sol@max, sol@ultra (same-packet model-family comparison) and gpt-5.5@xhigh (the known-good pre-Jul-9 anchor). Per arm we record auto-spawned subagent count and task names, active wall time, token totals, and blocker count by severity and class.",
+  "cost": "One bundle round per arm at the tier the gate already runs daily: 3 arms is roughly 25-45 min, 6 arms roughly 60-100 min (the xhigh/max arms should be materially faster than ultra if the fan-out hypothesis holds). Codex credits only; no Anthropic spend. A phase-review P2 gate is running right now at terra@ultra, so arms are queued behind it rather than run concurrently.",
+  "blastRadius": "Read-only. codex-gate invokes Codex with --sandbox read-only, approval_policy=never and a config-isolated CODEX_HOME, so it cannot write to the repo. Only new directories under ~/.claude/codex-gate/runs/<experiment-session>/ are written. No repo mutation, no branch, no commit, no push, no PR, nothing sent externally, no GitHub issue touched. Model and effort are passed per invocation via env for the experiment only — the committed defaults in codex-gate.sh are NOT edited, so this decides nothing on its own.",
+  "cleanup": "All arms land under one experiment session slug; deleting that one directory removes everything. The running P2 gate is left strictly alone — no shared round paths, no signals sent to it. Verdict JSONs are retained as the evidence base for the remedy decision that follows."
+ },
+ "slides": [
+  {
+   "chapter": "Diagnosis",
+   "kicker": "THE COMPLAINT",
+   "heading": "The gate stopped helping and started costing",
+   "statement": "The gate stopped helping and started costing",
+   "lead": "It turned on 2026-07-09 — and the ultra effort dial is the culprit, not the model.",
+   "figure": {
+    "type": "deltaRow",
+    "items": [
+     {
+      "label": "Approve rate",
+      "from": "36%",
+      "to": "0%",
+      "fromPos": 36,
+      "toPos": 2,
+      "min": "0%",
+      "max": "100%"
+     },
+     {
+      "label": "Blockers / round",
+      "from": "1",
+      "to": "13",
+      "fromPos": 6.7,
+      "toPos": 86.7,
+      "min": "0",
+      "max": "15"
+     },
+     {
+      "label": "Median round",
+      "from": "154s",
+      "to": "815s",
+      "fromPos": 17,
+      "toPos": 90.5,
+      "min": "0s",
+      "max": "900s"
+     },
+     {
+      "label": "Chains converging",
+      "from": "77%",
+      "to": "0%",
+      "fromPos": 77,
+      "toPos": 2,
+      "min": "0%",
+      "max": "100%"
+     }
+    ]
+   },
+   "bullets": [
+    "Your read was right that it began with a model-default change — the date is **2026-07-09**, earlier than the Aug 10 terra switch.",
+    "But the model family is not the culprit. The **`ultra` effort dial** is.",
+    "Two independent investigations plus a 6-arm controlled sweep agree."
+   ]
+  },
+  {
+   "chapter": "Diagnosis",
+   "kicker": "ROOT CAUSE",
+   "heading": "`ultra` silently turns one reviewer into an ensemble",
+   "statement": "One effort setting silently turns a reviewer into an ensemble",
+   "lead": "ultra spawns ~3 sub-reviewers per round, each re-copying the whole growing history.",
+   "figure": {
+    "type": "topo",
+    "root": {
+     "title": "One gate round @ ultra",
+     "note": "“Maximum reasoning with automatic task delegation” — the model spawns, not the wrapper."
+    },
+    "children": [
+     {
+      "title": "impl_audit",
+      "note": "auto-spawned · inherits fork_turns=all"
+     },
+     {
+      "title": "contract_audit",
+      "note": "auto-spawned · re-copies every packet + prior replies"
+     },
+     {
+      "title": "test_audit",
+      "note": "auto-spawned · ~3 is a capped floor, not a ceiling"
+     }
+    ],
+    "aside": {
+     "value": "0 → 1,060",
+     "note": "spawn_agent calls: zero across every xhigh / high thread, 1,060 under ultra. sol@high — same family, non-ultra effort — is the decisive control."
+    }
+   },
+   "bullets": [
+    "Codex's model catalog defines `ultra` as *Maximum reasoning with automatic task delegation*.",
+    "It spawns ~3 sub-reviewers per round, each inheriting `fork_turns=all` — every round re-copies a growing history.",
+    "**Three is a capped floor, not a ceiling:** descendants attempted further nested delegation and hit the global thread limit.",
+    "The wrapper's own fan-out controls (`--multi`, `CODEX_GATE_FANOUT`) do not bound them."
+   ],
+   "blocks": [
+    {
+     "type": "table",
+     "caption": "spawn_agent calls across the whole local corpus",
+     "columns": [
+      "reviewer pair",
+      "threads",
+      "spawn_agent",
+      "approve rate"
+     ],
+     "rows": [
+      [
+       "gpt-5.5 @ xhigh",
+       "639",
+       "0",
+       "35.6%"
+      ],
+      [
+       "gpt-5.6-sol @ high",
+       "3",
+       "0",
+       "—"
+      ],
+      [
+       "gpt-5.6-sol @ ultra",
+       "1,147",
+       "988",
+       "4.7%"
+      ],
+      [
+       "gpt-5.6-terra @ ultra",
+       "68",
+       "72",
+       "0%"
+      ]
+     ]
+    },
+    {
+     "type": "pillRow",
+     "pills": [
+      {
+       "label": "sol@high = 0 spawns — the decisive control",
+       "variant": "ok"
+      },
+      {
+       "label": "same family, non-ultra effort",
+       "variant": ""
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "chapter": "Experiment",
+   "kicker": "LIVE RUN",
+   "heading": "Six arms, one packet — and two contamination events",
+   "statement": "Six arms, one packet — and two contamination events",
+   "lead": "A drift detector hashed the packet before every arm — and it earned its keep.",
+   "bullets": [
+    "`sol` × `terra` crossed with `ultra` / `max` / `xhigh`, fast mode held OFF throughout.",
+    "Ran serially so wall-clock is a clean metric. Read-only; committed defaults untouched.",
+    "A drift detector hashed the packet before every arm — and it earned its keep."
+   ],
+   "callout": "Group A (sol@ultra, sol@max) is NOT controlled: a bundle doc appeared at 21:01 AND diff.mjs was edited at 20:43:27, inside the sol@ultra run — the very file it then flagged at line 201. Group B (4 arms) had zero code changes and is clean. All quantitative claims are Group-B only. Both contamination events are the untracked-sibling defect Wave 2 fixes."
+  },
+  {
+   "chapter": "Experiment",
+   "kicker": "RESULTS",
+   "heading": "Group B — identical packet, four arms",
+   "statement": "Group B — identical packet, four arms",
+   "lead": "Spawns happen only at ultra — same model, same packet: 949s → 543s → 288s.",
+   "figure": {
+    "type": "bar",
+    "max": 1000,
+    "bars": [
+     {
+      "label": "sol @ xhigh",
+      "value": 555,
+      "tags": [
+       {
+        "label": "14 blockers"
+       },
+       {
+        "label": "4 code",
+        "kind": "code"
+       }
+      ]
+     },
+     {
+      "label": "terra @ ultra",
+      "value": 949,
+      "tags": [
+       {
+        "label": "13 blockers"
+       },
+       {
+        "label": "4 code",
+        "kind": "code"
+       },
+       {
+        "label": "3 spawns",
+        "kind": "spawn"
+       }
+      ]
+     },
+     {
+      "label": "terra @ max",
+      "value": 543,
+      "tags": [
+       {
+        "label": "11 blockers"
+       },
+       {
+        "label": "0 code",
+        "kind": "code"
+       }
+      ]
+     },
+     {
+      "label": "terra @ xhigh",
+      "value": 288,
+      "tags": [
+       {
+        "label": "11 blockers"
+       },
+       {
+        "label": "1 code",
+        "kind": "code"
+       }
+      ]
+     }
+    ]
+   },
+   "blocks": [
+    {
+     "type": "table",
+     "columns": [
+      "arm",
+      "blockers",
+      "code defects",
+      "plan-doc",
+      "aux-doc",
+      "spawns",
+      "wall"
+     ],
+     "rows": [
+      [
+       "sol @ xhigh",
+       "14",
+       "4",
+       "7",
+       "3",
+       "0",
+       "555s"
+      ],
+      [
+       "terra @ ultra",
+       "13",
+       "4",
+       "9",
+       "0",
+       "3",
+       "949s"
+      ],
+      [
+       "terra @ max",
+       "11",
+       "0",
+       "10",
+       "1",
+       "0",
+       "543s"
+      ],
+      [
+       "terra @ xhigh",
+       "11",
+       "1",
+       "10",
+       "0",
+       "0",
+       "288s"
+      ]
+     ]
+    },
+    {
+     "type": "rankedRows",
+     "rows": [
+      {
+       "label": "Delegation is exactly ultra-specific",
+       "value": "3 spawns at ultra under BOTH families; 0 at max and xhigh, all 4 arms"
+      },
+      {
+       "label": "Effort drives latency, delegation does not",
+       "value": "949s → 543s → 288s, same model & packet — 3.3x"
+      },
+      {
+       "label": "terra below ultra stops finding code defects",
+       "value": "4 → 0 and 1; it reviews the prose instead"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "chapter": "Experiment",
+   "kicker": "THE SURPRISE",
+   "heading": "Only 4 of ~13 findings are about code at all",
+   "statement": "Only 4 of ~13 findings are about code at all",
+   "lead": "Every fix adds prose, and prose adds surface.",
+   "figure": {
+    "type": "donut",
+    "value": 4,
+    "max": 13,
+    "label": "findings about code"
+   },
+   "bullets": [
+    "The rest are findings about the plan documents — and 0–3 per arm about *handoff* docs.",
+    "`bundle` recursively ingests every `.md` under the initiative, so plan docs plus accumulated handoffs are ~70% of the surface.",
+    "Every fix adds more prose, which adds more surface. That is the non-termination engine.",
+    "**Correction:** lower-effort terra did NOT skip the code — it opened 9–10 `.mjs` files and simply reported fewer findings. A reporting threshold, not blindness."
+   ],
+   "callout": "This is issue #31's Finding A, measured on a controlled packet rather than argued. It also means the dial alone will not restore convergence — volume is a packet-scope problem, and that is Wave 2."
+  },
+  {
+   "chapter": "Decision",
+   "kicker": "ADR-1",
+   "heading": "ADR-1 — `sol`@`xhigh`, as the best provisional tradeoff",
+   "statement": "Turn the effort dial down — the best provisional tradeoff",
+   "lead": "It misses two still-valid defects — that loss is an owner decision, not absorbed quietly.",
+   "figure": {
+    "type": "dotMatrix",
+    "columns": [
+     "sol@xhigh",
+     "terra@ultra"
+    ],
+    "rows": [
+     {
+      "label": "serialize.mjs:74",
+      "sub": "timestamp guard",
+      "marks": [
+       true,
+       true
+      ]
+     },
+     {
+      "label": "validate.mjs:119",
+      "sub": "prototype-backed records",
+      "marks": [
+       true,
+       true
+      ]
+     },
+     {
+      "label": "serialize.mjs:159",
+      "sub": "sorts free-form attrs",
+      "marks": [
+       true,
+       false
+      ]
+     },
+     {
+      "label": "validate.mjs:56",
+      "sub": "parallel typed-edge ID collision",
+      "marks": [
+       true,
+       false
+      ]
+     },
+     {
+      "label": "docs-contract.test.mjs:23",
+      "sub": "guard silently skips",
+      "marks": [
+       false,
+       true
+      ]
+     },
+     {
+      "label": "validate.mjs:391",
+      "sub": "isArrayIndex 4294967295",
+      "marks": [
+       false,
+       true
+      ]
+     }
+    ]
+   },
+   "blocks": [
+    {
+     "type": "table",
+     "caption": "Material code-defect recall — adjudicated, not counted",
+     "columns": [
+      "finding",
+      "sol@xhigh",
+      "terra@ultra",
+      "adjudication"
+     ],
+     "rows": [
+      [
+       "serialize.mjs:74 timestamp guard",
+       "yes",
+       "yes",
+       "material"
+      ],
+      [
+       "validate.mjs:119 prototype-backed records",
+       "yes",
+       "yes",
+       "material"
+      ],
+      [
+       "serialize.mjs:159 sorts free-form attrs",
+       "yes",
+       "—",
+       "material"
+      ],
+      [
+       "validate.mjs:56 parallel typed-edge ID collision",
+       "yes",
+       "—",
+       "material — #31 says it survived 2 plan rounds"
+      ],
+      [
+       "docs-contract.test.mjs:23 guard silently skips",
+       "—",
+       "yes",
+       "material (vacuous pass)"
+      ],
+      [
+       "validate.mjs:391 isArrayIndex 4294967295",
+       "—",
+       "yes",
+       "owner already judged NEGLIGIBLE"
+      ]
+     ]
+    },
+    {
+     "type": "pillRow",
+     "pills": [
+      {
+       "label": "removes hidden delegation",
+       "variant": "ok"
+      },
+      {
+       "label": "1.7x faster than ultra",
+       "variant": "ok"
+      },
+      {
+       "label": "R2 NOT met — misses 2 still-valid defects",
+       "variant": "warn"
+      },
+      {
+       "label": "one sample per arm",
+       "variant": "warn"
+      }
+     ]
+    }
+   ],
+   "callout": "sol@xhigh misses docs-contract.test.mjs:23 and diff.mjs:201 — both still-valid defects. Recall is comparable-but-not-superset, not preserved. That loss is an owner decision, not something this plan should absorb quietly."
+  },
+  {
+   "chapter": "Decision",
+   "kicker": "HONEST LIMITS",
+   "heading": "What this evidence does NOT establish",
+   "statement": "What this evidence does NOT establish",
+   "lead": "One round per arm, single samples — and Wave 1 is not a convergence fix.",
+   "figure": {
+    "type": "ladder",
+    "rows": [
+     {
+      "claim": "hidden delegation",
+      "cause": "the ultra effort tier",
+      "status": "ok",
+      "statusLabel": "settled"
+     },
+     {
+      "claim": "per-round latency",
+      "cause": "model x effort configuration",
+      "status": "ok",
+      "statusLabel": "settled"
+     },
+     {
+      "claim": "finding volume",
+      "cause": "broad recursive packet + zero-blocker policy",
+      "status": "mid",
+      "statusLabel": "indicated"
+     },
+     {
+      "claim": "non-convergence",
+      "cause": "packet scope + lifecycle mechanics",
+      "status": "no",
+      "statusLabel": "not tested"
+     }
+    ]
+   },
+   "bullets": [
+    "**Wave 1 is not a convergence fix.** Blocker volume was 11–15 in every arm regardless of model or effort. It does not close #30 or #31.",
+    "**One round per arm**, single sample, stochastic output — nothing here is variance-controlled.",
+    "**Round-1 only** — never measures rounds-to-convergence.",
+    "**Group A is uncontrolled**; cross-group comparison is invalid."
+   ],
+   "blocks": [
+    {
+     "type": "table",
+     "caption": "Revised causal picture",
+     "columns": [
+      "symptom",
+      "best-supported cause",
+      "settled?"
+     ],
+     "rows": [
+      [
+       "hidden delegation",
+       "the `ultra` effort tier",
+       "yes — 6 arms + 639 historical threads"
+      ],
+      [
+       "per-round latency",
+       "model x effort configuration",
+       "yes — within Group B"
+      ],
+      [
+       "finding volume",
+       "broad recursive packet + zero-blocker policy",
+       "strongly indicated"
+      ],
+      [
+       "non-convergence",
+       "packet scope + lifecycle mechanics",
+       "NOT directly tested"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "chapter": "Plan",
+   "kicker": "GATE ROUND 1",
+   "heading": "The plan bundle was gated and came back BLOCK",
+   "statement": "The plan bundle was gated and came back BLOCK",
+   "lead": "It even caught a real bug in codex-gate itself.",
+   "figure": {
+    "type": "verdictFan",
+    "verdict": "BLOCK",
+    "fates": [
+     {
+      "count": 6,
+      "label": "agent-fixable — folded in",
+      "variant": "ok"
+     },
+     {
+      "count": 3,
+      "label": "decision-class — need you",
+      "variant": "warn"
+     },
+     {
+      "count": 1,
+      "label": "rejected with evidence",
+      "variant": "x"
+     }
+    ]
+   },
+   "bullets": [
+    "9 blockers: 6 agent-fixable (now folded in), 3 decision-class (yours, below).",
+    "It caught a real bug in codex-gate itself: `CODEX_GATE_MODEL=\"\"` cannot fall through to Codex's default, because `${VAR:-…}` treats empty as unset. The documented escape hatch has never worked and the `-n` guard at `:576` is dead code.",
+    "It caught that my fan-out guard covered only `--multi`, missing the `CODEX_GATE_FANOUT=1` path at `codex-gate.sh:1425`.",
+    "One finding I rejected: it said `bundle_sha` was blank — the blank column is `packet_sha`. The provenance gap underneath was real and is closed."
+   ]
+  },
+  {
+   "chapter": "Plan",
+   "kicker": "WAVE 1",
+   "heading": "Five phases, contract altitude, TDD RED-first",
+   "blocks": [
+    {
+     "type": "phaseSteps",
+     "steps": [
+      {
+       "label": "P1 · RED: pin the dials",
+       "status": "pending",
+       "detail": "assert the new pair AND the negative invariant (effort is not a delegating tier); must fail first"
+      },
+      {
+       "label": "P2 · GREEN: change defaults",
+       "status": "pending",
+       "detail": "codex-gate.sh:48,49,55 — env override contract unchanged"
+      },
+      {
+       "label": "P3 · parity surface",
+       "status": "pending",
+       "detail": "report EFFECTIVE dials + script digest; read-only, no Codex call"
+      },
+      {
+       "label": "P4 · refuse --multi + delegating effort",
+       "status": "pending",
+       "detail": "fails closed; prepr/prepr-delta only"
+      },
+      {
+       "label": "P5 · close repo→runtime drift",
+       "status": "pending",
+       "detail": "never auto-overwrites the owner's installed skill"
+      }
+     ]
+    },
+    {
+     "type": "table",
+     "caption": "Why P5 is in Wave 1 and not deferred",
+     "columns": [
+      "copy",
+      "model",
+      "effort",
+      "fast",
+      "sha256"
+     ],
+     "rows": [
+      [
+       "repo plugin/…/codex-gate.sh:48,49,55",
+       "gpt-5.6-sol",
+       "ultra",
+       "1",
+       "d2fbee8c…"
+      ],
+      [
+       "live ~/.claude/skills/…/codex-gate.sh:50,51,57",
+       "gpt-5.6-terra",
+       "ultra",
+       "0",
+       "7ba68432…"
+      ]
+     ]
+    },
+    {
+     "type": "pillRow",
+     "pills": [
+      {
+       "label": "a repo-only fix would not reach your gate at all",
+       "variant": "warn"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "chapter": "Plan",
+   "kicker": "THE ASK",
+   "heading": "Three owner decisions before implementation",
+   "statement": "Three owner decisions before implementation",
+   "lead": "No push, no PR, no commit without your explicit say-so.",
+   "bullets": [
+    "Worktree `fix/gate-effort-dial` off `origin/main`, outside your active clone — nothing in the cartographer tree is touched.",
+    "No push, no PR, no commit without your explicit say-so.",
+    "Phase 5 is blocked until the installation-topology question is answered."
+   ],
+   "blocks": [
+    {
+     "type": "table",
+     "columns": [
+      "#",
+      "open decision",
+      "why it can't be defaulted"
+     ],
+     "rows": [
+      [
+       "ADR-3",
+       "fast mode value (repo says 1, runtime says 0)",
+       "~1.5x faster at ~2.5x credits — a spend call, not an engineering one"
+      ],
+      [
+       "ADR-1",
+       "accept the 2-defect recall loss, or run the confirmatory 2-arm rerun",
+       "losing a real defect class is your risk to take, not mine to absorb"
+      ],
+      [
+       "ADR-5",
+       "which runtime is authoritative: copy / symlink / plugin-managed",
+       "a blind sync can clobber a symlink or be shadowed by a duplicate install"
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "chapter": "Plan",
+   "kicker": "THE DECISION",
+   "heading": "Change the artifact class rather than the scope?",
+   "statement": "Change the artifact class rather than the scope?",
+   "lead": "Wave 2a's plan gate is flat at 4 rounds after two subtractions, and the remaining findings are specification refinements of a specification.",
+   "figure": {
+    "type": "duel",
+    "left": {
+     "label": "Plan chains",
+     "value": "0 / 4",
+     "note": "reached approve"
+    },
+    "right": {
+     "label": "Code chains",
+     "value": "1 / 1",
+     "note": "reached approve"
+    },
+    "flatline": {
+     "label": "Blockers / round",
+     "values": [
+      "8",
+      "7",
+      "8",
+      "7"
+     ]
+    }
+   }
+  }
+ ],
+ "win": {
+  "landed": "Wave 1 unblocked, not 'complete' — the audit's three P1 install defects plus the contract-drift P1 are fixed under an owner-approved redesign (ADR-6: the sync unit is the whole 13-file skill directory, not one script). 7 commits on fix/gate-effort-dial.",
+  "evidence": "Each P1 was reproduced as a RED test first (PASS=335 FAIL=16), then fixed, then I re-ran my ORIGINAL three reproductions on fresh fixtures: plugin-root now REFUSED with 0 files created; directory symlink now REFUSED, classified symlink, target byte-identical; allow-create now writes 13 files and the created install RUNS (exit 0, was exit 2 'missing schema'). Suite 322 -> 351, FAIL=0. Both mutation-proven false-greens now fail under the same mutation that previously passed. Live runtime untouched: 7ba68432 unchanged.",
+  "verified": true,
+  "next": "Awaiting your Codex gate on the branch. Still unmet: R3 (your runtime is unchanged until you run the sync). Still open: ~6 remaining P2s, both GitHub issues, and all of Wave 2."
+ },
+ "decision": {
+  "question": "Wave 2a's plan gate is flat at 4 rounds after two subtractions, and the remaining findings are specification refinements of a specification. Change the artifact class rather than the scope?",
+  "options": [
+   {
+    "label": "A — build the manifest, gate the CODE",
+    "pros": "This is issue #31's own remedy, and we now have direct evidence it works: Wave 1's code diff reached APPROVE in 2 rounds with 9/9 coverage, while every plan bundle in this repo (13, 5, 6, and now 4 rounds) never converged. Most of the open findings are ANSWERED by implementation rather than prose — symlinked manifest topology, path basis, locale-safe whitespace and deterministic ordering all become concrete and testable the moment there is code. The 7 findings become the implementation spec.",
+    "cons": "Deviates from the-foreman's rule that the plan bundle reaches APPROVE before implementation. That is a governance gate, so it is your call to waive, not mine. Risk: building against an unapproved plan can bake in a design flaw that prose review would have caught cheaply — which is exactly what happened with the round model.",
+    "risk": "medium"
+   },
+   {
+    "label": "B — fold round 5 and keep gating the plan",
+    "pros": "Six of seven are agent-fixable and genuinely small; decision-class dropped 3 -> 1, which is the one metric that IS improving.",
+    "cons": "Four rounds of evidence say the count does not fall. Each fix adds prose, and prose adds surface. This is the loop #30 describes, chosen knowingly for a fifth round.",
+    "risk": "high"
+   },
+   {
+    "label": "C — cut to a spike: manifest with no status contract",
+    "pros": "Smallest possible executable slice — read the manifest, use it for both enumeration sites, no bundlePacket, no omitted[], no status shape. Nearly all seven findings are about the STATUS contract, not the selection logic. Ship selection, learn from it, add reporting later.",
+    "cons": "Loses R2 (omission visibility) entirely, which was the whole safety argument for a manifest — a silently smaller packet is worse than a wildcard one.",
+    "risk": "medium"
+   },
+   {
+    "label": "D — stop Wave 2 here for tonight",
+    "pros": "Wave 1 is approved. The round-model diagnosis is captured. The plan-vs-code convergence table is a genuine finding worth writing up on its own.",
+    "cons": "Nothing from Wave 2 lands.",
+    "risk": "low"
+   }
+  ],
+  "recommendation": "A — build the manifest, gate the CODE",
+  "recommendedBy": "Claude — on the repo's own convergence record, and it is #31's remedy applied to #31's own successor"
+ }
+}

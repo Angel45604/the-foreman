@@ -1,0 +1,8 @@
+{
+  "meta": { "title": "Non-consecutive repeated chapters" },
+  "slides": [
+    { "chapter": "A", "heading": "1" },
+    { "chapter": "B", "heading": "2" },
+    { "chapter": "A", "heading": "3" }
+  ]
+}

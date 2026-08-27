@@ -49,11 +49,11 @@ const STAT_VARIANTS = new Set(['ok', 'warn']);
 // (incl. an injection smuggled through `kind`) falls back to the bare `.step`.
 const FLOW_KINDS = new Set(['gate', 'go']);
 
-// Phase-step status allowlist + per-status HTML marker. Anything else (incl. an
-// injection smuggled through `status`) is coerced to 'pending'. The markers are
+// Phase-step status allowlist + per-status sign text. Anything else (incl. an
+// injection smuggled through `status`) is coerced to 'pending'. The signs are
 // static literals I author — never ledger text — so they're safe to emit raw.
 const PHASE_STATUSES = new Set(['done', 'active', 'pending']);
-const PHASE_MARKER = { done: '✓', active: '▸', pending: '○' };
+const STOP_SIGN = { done: 'done ✓', active: 'active ▸', pending: 'pending' };
 const PHASE_MD_MARK = { done: '[x]', active: '[~]', pending: '[ ]' };
 const phaseStatus = (s) => (PHASE_STATUSES.has(s) ? s : 'pending');
 
@@ -68,6 +68,23 @@ const diffOp = (op) => (DIFF_OPS.has(op) ? op : ' ');
 // Pill-variant allowlist (Phase 2d) — only these decorate the markup; anything
 // else (incl. an injection smuggled through `variant`) falls back to bare.
 const PILL_VARIANTS = new Set(['ok', 'warn']);
+
+// bar tag-kind allowlist (Gate Board) — only these pick a `.tag--…` modifier
+// class; anything else (incl. an injection smuggled through `kind`) falls back
+// to the bare `.tag`. Same fail-closed posture as the allowlists above.
+const BAR_TAG_KINDS = new Set(['spawn', 'code']);
+
+// verdictFan fate-variant allowlist (Gate Board) — only these pick a modifier
+// class; anything else (incl. an injection smuggled through `variant`) is
+// coerced to 'x'. Same fail-closed posture as the allowlists above.
+const FATE_VARIANTS = new Set(['ok', 'warn', 'x']);
+const fateVariant = (v) => (FATE_VARIANTS.has(v) ? v : 'x');
+
+// ladder row-status allowlist (Gate Board) — only these pick a `.lrow__v--…`
+// modifier class; anything else (incl. an injection smuggled through `status`)
+// is coerced to 'no'. Same fail-closed posture as the allowlists above.
+const LADDER_STATUS = new Set(['ok', 'mid', 'no']);
+const ladderStatus = (s) => (LADDER_STATUS.has(s) ? s : 'no');
 
 // Sanitize a fenced-code INFO string (the word after the opening fence) to
 // alphanumeric only, capped at 20 chars — so `lang` can never inject a newline,
@@ -99,11 +116,13 @@ const BLOCKS = {
       const rows = Array.isArray(block?.rows) ? block.rows : [];
       const width = columns.length;
       const caption = block?.caption ? `<caption>${esc(block.caption)}</caption>` : '';
-      const thead = `<thead><tr>${columns.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead>`;
+      // Gate Board .t skin — native <table> semantics KEPT (caption, th[scope=col]);
+      // the .gt div-grid form is NOT used for the table block.
+      const thead = `<thead><tr>${columns.map((c) => `<th scope="col">${esc(c)}</th>`).join('')}</tr></thead>`;
       const tbody = `<tbody>${rows
         .map((r) => `<tr>${normalizeRow(r, width).map((cell) => `<td>${esc(cell)}</td>`).join('')}</tr>`)
         .join('')}</tbody>`;
-      return `<div class="scroll"><table>${caption}${thead}${tbody}</table></div>`;
+      return `<div class="scrollx"><table class="t">${caption}${thead}${tbody}</table></div>`;
     },
     md(block) {
       const columns = Array.isArray(block?.columns) ? block.columns : [];
@@ -139,22 +158,25 @@ const BLOCKS = {
   },
 
   // ---- metrics / charts (Phase 2b) ----
-  // SVG safety contract (donut/bar/lineSpark): inline <svg> only, with
+  // SVG safety contract (donut/lineSpark; bar is HTML-only since the Gate Board
+  // restyle): inline <svg> only, with
   // <circle>/<rect>/<line>/<polyline>/<text>/<g> + LITERAL geometry and
   // var(--…) colors. NONE of href/xlink:href/<image>/<use>/<foreignObject>/
   // url(...)/style-url/http(s). Labels go through esc(); EVERY number through
   // safeNum() BEFORE it reaches an attribute. role="img" + an esc'd aria-label.
 
   // { type:'statRow', stats:[{ value:string, label:string, variant?:''|'ok'|'warn' }] }
-  // A row of big-number stat blocks (HTML only — NOT a chart). `value` is a
-  // pre-formatted DISPLAY string ("$0.12", "70/70"); both value + label escaped.
+  // A row of carved stat wells (HTML only — NOT a chart; Gate Board restyle).
+  // `value` is a pre-formatted DISPLAY string ("$0.12", "70/70"); both value +
+  // label escaped. `variant` is allowlisted and only ever PICKS the static
+  // `is-ok`/`is-warn` modifier on the value — never interpolated raw.
   statRow: {
     html(block) {
       const stats = Array.isArray(block?.stats) ? block.stats : [];
-      return `<div class="statrow">${stats
+      return `<div class="wells">${stats
         .map((s) => {
-          const variant = STAT_VARIANTS.has(s?.variant) ? ` ${s.variant}` : '';
-          return `<div class="stat${variant}"><span class="stat-value">${esc(s?.value)}</span><span class="stat-label">${esc(s?.label)}</span></div>`;
+          const variant = STAT_VARIANTS.has(s?.variant) ? ` is-${s.variant}` : '';
+          return `<div class="well"><span class="well__v${variant}">${esc(s?.value)}</span><span class="well__l">${esc(s?.label)}</span></div>`;
         })
         .join('')}</div>`;
     },
@@ -165,37 +187,53 @@ const BLOCKS = {
   },
 
   // { type:'donut', value:number, max?:number (default 100), label?:string }
-  // A ring: a full-circle track + an arc drawn via stroke-dasharray for
-  // safeNum(value,{min:0,max})/max. Centered text shows the COMPUTED percentage
-  // (not ledger text) + an optional esc'd label.
+  // The tick-ring dial (Gate Board restyle — HTML, no SVG): a ring of `.ring__t`
+  // ticks (lit `.on` vs unlit) around a raised `.ring__c` center disc. The .ring
+  // carries role="img" + an esc'd aria-label stating the COMPUTED value / max
+  // (+ label); the ticks are aria-hidden decoration. Center shows `value / max`
+  // (or `pct%` when max is 100) + the esc'd label.
+  //
+  // Tick-ring numeric contract: tick/lit REPETITION COUNTS are guard-derived
+  // integers ONLY — never ledger values. max=0 (or clamped-negative) yields an
+  // all-off 13-tick ring with NO division; ticks always land in [4, 24].
   donut: {
     html(block) {
       const max = safeNum(block?.max ?? 100, { min: 0, fallback: 100 });
       const value = safeNum(block?.value, { min: 0, max: max > 0 ? max : 0, fallback: 0 });
       const pct = max > 0 ? Math.round((value / max) * 100) : 0;
-      // geometry: a 120x120 viewBox, r=52, stroke=12 (fits inside the box).
-      const r = 52;
-      const circ = round(2 * Math.PI * r); // circumference (literal-ish; derived from a literal r)
-      const arc = max > 0 ? round((value / max) * circ) : 0; // <= circ by construction
-      const label = block?.label ? `<text x="60" y="78" text-anchor="middle" class="donut-label">${esc(block.label)}</text>` : '';
-      const aria = esc(`${pct}%${block?.label ? ` ${block.label}` : ''}`);
-      return `<div class="donutwrap"><svg viewBox="0 0 120 120" width="120" height="120" role="img" aria-label="${aria}">`
-        + `<circle cx="60" cy="60" r="${r}" fill="none" stroke="var(--line)" stroke-width="12"/>`
-        + `<circle cx="60" cy="60" r="${r}" fill="none" stroke="var(--accent)" stroke-width="12" stroke-linecap="round" stroke-dasharray="${arc} ${circ}" transform="rotate(-90 60 60)"/>`
-        + `<text x="60" y="${block?.label ? 58 : 66}" text-anchor="middle" class="donut-pct">${pct}%</text>`
-        + `${label}</svg></div>`;
+      const ticks = max > 0 ? Math.min(24, Math.max(4, Math.round(max <= 24 ? max : 24))) : 13; // positive integer
+      const lit = max > 0 ? Math.round((value / max) * ticks) : 0; // 0 when max is 0 — never a division
+      const tickHtml = Array.from({ length: ticks }, (_, i) =>
+        `<i class="ring__t${i < lit ? ' on' : ''}" aria-hidden="true" style="--r:${round((i * 360) / ticks)}deg"></i>`).join('');
+      const center = max === 100
+        ? `<b><em>${pct}</em><small>%</small></b>`
+        : `<b><em>${esc(value)}</em><small> / ${esc(max)}</small></b>`;
+      const label = block?.label ? `<span>${esc(block.label)}</span>` : '';
+      const aria = esc(`${value} / ${max}${block?.label ? `, ${block.label}` : ''}`);
+      return `<div class="ringwrap"><div class="ring" role="img" aria-label="${aria}">${tickHtml}`
+        + `<div class="ring__c">${center}${label}</div></div></div>`;
     },
+    // MIRRORS the ring center display (the only md() change in the Gate Board
+    // reskin of the legacy blocks): `**pct%**` when max is 100, else
+    // `**value / max** (pct%)` — zero max yields `**0 / 0** (0%)`, never NaN.
     md(block) {
       const max = safeNum(block?.max ?? 100, { min: 0, fallback: 100 });
       const value = safeNum(block?.value, { min: 0, max: max > 0 ? max : 0, fallback: 0 });
       const pct = max > 0 ? Math.round((value / max) * 100) : 0;
       const label = block?.label ? ` — ${mdEsc(block.label)}` : '';
-      return `**${pct}%**${label}`;
+      return max === 100
+        ? `**${pct}%**${label}`
+        : `**${mdEsc(value)} / ${mdEsc(max)}** (${pct}%)${label}`;
     },
   },
 
-  // { type:'bar', bars:[{ label:string, value:number }], max?:number }
-  // Horizontal bars; width ∝ safeNum(value,{min:0}) / (max || largest value || 1).
+  // { type:'bar', bars:[{ label:string, value:number, tags?:[{label, kind?:'spawn'|'code'}] }], max?:number }
+  // The carved-track wall-bar figure (Gate Board restyle — HTML, no SVG): one
+  // `.brow` per bar with a `.brow__rail` track whose fill/end-marker widths are
+  // driven by a `--w` custom prop = round(min(100, value/denom*100)), denom per
+  // the ORIGINAL rules (declared max > largest value > 1). Optional per-bar
+  // `tags` render as `.tag` chips; `kind` is strictly allowlisted (BAR_TAG_KINDS)
+  // and only ever PICKS a static modifier class — never interpolated raw.
   bar: {
     html(block) {
       const bars = Array.isArray(block?.bars) ? block.bars : [];
@@ -203,33 +241,28 @@ const BLOCKS = {
       const declaredMax = block?.max != null ? safeNum(block.max, { min: 0 }) : 0;
       const largest = values.reduce((m, v) => (v > m ? v : m), 0);
       const denom = declaredMax > 0 ? declaredMax : largest > 0 ? largest : 1; // never 0
-      // layout: a 320-wide viewBox; the track for each bar is TRACK wide.
-      const TRACK = 100; // bar fills 0..TRACK user-units (the test pins this)
-      const labelW = 96;
-      const rowH = 26;
-      const W = labelW + TRACK + 80; // room for the value text after the bar
-      const H = Math.max(rowH, bars.length * rowH);
-      const aria = esc(`bar chart, ${bars.length} bar${bars.length === 1 ? '' : 's'}`);
-      const rows = bars
-        .map((b, i) => {
-          const v = values[i];
-          const w = round(Math.min(TRACK, (v / denom) * TRACK)); // clamped <= TRACK
-          const y = i * rowH;
-          const cy = round(y + rowH / 2);
-          // Display the SAFE numeric value — never the raw ledger value (which
-          // could be "NaN"/"Infinity"). esc() is belt-and-suspenders over a number.
-          return `<text x="0" y="${round(cy + 4)}" class="bar-label">${esc(b?.label)}</text>`
-            + `<rect x="${labelW}" y="${round(y + 5)}" width="${TRACK}" height="14" rx="4" fill="var(--line)"/>`
-            + `<rect x="${labelW}" y="${round(y + 5)}" width="${w}" height="14" rx="4" fill="var(--accent)"/>`
-            + `<text x="${labelW + TRACK + 8}" y="${round(cy + 4)}" class="bar-value">${esc(v)}</text>`;
-        })
-        .join('');
-      return `<div class="barwrap"><svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="${aria}">${rows}</svg></div>`;
+      const rows = bars.map((b, i) => {
+        const v = values[i];
+        const w = round(Math.min(100, (v / denom) * 100));
+        const tags = (Array.isArray(b?.tags) ? b.tags : []).map((t) => {
+          const kind = BAR_TAG_KINDS.has(t?.kind) ? ` tag--${t.kind}` : '';
+          return `<span class="tag${kind}"><i></i>${esc(t?.label)}</span>`;
+        }).join('');
+        // Display the SAFE numeric value — never the raw ledger value (which
+        // could be "NaN"/"Infinity"). esc() is belt-and-suspenders over a number.
+        return `<div class="brow"><div class="brow__l"><b>${esc(b?.label)}</b>${tags ? `<span class="brow__tags">${tags}</span>` : ''}</div>`
+          + `<div class="brow__bar"><div class="brow__rail"><i style="--w:${w}"></i><em style="--w:${w}"></em></div>`
+          + `<span class="brow__v">${esc(v)}</span></div></div>`;
+      }).join('');
+      return `<div class="bars">${rows}</div>`;
     },
     md(block) {
       const bars = Array.isArray(block?.bars) ? block.bars : [];
-      // safeNum the value so the twin never emits "NaN"/"Infinity" either.
-      return bars.map((b) => `- ${mdEsc(b?.label)}: ${mdEsc(safeNum(b?.value, { min: 0 }))}`).join('\n');
+      // safeNum the value so the twin never emits "NaN"/"Infinity" either. The
+      // ` [tag1, tag2]` brackets are static literals I author; only each tag
+      // label is ledger-derived, so only it needs mdEsc. Untagged bars emit a
+      // line byte-identical to the pre-restyle twin.
+      return bars.map((b) => `- ${mdEsc(b?.label)}: ${mdEsc(safeNum(b?.value, { min: 0 }))}${Array.isArray(b?.tags) && b.tags.length ? ` [${b.tags.map((t) => mdEsc(t?.label)).join(', ')}]` : ''}`).join('\n');
     },
   },
 
@@ -313,21 +346,34 @@ const BLOCKS = {
   },
 
   // { type:'phaseSteps', steps:[{ label:string, status?:'done'|'active'|'pending', detail?:string }] }
-  // Phase-progression chips. `status` is allowlisted (default/unknown => pending)
-  // and only ever indexes the static marker maps + emits an allowlisted class.
-  // Optional `detail` renders a muted sub-line under the label (HTML: a .phase-detail
-  // <span>; twin: ` — detail` after the label). Absent detail => byte-identical to before.
+  // The stops track (Gate Board restyle): a native `<ol class="stops">` of
+  // `<li class="stop">` items — list semantics preserved. `status` is allowlisted
+  // (default/unknown => pending) and only ever indexes the static STOP_SIGN map,
+  // rendered as the `.stop__sign` text. Optional `detail` renders as the body
+  // <p>; absent detail => byte-identical stop. The `.stop__mark` spine dot is
+  // aria-hidden decoration; `.stop__n` is the engine-derived 1-based step index.
   phaseSteps: {
     html(block) {
       const steps = Array.isArray(block?.steps) ? block.steps : [];
-      const chips = steps
-        .map((s) => {
+      // Desktop column count rides a custom prop (style.css sizes the grid
+      // columns and the marker-center rail insets from it — the layout fits ANY
+      // step count, not just the reference's five). The value is an
+      // ENGINE-DERIVED integer only — steps.length is a non-negative array
+      // length, floored at 1 so the CSS division can never see 0 — never
+      // ledger text. A sub-2-step track gets .stops--solo, hiding the rail
+      // (it needs two marker centers to span).
+      const cols = Math.max(1, steps.length);
+      const solo = steps.length < 2 ? ' stops--solo' : '';
+      const items = steps
+        .map((s, i) => {
           const status = phaseStatus(s?.status); // always one of the allowlist
-          const detail = s?.detail != null && s.detail !== '' ? `<span class="phase-detail">${esc(s.detail)}</span>` : '';
-          return `<span class="phasestep ${status}"><span class="phase-mark">${PHASE_MARKER[status]}</span>${esc(s?.label)}${detail}</span>`;
+          const detail = s?.detail != null && s.detail !== '' ? `<p>${esc(s.detail)}</p>` : '';
+          return `<li class="stop"><span class="stop__mark" aria-hidden="true"><i></i><u></u></span>`
+            + `<div class="stop__body"><span class="stop__n">${i + 1}</span><b>${esc(s?.label)}</b>${detail}`
+            + `<span class="stop__sign">${STOP_SIGN[status]}</span></div></li>`;
         })
         .join('');
-      return `<div class="phaseflow">${chips}</div>`;
+      return `<ol class="stops${solo}" style="--stopcols:${cols}">${items}</ol>`;
     },
     md(block) {
       const steps = Array.isArray(block?.steps) ? block.steps : [];
@@ -389,7 +435,8 @@ const BLOCKS = {
   },
 
   // { type:'pillRow', pills:[{ label:string, variant?:''|'ok'|'warn' }] }
-  // A row of pill chips reusing the EXISTING .pill / .pill.ok / .pill.warn styles.
+  // A row of pill chips in the Gate Board BEM form: .pill / .pill--ok /
+  // .pill--warn with an aria-hidden <i> dot (the label text carries the meaning).
   // `variant` is allowlisted (else bare). HTML escapes the label. Twin: a SINGLE
   // inert line of mdEsc'd labels (single-line => mdEsc is correct, and the blanket
   // no-raw-HTML twin assertion applies here, unlike code/diff).
@@ -398,8 +445,8 @@ const BLOCKS = {
       const pills = Array.isArray(block?.pills) ? block.pills : [];
       const inner = pills
         .map((p) => {
-          const variant = PILL_VARIANTS.has(p?.variant) ? ` ${p.variant}` : '';
-          return `<span class="pill${variant}">${esc(p?.label)}</span>`;
+          const variant = PILL_VARIANTS.has(p?.variant) ? ` pill--${p.variant}` : '';
+          return `<span class="pill${variant}"><i aria-hidden="true"></i>${esc(p?.label)}</span>`;
         })
         .join('');
       return `<div class="pillrow">${inner}</div>`;
@@ -411,10 +458,180 @@ const BLOCKS = {
       return pills.map((p) => `\`${mdEsc(p?.label)}\``).join(' · ');
     },
   },
+
+  // ---- Gate Board figure blocks ----
+
+  // { type:'topo', root:{title,note?}, children:[{title,note?}], aside?:{value,note?} }
+  topo: {
+    html(block) {
+      const root = block?.root ?? {};
+      const kids = Array.isArray(block?.children) ? block.children : [];
+      const kidHtml = kids.map((k) =>
+        `<div class="topo__kid"><strong>${esc(k?.title)}</strong><span>${esc(k?.note ?? '')}</span></div>`).join('');
+      const aside = block?.aside
+        ? `<div class="topo__aside"><b>${esc(block.aside.value)}</b><p>${esc(block.aside.note ?? '')}</p></div>` : '';
+      return `<div class="topo"><div class="topo__root"><b>${esc(root.title)}</b><span>${esc(root.note ?? '')}</span></div>`
+        + `<div class="topo__link" aria-hidden="true"></div><div class="topo__kids">${kidHtml}</div>${aside}</div>`;
+    },
+    md(block) {
+      const root = block?.root ?? {};
+      const kids = Array.isArray(block?.children) ? block.children : [];
+      const lines = [`**${mdEsc(root.title)}**${root.note ? ` — ${mdEsc(root.note)}` : ''}`];
+      for (const k of kids) lines.push(`  - ${mdEsc(k?.title)}${k?.note ? ` — ${mdEsc(k.note)}` : ''}`);
+      if (block?.aside) lines.push(`  - **${mdEsc(block.aside.value)}**${block.aside.note ? ` — ${mdEsc(block.aside.note)}` : ''}`);
+      return lines.join('\n');
+    },
+  },
+
+  // { type:'deltaRow', items:[{label, from, to, fromPos?, toPos?, min?, max?}] } — from/to and
+  // min/max are DISPLAY strings; fromPos/toPos are 0..100 track positions (safeNum-clamped;
+  // non-finite => fallback 0 per the existing safeNum contract).
+  deltaRow: {
+    html(block) {
+      const items = Array.isArray(block?.items) ? block.items : [];
+      const rows = items.map((it) => {
+        const a = round(safeNum(it?.fromPos, { min: 0, max: 100, fallback: 0 }));
+        const b = round(safeNum(it?.toPos, { min: 0, max: 100, fallback: 0 }));
+        const ends = (it?.min != null || it?.max != null)
+          ? `<div class="delta__f"><span>${esc(it?.min ?? '')}</span><span>${esc(it?.max ?? '')}</span></div>` : '';
+        return `<div class="delta"><span class="delta__k">${esc(it?.label)}</span>`
+          + `<span class="delta__v">${esc(it?.from)}<small>→</small><span class="to">${esc(it?.to)}</span></span>`
+          + `<div class="track" aria-hidden="true" style="--a:${a};--b:${b}"><b></b><i class="was"></i><i class="now"></i></div>${ends}</div>`;
+      }).join('');
+      return `<div class="deltas">${rows}</div>`;
+    },
+    md(block) {
+      const items = Array.isArray(block?.items) ? block.items : [];
+      return items.map((it) => {
+        const ends = (it?.min != null || it?.max != null) ? ` (scale ${mdEsc(it?.min ?? '')}–${mdEsc(it?.max ?? '')})` : '';
+        return `- **${mdEsc(it?.label)}**: ${mdEsc(it?.from)} → ${mdEsc(it?.to)}${ends}`;
+      }).join('\n');
+    },
+  },
+
+  // { type:'duel', left:{label,value,note?}, right:{label,value,note?}, flatline?:{label, values:[string]} }
+  duel: {
+    html(block) {
+      const lane = (s) => `<div class="duel__lane"><span class="duel__k">${esc(s?.label)}</span>`
+        + `<span class="duel__n">${esc(s?.value)}</span>${s?.note ? `<p>${esc(s.note)}</p>` : ''}</div>`;
+      const fl = block?.flatline && Array.isArray(block.flatline.values)
+        ? `<div class="flatline"><b>${esc(block.flatline.label)}</b>${block.flatline.values
+            .map((v) => `<i>${esc(v)}</i>`).join('<u aria-hidden="true"></u>')}</div>` : '';
+      return `<div class="duel">${lane(block?.left)}<div class="duel__mid" aria-hidden="true"><u></u><span>VS</span><u></u></div>${lane(block?.right)}</div>${fl}`;
+    },
+    md(block) {
+      const s = (x) => `**${mdEsc(x?.value)}** ${mdEsc(x?.label)}${x?.note ? ` (${mdEsc(x.note)})` : ''}`;
+      const fl = block?.flatline && Array.isArray(block.flatline.values)
+        ? `\n${mdEsc(block.flatline.label)}: ${block.flatline.values.map((v) => mdEsc(v)).join(' — ')}` : '';
+      return `${s(block?.left)} vs ${s(block?.right)}${fl}`;
+    },
+  },
+
+  // { type:'verdictFan', verdict:string, fates:[{count:number, label, variant?:'ok'|'warn'|'x'}] }
+  // Fan geometry derives from the fate count (prepr blocker): the .verdict
+  // carries --fatecols:N (N = fates.length guarded into 1..6; style.css sizes
+  // the desktop fates grid and the crossbar insets from it) and the connector
+  // <i> set is BUILT from N — the trunk, a crossbar spanning first-to-last
+  // drop center (omitted when there is only one center to span), and one drop
+  // line per column at (i + 0.5)/N via a per-element --fx index. Every emitted
+  // number is ENGINE-DERIVED (array length / loop index), never ledger text —
+  // the same discipline as phaseSteps' --stopcols.
+  verdictFan: {
+    html(block) {
+      const all = Array.isArray(block?.fates) ? block.fates : [];
+      // Fate cap (prepr blocker): --fatecols and the drop set are guarded into
+      // 1..6, so a 7th+ fate used to render a card with NO branch (it wrapped
+      // beneath the fan). The RENDERED cells therefore cap at 6: the first
+      // five render as-is and a sixth AGGREGATE cell absorbs the rest — count
+      // = the safeNum'd sum of the remaining counts, label '+N more' (N is the
+      // engine-derived remainder count, never ledger text), variant 'x' — so
+      // one branch per rendered fate ALWAYS holds. The twin (md below) still
+      // lists every fate; the cap is documented in ledger.schema.md.
+      const fates = all.length > 6
+        ? [...all.slice(0, 5), {
+            count: all.slice(5).reduce((sum, f) => sum + safeNum(f?.count, { min: 0, fallback: 0 }), 0),
+            label: `+${all.length - 5} more`,
+            variant: 'x',
+          }]
+        : all;
+      const cells = fates.map((f) => {
+        const v = fateVariant(f?.variant);
+        const n = Math.round(safeNum(f?.count, { min: 0, max: 24, fallback: 0 }));
+        return `<div class="fate fate--${v}"><span class="fate__dots" aria-hidden="true">${'<i></i>'.repeat(n)}</span>`
+          + `<b>${esc(safeNum(f?.count, { min: 0, fallback: 0 }))}</b><span>${esc(f?.label)}</span></div>`;
+      }).join('');
+      const cols = Math.min(6, Math.max(1, fates.length));
+      const drops = Array.from({ length: cols }, (_, i) => `<i class="fan__d" style="--fx:${i}"></i>`).join('');
+      const fan = `<div class="fan" aria-hidden="true"><i class="fan__t"></i>${cols > 1 ? '<i class="fan__x"></i>' : ''}${drops}</div>`;
+      return `<div class="verdict" style="--fatecols:${cols}"><span class="verdict__chip">${esc(block?.verdict)}</span>`
+        + `${fan}<div class="fates">${cells}</div></div>`;
+    },
+    md(block) {
+      const fates = Array.isArray(block?.fates) ? block.fates : [];
+      return [`**${mdEsc(block?.verdict)}**`,
+        ...fates.map((f) => `- ${mdEsc(safeNum(f?.count, { min: 0, fallback: 0 }))} — ${mdEsc(f?.label)}`)].join('\n');
+    },
+  },
+
+  // { type:'dotMatrix', columns:[string], rows:[{label, sub?, marks:[boolean]}] }
+  // A11y (Task 4b hardening): the .mx grid carries ARIA table semantics —
+  // role="table" / role="row" / role="columnheader" / role="rowheader" /
+  // role="cell" — and every mark cell holds the aria-hidden dot PLUS a
+  // visually-hidden `<span class="sr">yes|no</span>` so assistive tech hears
+  // every mark (the yes/no literals are engine-authored, never ledger text).
+  dotMatrix: {
+    html(block) {
+      const cols = Array.isArray(block?.columns) ? block.columns : [];
+      const rows = Array.isArray(block?.rows) ? block.rows : [];
+      const head = `<div class="mx__r mx__r--h" role="row"><span role="columnheader"></span>${cols.map((c) => `<span role="columnheader">${esc(c)}</span>`).join('')}</div>`;
+      const body = rows.map((r) => {
+        const marks = Array.isArray(r?.marks) ? r.marks : [];
+        const dots = cols.map((_, i) => `<span class="mx__d${marks[i] ? '' : ' miss'}" role="cell"><i aria-hidden="true"></i><span class="sr">${marks[i] ? 'yes' : 'no'}</span></span>`).join('');
+        return `<div class="mx__r" role="row"><span class="mx__f" role="rowheader">${esc(r?.label)}${r?.sub ? `<small>${esc(r.sub)}</small>` : ''}</span>${dots}</div>`;
+      }).join('');
+      return `<div class="matrix"><div class="scrollx"><div class="mx" role="table" style="--mxcols:${cols.length}">${head}${body}</div></div></div>`;
+    },
+    md(block) {
+      const cols = Array.isArray(block?.columns) ? block.columns : [];
+      const rows = Array.isArray(block?.rows) ? block.rows : [];
+      const header = `| ${['finding', ...cols.map((c) => mdEsc(c))].join(' | ')} |`;
+      const sep = `| ${['finding', ...cols].map(() => '---').join(' | ')} |`;
+      const body = rows.map((r) => {
+        const marks = Array.isArray(r?.marks) ? r.marks : [];
+        return `| ${mdEsc(r?.label)}${r?.sub ? ` (${mdEsc(r.sub)})` : ''} | ${cols.map((_, i) => (marks[i] ? 'yes' : '—')).join(' | ')} |`;
+      }).join('\n');
+      return [header, sep, body].filter(Boolean).join('\n');
+    },
+  },
+
+  // { type:'ladder', rows:[{claim, cause, status?:'ok'|'mid'|'no', statusLabel}] }
+  ladder: {
+    html(block) {
+      const rows = Array.isArray(block?.rows) ? block.rows : [];
+      return `<div class="ladder">${rows.map((r) => {
+        const st = ladderStatus(r?.status);
+        return `<div class="lrow"><span class="lrow__s">${esc(r?.claim)}</span><i class="lrow__j" aria-hidden="true"></i>`
+          + `<span class="lrow__c">${esc(r?.cause)}</span><span class="lrow__v lrow__v--${st}"><i></i>${esc(r?.statusLabel)}</span></div>`;
+      }).join('')}</div>`;
+    },
+    md(block) {
+      const rows = Array.isArray(block?.rows) ? block.rows : [];
+      return rows.map((r) => `- **${mdEsc(r?.claim)}** ← ${mdEsc(r?.cause)} — ${mdEsc(r?.statusLabel)}`).join('\n');
+    },
+  },
 };
 
 // The closed set — derived from the registry so it can never drift from BLOCKS.
 const BLOCK_TYPES = Object.keys(BLOCKS);
+
+// Prototype-safe registry lookup — the ONE gate both dispatchers ride. A plain
+// BLOCKS[type] resolves inherited Object.prototype keys ('__proto__',
+// 'constructor', 'toString') to truthy non-renderers, skipping the contractual
+// unknown-block throw and escaping as a TypeError instead — which would break
+// the CLI's sanitized unknown-block category and the sweep's classification.
+// Object.hasOwn coerces any type value (undefined included) to a key string,
+// so only a key the registry actually OWNS ever dispatches.
+const blockDef = (type) => (Object.hasOwn(BLOCKS, type) ? BLOCKS[type] : null);
 
 // Render per-slide blocks to HTML. Empty / non-array => ''. An unknown type
 // THROWS (fail-closed — see file header).
@@ -422,7 +639,7 @@ function renderBlocks(blocks) {
   if (!Array.isArray(blocks) || blocks.length === 0) return '';
   return blocks
     .map((block) => {
-      const def = BLOCKS[block?.type];
+      const def = blockDef(block?.type);
       if (!def) throw new Error('unknown block type: ' + block?.type);
       return def.html(block);
     })
@@ -437,7 +654,7 @@ function blocksToMarkdown(blocks) {
   if (!Array.isArray(blocks) || blocks.length === 0) return '';
   return blocks
     .map((block) => {
-      const def = BLOCKS[block?.type];
+      const def = blockDef(block?.type);
       if (!def) throw new Error('unknown block type: ' + block?.type);
       return def.md(block);
     })

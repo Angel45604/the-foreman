@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { toMarkdown } from './markdown.mjs';
 
 const META = { title: 'Run-timing fix', crumb: 'GRAVITY · CIRRA', favicon: '🛠️' };
@@ -30,7 +31,7 @@ test('toMarkdown planDeck emits subtitle, slide section heading, cards, bullets,
     slides: [{ kicker: 'PLAN', heading: 'Exclude approval wait', cards: [{ title: 'Scope', body: '1 file' }], bullets: ['ships clean'], callout: 'render-then-ask' }],
   };
   const md = toMarkdown(ledger, 'planDeck').markdown;
-  assert.match(md, /A gated plan/);
+  assert.match(md, /^\*\*A gated plan\*\*$/m); // the verdict line falls back to meta.subtitle, bold
   assert.match(md, /^## PLAN — Exclude approval wait$/m);
   assert.match(md, /^- \*\*Scope:\*\* 1 file$/m);
   assert.match(md, /^- ships clean$/m);
@@ -47,7 +48,7 @@ test('toMarkdown brief shows Verified status + fields', () => {
   assert.match(md, /\*\*Status:\*\* Verified ✅/);
   assert.match(md, /\*\*What landed:\*\* Excluded wait/);
   assert.match(md, /\*\*Evidence:\*\* 189\/189 green/);
-  assert.match(md, /\*\*The ask \/ next:\*\* PR/);
+  assert.match(md, /^> \*\*The ask:\*\* PR$/m); // win.next drives the effective ask (shared askToMarkdown)
 });
 
 test('toMarkdown brief shows Claimed status when not verified', () => {
@@ -60,15 +61,57 @@ test('toMarkdown decisionCard shows decision, options, recommendation + attribut
   const md = toMarkdown({ meta: META, decision: { question: 'Persist how?', options: [{ label: 'A', pros: 'fast', cons: 'risky', risk: 'low' }], recommendation: 'A', recommendedBy: 'Codex' } }, 'decisionCard').markdown;
   assert.match(md, /\*\*Decision:\*\* Persist how\?/);
   assert.match(md, /^- \*\*Option A\*\* — Pros: fast · Cons: risky · Risk: low$/m);
-  assert.match(md, /\*\*Recommendation:\*\* A \(Codex\)/);
+  // recommendation + attribution serialize EXCLUSIVELY via askToMarkdown (derived ask)
+  assert.match(md, /^> \*\*The ask:\*\* Persist how\?$/m);
+  assert.match(md, /^> \*\*Recommendation:\*\* A$/m);
+  assert.match(md, /^> \(Codex\)$/m);
+  assert.equal((md.match(/\*\*Recommendation:\*\*/g) || []).length, 1); // exactly once
 });
 
-test('toMarkdown liveRun shows what/cost/cleanup + the gate blockquote', () => {
+test('toMarkdown liveRun shows what/cost/cleanup + the authorize ask', () => {
   const md = toMarkdown({ meta: META, liveRun: { what: 'smoke', cost: '$0.12', blastRadius: 'prod write', cleanup: 'purge verified' } }, 'liveRun').markdown;
   assert.match(md, /\*\*What it does:\*\* smoke/);
   assert.match(md, /\*\*Cost \/ blast radius:\*\* \$0\.12 · prod write/);
   assert.match(md, /\*\*Cleanup:\*\* purge verified/);
-  assert.match(md, /^> Live-run gate — confirm cost, blast radius, and cleanup before authorizing\.$/m);
+  assert.match(md, /^> \*\*The ask:\*\* Authorize this live run\?$/m); // the same derived ask the template renders
+  assert.match(md, /^> smoke$/m);                                     // note = firstClause(lr.what)
+});
+
+// ---- prepr blocker: the liveRun twin serializes the synthesized keyStats ----
+// The HTML liveRun synthesizes a cost/blast-radius pair: hero tiles when
+// meta.keyStats is absent, visible stat wells inside the unit when meta.keyStats
+// takes the hero (the both-present rule). The twin mirrors the outcome exactly.
+test('toMarkdown liveRun twin withOUT meta.keyStats: the synthesized pair serializes as the head hero list', () => {
+  const md = toMarkdown({ meta: META, liveRun: { what: 'smoke', cost: '$0.12', blastRadius: 'prod write', cleanup: 'purge verified' } }, 'liveRun').markdown;
+  assert.match(md, /^- \*\*\$0\.12\*\* — cost$/m);
+  assert.match(md, /^- \*\*prod write\*\* — blast radius$/m);
+  assert.ok(md.indexOf('— cost') < md.indexOf('> **The ask:**'), 'derived stats ride the head, before the ask (hero position)');
+  assert.equal((md.match(/— cost$/gm) || []).length, 1, 'the pair serializes exactly once');
+});
+
+test('toMarkdown liveRun twin with BOTH meta.keyStats and the synthesized pair keeps both: hero in head, derived in section', () => {
+  const md = toMarkdown({
+    meta: { ...META, keyStats: [{ value: '9', label: 'hero stat' }] },
+    liveRun: { what: 'smoke', cost: '$0.12', blastRadius: 'prod write', cleanup: 'purge verified' },
+  }, 'liveRun').markdown;
+  assert.match(md, /^- \*\*9\*\* — hero stat$/m);             // hero keyStats serialize in the head…
+  assert.match(md, /^- \*\*\$0\.12\*\* — cost$/m);            // …the synthesized pair within the section
+  assert.match(md, /^- \*\*prod write\*\* — blast radius$/m);
+  assert.ok(md.indexOf('hero stat') < md.indexOf('> **The ask:**'), 'keyStats ride the head, before the ask');
+  assert.ok(md.indexOf('> **The ask:**') < md.indexOf('— cost'), 'derived stats ride the section, after the head');
+  assert.ok(md.indexOf('**Cleanup:**') < md.indexOf('— cost'), 'the pair sits beneath the gate facts (the HTML wells position)');
+  assert.equal((md.match(/— cost$/gm) || []).length, 1, 'the pair serializes exactly once');
+  assert.doesNotMatch(md, /<[a-zA-Z/]/);                      // still no raw HTML tag
+});
+
+test('toMarkdown liveRun twin with meta.keyStats but NO cost/blastRadius: hero list only, no empty section pair', () => {
+  const md = toMarkdown({
+    meta: { ...META, keyStats: [{ value: '9', label: 'hero stat' }] },
+    liveRun: { what: 'smoke', cleanup: 'none' },
+  }, 'liveRun').markdown;
+  assert.match(md, /^- \*\*9\*\* — hero stat$/m);
+  assert.doesNotMatch(md, /— cost$/m);                        // nothing to synthesize => nothing serialized
+  assert.doesNotMatch(md, /— blast radius$/m);
 });
 
 test('toMarkdown throws on an unknown type', () => {
@@ -147,7 +190,7 @@ test('decisionCard renders newline-injected structure inert (no value-spawned he
 test('liveRun renders newline-injected blockquote/structure inert', () => {
   const md = toMarkdown({ meta: META, liveRun: { what: 'ok\n## Pwned\n> spoofed gate', cost: '$1', blastRadius: 'none', cleanup: 'done' } }, 'liveRun').markdown;
   assert.doesNotMatch(md, /^## Pwned$/m);
-  assert.doesNotMatch(md, /^> spoofed gate$/m); // the only blockquote is my static gate line
+  assert.doesNotMatch(md, /^> spoofed gate$/m); // the ask note collapses newlines — no value-spawned blockquote line
 });
 
 test('lone carriage-return (CR) line breaks are collapsed (no CR-spawned structure)', () => {
@@ -221,8 +264,8 @@ test('toMarkdown phaseTracker twin emits the phase checklist + donut + note, no 
   assert.match(md, /^# Run-timing fix$/m);
   assert.match(md, /^- \[x\] Design$/m);   // phaseSteps twin marker
   assert.match(md, /^- \[~\] Build$/m);
-  assert.match(md, /\*\*50%\*\* — phases/); // donut twin
-  assert.match(md, /^> on track$/m);        // note as blockquote
+  assert.match(md, /\*\*1 \/ 2\*\* \(50%\) — phases/); // donut twin mirrors the ring display (max is not 100)
+  assert.match(md, /^> \*\*The ask:\*\* on track$/m); // pt.note drives the effective ask
   assert.doesNotMatch(md, /<[a-zA-Z/]/);    // NO raw HTML tag
 });
 
@@ -238,7 +281,7 @@ test('toMarkdown findings twin emits the finding table + sources + summary, no H
   assert.match(md, /^\| Finding \| Confidence \| Evidence \| Verdict \|$/m);
   assert.match(md, /^\| Cache miss \| High \| log 42 \| Confirmed \|$/m);
   assert.match(md, /^- \*\*app\.log\*\* — 3 hits$/m); // rankedRows sources twin
-  assert.match(md, /^> root cause found$/m);
+  assert.match(md, /^> \*\*The ask:\*\* root cause found$/m); // f.summary drives the effective ask
   assert.doesNotMatch(md, /<[a-zA-Z/]/);
 });
 
@@ -255,7 +298,10 @@ test('toMarkdown comparison twin emits a GitHub table (Option + criteria) + reco
   assert.match(md, /^\| Option \| Cost \| Speed \|$/m);
   assert.match(md, /^\| --- \| --- \| --- \|$/m);
   assert.match(md, /^\| Option A \| low \| fast \|$/m);
-  assert.match(md, /\*\*Recommendation:\*\* Option A \(Codex\)/);
+  // c.recommendation drives the derived ask — serialized only via askToMarkdown
+  assert.match(md, /^> \*\*The ask:\*\* Pick an option$/m);
+  assert.match(md, /^> \*\*Recommendation:\*\* Option A$/m);
+  assert.match(md, /^> \(Codex\)$/m);
   assert.doesNotMatch(md, /<[a-zA-Z/]/);
 });
 
@@ -272,8 +318,44 @@ test('toMarkdown dashboard twin emits stats + chart + rows + ask, no HTML', () =
   assert.match(md, /^- \*\*\$0\.12\*\* — Spend$/m); // statRow twin
   assert.match(md, /\*\*25%\*\* — Used/);            // donut chart twin
   assert.match(md, /^- \*\*Tyler\*\* — \$10$/m);     // rankedRows twin
-  assert.match(md, /^> approve budget\?$/m);
+  assert.match(md, /^> \*\*The ask:\*\* approve budget\?$/m); // d.ask drives the effective ask
   assert.doesNotMatch(md, /<[a-zA-Z/]/);
+});
+
+test('toMarkdown dashboard twin with BOTH meta.keyStats and d.stats keeps both: hero in head, derived in section', () => {
+  const md = toMarkdown({
+    meta: { ...META, keyStats: [{ value: '9', label: 'hero stat' }], },
+    dashboard: {
+      stats: [{ value: '$0.12', label: 'Spend' }],
+      ask: 'approve budget?',
+    },
+  }, 'dashboard').markdown;
+  assert.match(md, /^- \*\*9\*\* — hero stat$/m);          // hero keyStats serialized in the head…
+  assert.match(md, /^- \*\*\$0\.12\*\* — Spend$/m);        // …derived stats within the section
+  assert.ok(md.indexOf('hero stat') < md.indexOf('> **The ask:**'), 'keyStats ride the head, before the ask');
+  assert.ok(md.indexOf('> **The ask:**') < md.indexOf('$0.12'), 'derived stats ride the section, after the head');
+});
+
+// ---- prepr blocker: promoted dashboard stats mirror the HTML hero order ----
+// With no meta.keyStats the HTML promotes d.stats to the HERO tiles — above
+// the ask strip. The twin used to serialize them as the section statRow AFTER
+// the ask, diverging from the HTML's reading order. The promoted stats now
+// ride the head's hero list (before the ask) and the section block is NOT
+// re-serialized — exactly once, the same mirroring liveRun's synthesized pair
+// already follows. The both-present split is pinned unchanged above.
+test('toMarkdown dashboard twin withOUT meta.keyStats: promoted d.stats ride the head, before the ask, exactly once', () => {
+  const md = toMarkdown({
+    meta: META,
+    dashboard: {
+      stats: [{ value: '$0.12', label: 'Spend' }],
+      rows: [{ label: 'Tyler', value: '$10' }],
+      ask: 'approve budget?',
+    },
+  }, 'dashboard').markdown;
+  assert.match(md, /^- \*\*\$0\.12\*\* — Spend$/m);
+  assert.ok(md.indexOf('— Spend') < md.indexOf('> **The ask:**'), 'promoted stats ride the head, before the ask (hero position)');
+  assert.equal((md.match(/— Spend$/gm) || []).length, 1, 'the stats serialize exactly once — never re-serialized as the section block');
+  assert.ok(md.indexOf('> **The ask:**') < md.indexOf('— $10'), 'the section content (rows) still follows the head');
 });
 
 test('toMarkdown dashboard twin FAILS CLOSED on an unknown chart type', () => {
@@ -320,6 +402,23 @@ test('comparison twin OMITS the Notes column when no option has a note', () => {
   assert.match(md, /^\| Option \| Cost \|$/m);
   assert.doesNotMatch(md, /Notes/);
 });
+// twin parity for the ragged-scores + note normalization (same rule as the template)
+test('comparison twin with SHORT scores + a note: criteria cells pad empty, the note lands in the Notes column', () => {
+  const md = toMarkdown({
+    meta: META,
+    comparison: { criteria: ['C1', 'C2'], options: [{ label: 'O', scores: ['s1'], note: 'note-a' }] },
+  }, 'comparison').markdown;
+  assert.match(md, /^\| Option \| C1 \| C2 \| Notes \|$/m);
+  assert.match(md, /^\| O \| s1 \|  \| note-a \|$/m);
+});
+test('comparison twin with OVERLONG scores + a note: extras truncate, the note stays in the Notes column', () => {
+  const md = toMarkdown({
+    meta: META,
+    comparison: { criteria: ['C1'], options: [{ label: 'O', scores: ['s1', 's2-extra', 's3-extra'], note: 'note-a' }] },
+  }, 'comparison').markdown;
+  assert.match(md, /^\| O \| s1 \| note-a \|$/m);
+  assert.doesNotMatch(md, /s2-extra/); // the overflow score never displaces the note
+});
 test('comparison twin escapes a malicious note (inert)', () => {
   const md = toMarkdown({ meta: META, comparison: { criteria: ['C'], options: [{ label: 'O', scores: ['x'], note: INJ3 }] } }, 'comparison').markdown;
   assert.doesNotMatch(md, /<img src=x onerror/);
@@ -327,6 +426,216 @@ test('comparison twin escapes a malicious note (inert)', () => {
 });
 test('dashboard twin escapes injection in a stat value + ask', () => {
   const md = toMarkdown({ meta: META, dashboard: { stats: [{ value: INJ3, label: 'L' }], ask: INJ3 } }, 'dashboard').markdown;
+  assert.doesNotMatch(md, /<img src=x onerror/);
+  assert.match(md, /&lt;img/);
+});
+
+// ---- Task 11: executive summary + statements in the twin (Gate Board parity) ----
+// The twin mirrors EVERY content addition the HTML gained (ADR-003 portable-twin
+// doctrine): verdict/lede/keyStats in the head, ONE shared effectiveAsk
+// (meta.ask ?? derivedAsk — askShape-gated, identical to templates.mjs) serialized
+// EXCLUSIVELY by askToMarkdown, figures (explicit once + fallback never twice),
+// the planDeck `## Your call` decision chapter, and the evidence-base list.
+
+const REF_LEDGER = JSON.parse(readFileSync(new URL('../../../../docs/initiatives/2026-08-26-neumorphic-gate-board/reference-ledger.json', import.meta.url), 'utf8'));
+
+test('planDeck twin: reference ledger gets executive summary + Your call + evidence base', () => {
+  const md = toMarkdown(REF_LEDGER, 'planDeck').markdown;
+  assert.match(md, /^\*\*4 rounds, 8-7-8-7 flat\./m);             // verdict line (subtitle fallback), bold
+  assert.match(md, /^> \*\*The ask:\*\* Wave 2a/m);               // derived from the decision question
+  assert.match(md, /^> \*\*Recommendation:\*\* A — build the manifest, gate the CODE$/m);
+  assert.match(md, /^> \(Claude — on the repo/m);                 // attribution line
+  assert.match(md, /^## Your call$/m);                            // the decision chapter
+  assert.match(md, /^\*\*Decision:\*\*/m);                        // derived ask => the question line stays as evidence
+  for (const l of ['A — build the manifest, gate the CODE', 'B — fold round 5 and keep gating the plan',
+    'C — cut to a spike: manifest with no status contract', 'D — stop Wave 2 here for tonight']) {
+    assert.ok(md.includes(`- **Option ${l}**`), l);               // all four options as evidence
+  }
+  assert.match(md, /^\*\*Evidence base:\*\*$/m);
+  assert.match(md, /^- \*\*1,002\*\* — Gate verdict rounds mined$/m);
+  assert.equal((md.match(/\*\*Recommendation:\*\*/g) || []).length, 1); // serialized ONCE, by askToMarkdown only
+});
+
+test('twin executive summary: verdict, lede, keyStats, meta.ask with recommendation (no note)', () => {
+  const md = toMarkdown({
+    meta: {
+      ...META,
+      verdict: 'Ship it tonight',
+      lede: 'Plain-English summary.',
+      keyStats: [{ value: '12', label: 'files' }, { value: '3', label: 'rounds' }],
+      ask: { headline: 'Approve the change?', recommendation: 'Ship it', recommendedBy: 'Claude' },
+    },
+    slides: [],
+  }, 'planDeck').markdown;
+  assert.match(md, /^\*\*Ship it tonight\*\*$/m);
+  assert.match(md, /^Plain-English summary\.$/m);
+  assert.match(md, /^- \*\*12\*\* — files$/m);
+  assert.match(md, /^- \*\*3\*\* — rounds$/m);
+  assert.match(md, /^> \*\*The ask:\*\* Approve the change\?$/m);
+  assert.match(md, /^> \*\*Recommendation:\*\* Ship it$/m);
+  assert.match(md, /^> \(Claude\)$/m);
+});
+
+test('twin ask fields render independently (attribution without recommendation)', () => {
+  const md = toMarkdown({ meta: { ...META, ask: { headline: 'H', recommendedBy: 'Codex' } }, slides: [] }, 'planDeck').markdown;
+  assert.match(md, /^> \*\*The ask:\*\* H$/m);
+  assert.match(md, /^> \(Codex\)$/m);
+  assert.doesNotMatch(md, /\*\*Recommendation:\*\*/);
+});
+
+test('twin figures: explicit figure serializes once BEFORE slide content; fallback figure once via blocks', () => {
+  const md = toMarkdown({
+    meta: META,
+    slides: [
+      { kicker: 'ONE', heading: 'H1', statement: 'Plain statement wins', lead: 'One-line lead.', bullets: ['b1'],
+        figure: { type: 'statRow', stats: [{ value: '42', label: 'explicit-fig' }] } },
+      { kicker: 'TWO', heading: 'H2', blocks: [{ type: 'bar', bars: [{ label: 'fallback-fig', value: 2 }] }] },
+    ],
+  }, 'planDeck').markdown;
+  assert.match(md, /^## ONE — Plain statement wins$/m);                       // statement overrides heading
+  assert.match(md, /^One-line lead\.$/m);                                     // lead as a paragraph
+  assert.equal((md.match(/- \*\*42\*\* — explicit-fig/g) || []).length, 1);   // explicit figure exactly once
+  assert.ok(md.indexOf('explicit-fig') < md.indexOf('- b1'));                 // figure BEFORE the slide's other content
+  assert.equal((md.match(/- fallback-fig: 2/g) || []).length, 1);             // fallback figure exactly once, never duplicated
+});
+
+test('twin conflict (planDeck): meta.ask WINS — one recommendation line, decision rec only inside option evidence', () => {
+  const md = toMarkdown({
+    meta: { ...META, ask: { headline: 'Owner ask', recommendation: 'Owner rec', recommendedBy: 'Owner' } },
+    slides: [{ kicker: 'K', heading: 'H' }],
+    decision: {
+      question: 'Q?',
+      options: [
+        { label: 'A — x', pros: 'p', cons: 'c', risk: 'low' },
+        { label: 'B — y', pros: 'p2', cons: 'c2', risk: 'high' }],
+      recommendation: 'A — x',
+      recommendedBy: 'Codex',
+    },
+  }, 'planDeck').markdown;
+  assert.match(md, /^> \*\*The ask:\*\* Owner ask$/m);
+  assert.match(md, /^> \*\*Recommendation:\*\* Owner rec$/m);
+  assert.match(md, /^> \(Owner\)$/m);
+  assert.equal((md.match(/\*\*Recommendation:\*\*/g) || []).length, 1); // exactly one — meta.ask's
+  assert.doesNotMatch(md, /Codex/);                                     // the decision's stale attribution nowhere
+  assert.match(md, /^## Your call$/m);
+  assert.doesNotMatch(md, /\*\*Decision:\*\*/);                          // the OVERRIDDEN question is omitted (HTML parity)
+  assert.doesNotMatch(md, /Q\?/);                                        // the stale question appears nowhere
+  assert.equal((md.match(/A — x/g) || []).length, 1);                    // decision rec text ONLY in its option line
+  assert.match(md, /^- \*\*Option A — x\*\* — Pros: p · Cons: c · Risk: low$/m);
+});
+
+test('twin conflict (decisionCard): meta.ask overrides the decision ask identically', () => {
+  const md = toMarkdown({
+    meta: { ...META, ask: { headline: 'Owner ask', recommendation: 'Owner rec' } },
+    decision: { question: 'Q?', options: [{ label: 'A', pros: 'p', cons: 'c', risk: 'low' }], recommendation: 'A', recommendedBy: 'Codex' },
+  }, 'decisionCard').markdown;
+  assert.match(md, /^> \*\*The ask:\*\* Owner ask$/m);
+  assert.match(md, /^> \*\*Recommendation:\*\* Owner rec$/m);
+  assert.equal((md.match(/\*\*Recommendation:\*\*/g) || []).length, 1);
+  assert.doesNotMatch(md, /Codex/);
+  assert.doesNotMatch(md, /\*\*Decision:\*\*/);                          // the overridden question is omitted here too
+  assert.doesNotMatch(md, /Q\?/);
+  assert.match(md, /^- \*\*Option A\*\* — Pros: p · Cons: c · Risk: low$/m); // the options evidence still renders
+});
+
+// The derived case still carries the question line: when the decision IS the
+// effective ask source, **Decision:** stays as the evidence header on BOTH types.
+test('twin derived case (planDeck + decisionCard): the question line rides the evidence as before', () => {
+  const decision = { question: 'Q?', options: [{ label: 'A', pros: 'p', cons: 'c', risk: 'low' }], recommendation: 'A' };
+  const deck = toMarkdown({ meta: META, slides: [], decision }, 'planDeck').markdown;
+  assert.match(deck, /^## Your call$/m);
+  assert.match(deck, /^\*\*Decision:\*\* Q\?$/m);
+  const card = toMarkdown({ meta: META, decision }, 'decisionCard').markdown;
+  assert.match(card, /^\*\*Decision:\*\* Q\?$/m);
+});
+
+// prepr round 1: the twin's askShape mirror also requires a non-empty string
+// headline — {}, {note:'x'} and {headline:''} fall through to the derived ask.
+for (const [label, ask] of [['empty object', {}], ['note-only object', { note: 'x' }], ['empty-string headline', { headline: '' }]]) {
+  test(`twin askShape parity: ${label} meta.ask falls through to the derived decision ask`, () => {
+    const md = toMarkdown({
+      meta: { ...META, ask },
+      decision: { question: 'Q?', options: [], recommendation: 'A', recommendedBy: 'Codex' },
+    }, 'decisionCard').markdown;
+    assert.match(md, /^> \*\*The ask:\*\* Q\?$/m);                     // derived from the decision
+    assert.match(md, /^> \*\*Recommendation:\*\* A$/m);
+    assert.match(md, /^> \(Codex\)$/m);
+    assert.doesNotMatch(md, /^> x$/m);                                 // no orphan note line rides along
+  });
+}
+
+test('twin askShape parity: a malformed meta.ask (plain string) falls through to the derived ask', () => {
+  const md = toMarkdown({
+    meta: { ...META, ask: 'not an object' },
+    decision: { question: 'Q?', options: [], recommendation: 'A', recommendedBy: 'Codex' },
+  }, 'decisionCard').markdown;
+  assert.match(md, /^> \*\*The ask:\*\* Q\?$/m);                         // derived from the decision
+  assert.match(md, /^> \*\*Recommendation:\*\* A$/m);
+  assert.match(md, /^> \(Codex\)$/m);
+});
+
+// ---- prepr blocker 1: the twin's decisionShape mirror — a malformed decision
+// derives NO ask, and an options-less malformed decision serializes NO orphan
+// evidence block; options (when present) still serialize so nothing is lost.
+for (const [label, decision] of [['empty object', {}], ['array', []],
+  ['empty-string question', { question: '' }], ['whitespace question', { question: '  ' }]]) {
+  test(`twin decisionShape: ${label} decision derives NO ask and NO empty Decision block`, () => {
+    const md = toMarkdown({ meta: META, decision }, 'decisionCard').markdown;
+    assert.doesNotMatch(md, /\*\*The ask:\*\*/);             // no derived ask lines
+    assert.doesNotMatch(md, /\*\*Recommendation:\*\*/);
+    assert.doesNotMatch(md, /\*\*Decision:\*\*/);            // no orphan empty evidence block
+  });
+  test(`twin decisionShape parity on planDeck: ${label} decision derives NO ask, NO Your call chapter`, () => {
+    const md = toMarkdown({ meta: META, slides: [], decision }, 'planDeck').markdown;
+    assert.doesNotMatch(md, /\*\*The ask:\*\*/);
+    assert.doesNotMatch(md, /^## Your call$/m);
+    assert.doesNotMatch(md, /\*\*Decision:\*\*/);
+  });
+}
+test('twin options-only decision (decisionCard): options serialize as evidence, no derived ask', () => {
+  const md = toMarkdown({ meta: META,
+    decision: { options: [{ label: 'A', pros: 'p', cons: 'c', risk: 'low' }], recommendation: 'A' } }, 'decisionCard').markdown;
+  assert.doesNotMatch(md, /\*\*The ask:\*\*/);
+  assert.doesNotMatch(md, /\*\*Recommendation:\*\*/);        // rec rides askToMarkdown only — no ask, no line
+  assert.match(md, /^- \*\*Option A\*\* — Pros: p · Cons: c · Risk: low$/m); // options kept
+});
+test('twin options-only decision (planDeck): Decision-headed evidence chapter, never Your call', () => {
+  const md = toMarkdown({ meta: META, slides: [],
+    decision: { options: [{ label: 'A', pros: 'p', cons: 'c', risk: 'low' }] } }, 'planDeck').markdown;
+  assert.doesNotMatch(md, /\*\*The ask:\*\*/);
+  assert.doesNotMatch(md, /^## Your call$/m);                // no ask => the chapter keeps a content label
+  assert.match(md, /^## Decision$/m);
+  assert.match(md, /^- \*\*Option A\*\*/m);
+});
+
+// ---- prepr blocker parity: the twin gates EVERY derived ask through askShape ----
+// The same raw sources that used to blank the board's strip used to serialize a
+// blank/garbage `> **The ask:**` line here. A failing candidate now means NO
+// ask lines at all — identical to the board.
+for (const [type, label, l] of [
+  ['brief', 'whitespace win.next', { meta: META, win: { landed: 'L', verified: true, next: '   ' } }],
+  ['phaseTracker', 'numeric note', { meta: META, phaseTracker: { phases: [{ label: 'P1', status: 'done' }], note: 42 } }],
+  ['findings', 'empty-string summary', { meta: META, findings: { items: [{ title: 'T', confidence: 'High' }], summary: '' } }],
+  ['dashboard', 'object ask', { meta: META, dashboard: { stats: [{ value: '1', label: 'x' }], ask: {} } }],
+]) {
+  test(`twin ${type} with a ${label}: the derived ask fails askShape — no ask lines serialize`, () => {
+    const md = toMarkdown(l, type).markdown;
+    assert.doesNotMatch(md, /\*\*The ask:\*\*/);
+    assert.doesNotMatch(md, /^> /m);        // no orphan blockquote ask fragment rides along
+  });
+}
+
+test('twin escapes injection in verdict/lede/keyStats/ask fields', () => {
+  const md = toMarkdown({
+    meta: {
+      ...META,
+      verdict: INJ,
+      lede: INJ,
+      keyStats: [{ value: INJ, label: INJ }],
+      ask: { headline: INJ, note: INJ, recommendation: INJ, recommendedBy: INJ },
+    },
+    slides: [],
+  }, 'planDeck').markdown;
   assert.doesNotMatch(md, /<img src=x onerror/);
   assert.match(md, /&lt;img/);
 });

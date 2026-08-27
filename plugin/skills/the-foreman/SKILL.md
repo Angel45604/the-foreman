@@ -1,11 +1,11 @@
 ---
 name: the-foreman
-description: Use at the START of any development work — beginning a feature, resuming an in-flight initiative, reacting to a plan/deck, or stopping at a gate. Trigger on "start a new feature", "let's build X", "pick up where we left off", "drive a feature idea→shipped", "stop at a gate", "render a decision/live-run brief", or when about to plan, dispatch implementer subagents, or render a brief.
+description: Use at the START of any development work — beginning a feature, resuming an in-flight initiative, reacting to a plan/board, or stopping at a gate. Trigger on "start a new feature", "let's build X", "pick up where we left off", "drive a feature idea→shipped", "stop at a gate", "render a decision/live-run brief", or when about to plan, dispatch implementer subagents, or render a brief.
 ---
 
 # the-foreman
 
-Drop into Angel's development methodology and surface progress as MindCloud-branded
+Drop into Angel's development methodology and surface progress as neumorphic Gate Board
 Artifacts. This skill owns the **standing posture** + onboarding read-order (§1), **entry
 detection** (fresh vs resume, §2), the fail-closed **Stage-0 preflight** (§3), the **Artifact
 engine** (render a durable ledger → publish, §4), the **lifecycle conductor** (§6), the
@@ -52,7 +52,7 @@ turn* — not describe it, not approximate it, not defer it.
    render-then-ask (§7) to "when it returns". If the bundle files are not on disk yet, **write them
    first, then gate** — "there is no bundle dir to point at" is not a reason to skip or substitute.
 3. **A hard gate is render → surface → `AskUserQuestion` — never a conversational ask.** When the user
-   reacts to a plan/deck ("approve?", "how far should I implement?", "proceed?", "looks good") you ARE
+   reacts to a plan/board ("approve?", "how far should I implement?", "proceed?", "looks good") you ARE
    at the **plan-approval hard gate** (§7): render the planDeck, **surface** it, and **block on a
    structured `AskUserQuestion`**. A prose "say the word / which should I start?" is NOT the gate; never
    "offer" a gate as optional. A missing **publish** tool only swaps URL → local path / Chrome tab and
@@ -162,7 +162,7 @@ with no deny list yet, the preflight fires by design — that IS the one-time se
 
 ## §4 — Artifact engine (render from ledger → publish)
 
-Surface plans and progress as MindCloud-styled, self-contained, secret-safe Artifacts. The state
+Surface plans and progress as neumorphic Gate Board, self-contained, secret-safe Artifacts. The state
 of truth is a durable JSON **ledger**; the hosted Artifact is a *deploy target* regenerated from
 it (ADR-003), so re-rendering to the same path keeps the same URL.
 
@@ -187,18 +187,40 @@ still covers it.)
 node <skill-dir>/references/render.mjs <ledgerPath> <type> <outPath>
 ```
 
-Gate types: `planDeck` (the full plan deck, at the plan gate) · `brief` (win/pause: what landed +
+Gate types: `planDeck` (the full plan board, at the plan gate) · `brief` (win/pause: what landed +
 evidence + verified-vs-claimed + the ask) · `decisionCard` (options + pros/cons/risk + attributed
 recommendation) · `liveRun` (what it does + cost/blast-radius + cleanup proof, before the live-run
 gate). Plus four **render-only composite types** that compose the content blocks: `phaseTracker`
-(phase progress — phaseSteps + a progress donut) · `findings` (a findings table + sources + summary)
-· `comparison` (an options × criteria scored matrix) · `dashboard` (stat blocks + a chart + ranked
-rows). `planDeck` slides may also carry a rich **`blocks[]`** array (tables, ranked rows, stat blocks,
-donut/bar/line charts, gate-flow, phase steps, code/diff, pills) — and the multi-slide deck gains a
-top-left **chapters navigator** (hover/click index; `slides[].chapter` groups consecutive slides into
-themes). The full render catalog + every block/type ledger shape live in `references/ledger.schema.md`
-(and `gate-contract.mjs --print`). It inlines the style + slide-engine into one CSP-safe page, **also
-writes the portable Markdown twin** (`<name>.md`, step 4), and prints `{outPath, bytes, mdPath, mdBytes}`.
+(phase progress — the stops track + a progress dial) · `findings` (a findings table + sources +
+summary) · `comparison` (an options × criteria scored matrix) · `dashboard` (stat wells + a chart +
+ranked rows). Every type renders the **neumorphic Gate Board**: ONE scrolling verdict-first page —
+a sticky chapter rail (`slides[].chapter` groups consecutive slides into rail-addressable sections),
+a verdict hero (`meta.verdict` + `meta.lede` + `meta.keyStats` tiles), the ask strip (an explicit
+`meta.ask` wins over any derived ask), and per-unit plain-`statement` headlines with one dominant
+**`figure`** up top and the verbatim evidence in a collapsed drawer. Slides may carry a rich
+**`blocks[]`** array (tables, ranked rows, stat wells, dial/bar/line charts, gate-flow, the stops
+track, code/diff, pills — plus the six figure blocks `topo`, `deltaRow`, `duel`, `verdictFan`,
+`dotMatrix`, `ladder`). The full render catalog + every block/type ledger shape live in
+`references/ledger.schema.md` (and `gate-contract.mjs --print`). The renderer inlines the stylesheet +
+the Gate Board page script into one CSP-safe page, **also writes the portable Markdown twin**
+(`<name>.md`, step 4) **and a browser-ready `<stem>.local.html` sibling**, and prints the full return
+`{outPath, bytes, mdPath, mdBytes, localPath, localBytes}`. The two HTML files are NOT interchangeable:
+`<outPath>` is the **hosted-artifact file** — shell-less by contract (no doctype/html/head/body wrapper;
+the Artifact host supplies them) — while `localPath` (`<stem>.local.html`) is the **standards-mode
+sibling** wrapping the same scanned content in a complete document, which `open-artifact.mjs` prefers
+for local browser opens. **When stating where the file lives for opening in a browser, surface the
+LOCAL path**; `<outPath>` exists for the `Artifact` publish (step 3).
+
+**Authoring contract** (design §7 — hard rules for the agent writing the ledger): statement
+headlines in plain English, ≤ ~12 words, no `model@effort` or env-var notation in a statement
+or lead slot; lead ≤ 1 sentence; `keyStats` 3–5; exact figures, file paths, shas, and jargon
+live in figures and drawers; every unit should carry a figure — when no figure fits (code/diff
+or prose-led evidence), the drawer leads and the statement must carry the takeaway alone.
+A **non-fatal render lint** in `render.mjs` checks these after template render, before write —
+statement length, code-token-in-statement, missing `meta.verdict`+`meta.ask` on gate types,
+keyStats count. Violations print to stderr as warnings; **the render always proceeds** (a
+blocked render must never stall a human gate). The fail-closed secret scan is unchanged and
+still gates all writes.
 
 **3. Publish (optional hosting — NOT a dependency of the engine or the gate):** if the **`Artifact`
 tool** is available, call it on `<outPath>` (favicon from `ledger.meta.favicon`; same path → same URL,
@@ -212,11 +234,14 @@ browser tab so the human still sees it:**
 node <skill-dir>/references/open-artifact.mjs <outPath>
 ```
 
-That opens `<outPath>` in **Google Chrome** (falling back to the OS default browser) — the page is
-self-contained, so it renders identically to the hosted Artifact, just without the shareable URL +
-same-URL in-place update (a re-render reopens/refreshes the tab). **Also** state the local path
-`<outPath>` (+ the `.md` twin, step 4) so it's recoverable if there is no browser (when every opener
-fails, `open-artifact.mjs` exits non-zero — just surface the path). Publishing only *hosts* a finished
+That opens the board in **Google Chrome** (falling back to the OS default browser), **preferring the
+`<stem>.local.html` sibling** render.mjs wrote next to `<outPath>` (the `localPath` in the render
+output — the standards-mode document a local browser needs; `<outPath>` itself stays shell-less for
+the hosted publish, step 2). The page is self-contained, so it renders identically to the hosted
+Artifact, just without the shareable URL + same-URL in-place update (a re-render reopens/refreshes
+the tab). **Also** state where the file lives — the **LOCAL path** (`<stem>.local.html`) for browser
+opening, plus the `.md` twin (step 4) — so it's recoverable if there is no browser (when every opener
+fails, `open-artifact.mjs` exits non-zero — just surface the local path). Publishing only *hosts* a finished
 artifact at a URL; its absence changes the surfacing (a Chrome tab + local path instead of a hosted
 URL), **never the engine and never the gate (§7)**. (Contrast `AskUserQuestion`, which *is* the gate:
 if THAT is unavailable you do NOT proceed — you open a file-based escalation (`escalation.mjs`, §7/ADR-006)
@@ -225,9 +250,9 @@ and wait for a validated read-once answer; a missing *publish* tool is not a sto
 **4. Share with other agents (the portable twin).** The published Artifact URL is **owner-private** —
 another agent (Codex, Gemini, a fresh Claude) hitting it gets a **403**. **Never hand the URL over as
 agent-to-agent context.** `render.mjs` ALSO writes a **secret-scanned Markdown twin** next to the HTML
-(`<session>/<name>.md`, e.g. `artifact.md` beside `artifact.html`) — the same content as the deck, safe
+(`<session>/<name>.md`, e.g. `artifact.md` beside `artifact.html`) — the same content as the board, safe
 to share by construction (it passes the same fail-closed scan). To give a parallel/other agent the same
-context you get from the deck: **same-machine** agent → give the **`.md` path** (+ the plan bundle dir
+context you get from the board: **same-machine** agent → give the **`.md` path** (+ the plan bundle dir
 for full detail); **remote** agent → **inline the `.md` content** for pasting. Default: surface the
 `.md` path + a one-line synopsis; inline the full `.md` when you (or the other agent) ask.
 
@@ -293,7 +318,7 @@ Decision-class blockers / `INFRA_ERROR` / `OVERFLOW` / non-convergence in any st
 
 ## §7 — The gate-enforcement protocol (render-then-ask)
 
-**Trigger recognition (do not miss the gate):** when the user *reacts to a plan or deck* — "do you
+**Trigger recognition (do not miss the gate):** when the user *reacts to a plan or board* — "do you
 approve?", "how far should I implement?", "looks good, proceed", "start building" — you are AT the
 **`plan-approval` hard gate**. Do NOT answer that question conversationally and do NOT start
 implementing: first invoke `codex-gate` on the bundle (Non-negotiable #1), then run the render-then-ask
@@ -310,7 +335,7 @@ protocol below. The same applies whenever any gate's trigger fires.
   3. surface the rendered artifact — if the **`Artifact`** tool is available, publish `<outPath>` (same
      path → same URL); **if it is NOT available, open it in a Chrome tab instead — `node
      <skill-dir>/references/open-artifact.mjs <outPath>` (§4·3) — a missing publish tool
-     NEVER blocks, skips, or defers the gate** (the deck is a companion; the `AskUserQuestion` in step 4
+     NEVER blocks, skips, or defers the gate** (the board is a companion; the `AskUserQuestion` in step 4
      is the gate, ADR-002). For any parallel/other agent, surface the **portable `.md` twin** (path or
      inline), NOT the owner-private URL (§4·4);
   4. **block on an `AskUserQuestion`.** The gate's `authorizes` field is the SPEC of what must be
@@ -344,7 +369,7 @@ protocol below. The same applies whenever any gate's trigger fires.
     with one structured question per independent decision (e.g. `plan-approval` ⇒ a `plan` question AND a
     `local-commits` question):
     `node <skill-dir>/references/escalation.mjs request <session-dir> <gateId> '<questionsJson>' "<authorizes>" <htmlPath> <mdPath>`
-    Surface the request path (+ the opened deck), then poll
+    Surface the request path (+ the opened board), then poll
     `node <skill-dir>/references/escalation.mjs check <session-dir> <requestId>` and resume
     ONLY on `status:"answered"` with a valid read-once answer. `pending`/`invalid` ⇒ keep waiting;
     **never advance without a complete valid answer** (ADR-006). A session that must end, ends AT the

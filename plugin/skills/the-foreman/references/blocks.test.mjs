@@ -1,12 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { BLOCKS, BLOCK_TYPES, renderBlocks, blocksToMarkdown } from './blocks.mjs';
+import { esc, mdEsc } from './esc.mjs';
 
 // ---- oracle: the CLOSED block set (gate-contract literal-oracle style) ----
 // A literal expected list, independent of the module — a new block type added
 // WITHOUT both an html + md renderer fails this, and a coordinated edit can't
 // silently widen the set without updating the oracle here too.
-const EXPECTED_BLOCK_TYPES = ['table', 'rankedRows', 'statRow', 'donut', 'bar', 'lineSpark', 'flow', 'phaseSteps', 'code', 'diff', 'pillRow'];
+const EXPECTED_BLOCK_TYPES = ['table', 'rankedRows', 'statRow', 'donut', 'bar', 'lineSpark', 'flow', 'phaseSteps', 'code', 'diff', 'pillRow', 'topo', 'deltaRow', 'duel', 'verdictFan', 'dotMatrix', 'ladder'];
 
 test('BLOCK_TYPES is exactly the closed expected set (literal oracle)', () => {
   assert.deepEqual([...BLOCK_TYPES].sort(), [...EXPECTED_BLOCK_TYPES].sort());
@@ -19,13 +20,16 @@ test('every block type co-locates an html AND an md renderer (both functions)', 
   }
 });
 
-// ---- table: HTML ----
-test('table HTML wraps in .scroll and emits a table with thead/th + tbody/td', () => {
+// ---- table: HTML (Gate Board .t skin — native <table> semantics KEPT) ----
+test('table HTML wraps in .scrollx and emits <table class="t"> with thead/th[scope=col] + tbody/td', () => {
   const html = BLOCKS.table.html({ type: 'table', columns: ['Name', 'Spend'], rows: [['Tyler', '$10']] });
-  assert.match(html, /<div class="scroll">/);
-  assert.match(html, /<table>/);
-  assert.match(html, /<thead>[\s\S]*<th>Name<\/th>[\s\S]*<th>Spend<\/th>[\s\S]*<\/thead>/);
+  assert.match(html, /<div class="scrollx">/);
+  assert.match(html, /<table class="t">/);
+  assert.match(html, /<thead>[\s\S]*<th scope="col">Name<\/th>[\s\S]*<th scope="col">Spend<\/th>[\s\S]*<\/thead>/);
   assert.match(html, /<tbody>[\s\S]*<td>Tyler<\/td>[\s\S]*<td>\$10<\/td>[\s\S]*<\/tbody>/);
+  // retired forms: the bare .scroll wrapper and the .gt div-grid are NOT used for tables
+  assert.doesNotMatch(html, /class="scroll"/);
+  assert.doesNotMatch(html, /class="gt"/);
 });
 
 test('table HTML emits an escaped optional caption', () => {
@@ -111,6 +115,21 @@ test('blocksToMarkdown THROWS on an unknown block type (twin parity)', () => {
   assert.throws(() => blocksToMarkdown([{ type: 'bogus' }]), /unknown block type: bogus/);
 });
 
+// ---- prototype-safe dispatch: inherited Object.prototype keys are NOT blocks ----
+// An unguarded BLOCKS[type] lookup resolves '__proto__' / 'constructor' /
+// 'toString' through the prototype chain to a truthy non-renderer, so the
+// contractual unknown-block throw is skipped and a TypeError escapes instead —
+// breaking the CLI's sanitized unknown-block category and the sweep's
+// classification. Both dispatchers must own-check before the lookup.
+for (const type of ['__proto__', 'constructor', 'toString']) {
+  test(`renderBlocks THROWS the contractual unknown-block error for inherited key "${type}"`, () => {
+    assert.throws(() => renderBlocks([{ type }]), /unknown block type/);
+  });
+  test(`blocksToMarkdown THROWS the contractual unknown-block error for inherited key "${type}"`, () => {
+    assert.throws(() => blocksToMarkdown([{ type }]), /unknown block type/);
+  });
+}
+
 test('renderBlocks joins multiple known blocks with a newline', () => {
   const out = renderBlocks([
     { type: 'rankedRows', rows: [{ label: 'A', value: '1' }] },
@@ -157,12 +176,13 @@ const BAD_NUM = /NaN|Infinity/;
 // JSON.parse('1e999') === Infinity — the canonical ledger overflow vector.
 const OVERFLOW = JSON.parse('1e999');
 
-// ---- statRow (HTML row of big-number stats; NO SVG) ----
-test('statRow HTML emits a big value in --accent and a muted label', () => {
+// ---- statRow (carved stat wells; HTML, NO SVG — Gate Board restyle) ----
+test('statRow HTML emits carved .wells with a .well__v value and .well__l label per stat', () => {
   const html = BLOCKS.statRow.html({ type: 'statRow', stats: [{ value: '$0.12', label: 'Total spend' }] });
-  assert.match(html, /class="statrow"/);
-  assert.match(html, /class="stat-value"[^>]*>\$0\.12</);
-  assert.match(html, /class="stat-label"[^>]*>Total spend</);
+  assert.match(html, /class="wells"/);
+  assert.match(html, /class="well__v"[^>]*>\$0\.12</);
+  assert.match(html, /class="well__l"[^>]*>Total spend</);
+  assert.doesNotMatch(html, /statrow/); // retired markup
 });
 
 test('statRow HTML escapes a malicious value and label (no raw tag survives)', () => {
@@ -172,18 +192,18 @@ test('statRow HTML escapes a malicious value and label (no raw tag survives)', (
   assert.match(html, /&lt;img onerror=l&gt;/);
 });
 
-test('statRow HTML applies an allowlisted variant class (ok/warn)', () => {
+test('statRow HTML applies an allowlisted is-ok/is-warn variant class on the value', () => {
   const ok = BLOCKS.statRow.html({ type: 'statRow', stats: [{ value: '70/70', label: 'Pass', variant: 'ok' }] });
-  assert.match(ok, /class="stat ok"/);
+  assert.match(ok, /class="well__v is-ok"/);
   const warn = BLOCKS.statRow.html({ type: 'statRow', stats: [{ value: '2', label: 'Fail', variant: 'warn' }] });
-  assert.match(warn, /class="stat warn"/);
+  assert.match(warn, /class="well__v is-warn"/);
 });
 
 test('statRow HTML rejects an unexpected variant (no class/markup injection beyond allowlist)', () => {
   const html = BLOCKS.statRow.html({ type: 'statRow', stats: [{ value: '1', label: 'x', variant: 'err"><script>alert(1)</script>' }] });
   assert.doesNotMatch(html, /<script>alert\(1\)/);    // no markup smuggled via variant
-  assert.doesNotMatch(html, /stat err/);              // not an allowlisted class
-  assert.match(html, /class="stat"/);                 // falls back to the bare allowlisted class
+  assert.doesNotMatch(html, /is-err/);                // not an allowlisted class
+  assert.match(html, /class="well__v"/);              // falls back to the bare allowlisted class
 });
 
 test('statRow MD is an inert list of "- **value** — label" (escaped)', () => {
@@ -198,30 +218,64 @@ test('statRow MD escapes a malicious value and label', () => {
   assert.match(md, /&lt;img/);
 });
 
-// ---- donut (ring chart; SVG) ----
-test('donut HTML emits an inline svg with role=img, a track + arc circle, computed %', () => {
+// ---- donut (tick-ring dial; HTML, no SVG — Gate Board restyle) ----
+test('donut HTML renders the tick-ring: .ringwrap/.ring role=img + computed aria-label, guard-derived lit ticks, pct center', () => {
   const html = BLOCKS.donut.html({ type: 'donut', value: 25, max: 100, label: 'Used' });
-  assert.match(html, /<svg[^>]*role="img"/);
-  assert.match(html, /<circle/);
-  assert.match(html, /stroke-dasharray=/);
-  assert.match(html, />25%</);          // percentage is COMPUTED, not ledger text
-  assert.match(html, />Used</);         // optional label
+  assert.match(html, /<div class="ringwrap"><div class="ring" role="img" aria-label="25 \/ 100, Used">/);
+  assert.equal((html.match(/class="ring__t/g) || []).length, 24, 'max 100 => 24 ticks');
+  assert.equal((html.match(/class="ring__t on"/g) || []).length, 6, 'lit = round((25/100)*24)');
+  assert.match(html, /<em>25<\/em><small>%<\/small>/);   // max is 100 => pct center, COMPUTED
+  assert.match(html, /<span>Used<\/span>/);              // optional label in the center disc
+  assert.doesNotMatch(html, /donutwrap/);                // retired markup
+  assert.ok(!html.includes('<svg'), 'SVG donut retired');
 });
 
-test('donut HTML clamps value > max to 100%', () => {
+test('donut HTML centers value / max when max is not 100 (ticks floor at 4)', () => {
+  const html = BLOCKS.donut.html({ type: 'donut', value: 2, max: 3, label: 'coverage' });
+  assert.match(html, /<em>2<\/em><small> \/ 3<\/small>/);
+  assert.equal((html.match(/class="ring__t/g) || []).length, 4, 'small max floors at the 4-tick minimum');
+  assert.equal((html.match(/class="ring__t on"/g) || []).length, 3, 'lit = round((2/3)*4)');
+});
+
+test('donut .ring aria-label states the computed value / max; every tick is aria-hidden decoration', () => {
+  const html = BLOCKS.donut.html({ type: 'donut', value: 2, max: 3 });
+  assert.match(html, /class="ring" role="img" aria-label="2 \/ 3"/);
+  const ticks = html.match(/<i class="ring__t[^>]*>/g) || [];
+  assert.ok(ticks.length > 0, 'ticks present');
+  for (const t of ticks) assert.match(t, /aria-hidden="true"/);
+});
+
+test('donut HTML clamps value > max to a fully lit ring (100%)', () => {
   const html = BLOCKS.donut.html({ type: 'donut', value: 9999, max: 100 });
-  assert.match(html, />100%</);
+  assert.match(html, /<em>100<\/em><small>%<\/small>/);
+  assert.equal((html.match(/class="ring__t on"/g) || []).length, 24, 'all ticks lit');
   assert.doesNotMatch(html, BAD_NUM);
 });
 
-test('donut HTML survives NaN / Infinity / overflow / negative / absurd value (no NaN/Infinity, arc <= circumference)', () => {
+test('donut HTML survives NaN / Infinity / overflow / negative / absurd value (no NaN/Infinity, lit <= ticks)', () => {
   for (const bad of [NaN, Infinity, -Infinity, OVERFLOW, -50, 1e308]) {
     const html = BLOCKS.donut.html({ type: 'donut', value: bad, max: 100 });
     assert.doesNotMatch(html, BAD_NUM, `value=${bad}`);
-    // the emitted dash length must never exceed the full circumference
-    const m = html.match(/stroke-dasharray="([\d.]+) ([\d.]+)"/);
-    assert.ok(m, `dasharray present for value=${bad}`);
-    assert.ok(Number(m[1]) <= Number(m[2]) + 1e-6, `arc<=circumference for value=${bad}`);
+    const ticks = (html.match(/class="ring__t/g) || []).length;
+    const lit = (html.match(/class="ring__t on"/g) || []).length;
+    assert.equal(ticks, 24, `ticks stay guard-derived for value=${bad}`);
+    assert.ok(lit >= 0 && lit <= ticks, `lit within [0,ticks] for value=${bad}`);
+  }
+});
+
+test('donut edge matrix: overflow value + zero/negative/fractional/huge max => integer guard-derived counts, no NaN', () => {
+  const cases = [
+    { block: { type: 'donut', value: OVERFLOW }, ticks: 24, lit: 0 },      // non-finite value => fallback 0 => 0 lit
+    { block: { type: 'donut', value: 5, max: 0 }, ticks: 13, lit: 0 },     // zero max => 13 unlit ticks, never a division
+    { block: { type: 'donut', value: 5, max: -3 }, ticks: 13, lit: 0 },    // negative max clamps to 0 => same as zero
+    { block: { type: 'donut', value: 1, max: 2.6 }, ticks: 4, lit: 2 },    // fractional max => INTEGER ticks (4)
+    { block: { type: 'donut', value: 0, max: 1e308 }, ticks: 24, lit: 0 }, // huge finite max caps at 24 ticks
+  ];
+  for (const { block, ticks, lit } of cases) {
+    const html = BLOCKS.donut.html(block);
+    assert.doesNotMatch(html, BAD_NUM, JSON.stringify(block));
+    assert.equal((html.match(/class="ring__t/g) || []).length, ticks, `ticks for ${JSON.stringify(block)}`);
+    assert.equal((html.match(/class="ring__t on"/g) || []).length, lit, `lit for ${JSON.stringify(block)}`);
   }
 });
 
@@ -243,10 +297,18 @@ test('donut HTML escapes a malicious label', () => {
   assert.match(html, /&lt;img onerror=x&gt;/);
 });
 
-test('donut MD emits inert "**pct% — label**" with a computed pct', () => {
+test('donut MD emits inert "**pct%** — label" with a computed pct when max is 100', () => {
   const md = BLOCKS.donut.md({ type: 'donut', value: 25, max: 100, label: 'Used' });
   assert.match(md, /\*\*25%\*\* — Used/);
   assert.doesNotMatch(md, /<[a-zA-Z/]/);
+});
+
+test('donut MD MIRRORS the ring display: pct% for max-100, value / max (pct%) otherwise, 0 / 0 for zero max (no NaN)', () => {
+  assert.equal(BLOCKS.donut.md({ type: 'donut', value: 25, max: 100, label: 'Used' }), '**25%** — Used'); // max-100 case
+  assert.equal(BLOCKS.donut.md({ type: 'donut', value: 2, max: 3 }), '**2 / 3** (67%)');                  // non-100 case
+  const zero = BLOCKS.donut.md({ type: 'donut', value: 5, max: 0 });                                      // zero-max case
+  assert.equal(zero, '**0 / 0** (0%)');
+  assert.doesNotMatch(zero, BAD_NUM);
 });
 
 test('donut MD computes pct from a bad value without NaN/Infinity', () => {
@@ -263,18 +325,34 @@ test('donut MD clamps a FINITE value > max to 100%', () => {
   assert.match(md, /\*\*100%\*\*/);   // finite over-max clamps via Math.min
 });
 
-// ---- bar (horizontal bars; SVG) ----
-test('bar HTML emits an inline svg with role=img and a rect per bar', () => {
-  const html = BLOCKS.bar.html({ type: 'bar', bars: [{ label: 'A', value: 10 }, { label: 'B', value: 5 }] });
-  assert.match(html, /<svg[^>]*role="img"/);
-  const rects = html.match(/<rect/g) || [];
-  assert.ok(rects.length >= 2, 'a rect per bar');
-  assert.match(html, />A</);
-  assert.match(html, />10</);   // value shown as text
+// ---- bar (carved-track rows; HTML, no SVG — the Gate Board restyle) ----
+test('bar renders carved tracks for all bars; tags allowlisted and additive', () => {
+  const untagged = renderBlocks([{ type: 'bar', bars: [{ label: 'a<b', value: 2 }, { label: 'c', value: 4 }] }]);
+  assert.match(untagged, /class="bars"/);
+  assert.match(untagged, /a&lt;b/);
+  assert.match(untagged, /--w:50/);                            // 2/4 of the largest
+  assert.match(untagged, /--w:100/);
+  assert.ok(!untagged.includes('<svg'));                       // SVG form retired
+  const tagged = renderBlocks([{ type: 'bar', bars: [{ label: 'a', value: 1,
+    tags: [{ label: '3 spawns', kind: 'spawn' }, { label: 'x', kind: 'bad"' }] }] }]);
+  assert.match(tagged, /class="tag tag--spawn"/);
+  assert.match(tagged, /class="tag"><i><\/i>x</);              // unknown kind → bare tag, escaped
+  assert.ok(!tagged.includes('bad"'));
 });
 
-test('bar HTML survives NaN / Infinity / overflow / negative values (no NaN/Infinity, width <= track)', () => {
-  const TRACK = 100; // the bar.html track width in user units; bars normalize into this
+test('bar numeric guards survive the restyle', () => {
+  const html = renderBlocks([{ type: 'bar', bars: [{ label: 'x', value: 1e999 }, { label: 'y', value: -3 }] }]);
+  assert.ok(!/NaN|Infinity/.test(html));
+  assert.match(html, /--w:0/);                                 // non-finite → fallback 0; negative → clamped 0
+});
+
+test('bar declared max wins over the largest value as the denominator', () => {
+  const html = renderBlocks([{ type: 'bar', max: 10, bars: [{ label: 'a', value: 5 }, { label: 'b', value: 2 }] }]);
+  assert.match(html, /--w:50/);                                // 5/10, NOT 5/5
+  assert.match(html, /--w:20/);                                // 2/10
+});
+
+test('bar HTML survives NaN / Infinity / overflow / negative values (no NaN/Infinity, --w within [0,100])', () => {
   const html = BLOCKS.bar.html({ type: 'bar', bars: [
     { label: 'nan', value: NaN },
     { label: 'inf', value: Infinity },
@@ -283,8 +361,10 @@ test('bar HTML survives NaN / Infinity / overflow / negative values (no NaN/Infi
     { label: 'ok', value: 5 },
   ] });
   assert.doesNotMatch(html, BAD_NUM);
-  for (const m of html.matchAll(/<rect[^>]*\bwidth="([\d.]+)"/g)) {
-    assert.ok(Number(m[1]) <= TRACK + 1e-6, `bar width ${m[1]} <= track ${TRACK}`);
+  const ws = [...html.matchAll(/--w:(-?[\d.]+)/g)];
+  assert.ok(ws.length >= 5, 'a --w per bar');
+  for (const m of ws) {
+    assert.ok(Number(m[1]) >= 0 && Number(m[1]) <= 100, `--w ${m[1]} within [0,100]`);
   }
 });
 
@@ -314,6 +394,16 @@ test('bar MD emits inert "- label: value" per bar (escaped)', () => {
 test('bar MD safeNums a bad value (no NaN/Infinity)', () => {
   const md = BLOCKS.bar.md({ type: 'bar', bars: [{ label: 'A', value: OVERFLOW }] });
   assert.doesNotMatch(md, BAD_NUM);
+});
+
+test('bar MD appends escaped tag labels as " [t1, t2]" only when tags exist (line unchanged otherwise)', () => {
+  const md = BLOCKS.bar.md({ type: 'bar', bars: [
+    { label: 'A', value: 10, tags: [{ label: '3 spawns', kind: 'spawn' }, { label: '<x>', kind: 'code' }] },
+    { label: 'B', value: 5 },
+  ] });
+  assert.match(md, /^- A: 10 \[3 spawns, &lt;x&gt;\]$/m); // labels mdEsc'd inside my static brackets
+  assert.match(md, /^- B: 5$/m);                          // untagged line byte-identical to before
+  assert.doesNotMatch(md, /<x>/);
 });
 
 // ---- lineSpark (sparkline; SVG) ----
@@ -473,22 +563,24 @@ test('flow HTML/MD render an empty-but-valid container for empty / non-array ste
   assert.equal(BLOCKS.flow.md({ type: 'flow' }), '');
 });
 
-// ---- phaseSteps (phase-progression chips; HTML, no SVG) ----
-test('phaseSteps HTML emits a labeled chip per step with an allowlisted status class + marker', () => {
+// ---- phaseSteps (the stops track; HTML, no SVG — Gate Board restyle) ----
+test('phaseSteps HTML emits an <ol class="stops"> of .stop items with the status as .stop__sign text', () => {
   const html = BLOCKS.phaseSteps.html({ type: 'phaseSteps', steps: [
     { label: 'Built', status: 'done' },
     { label: 'Testing', status: 'active' },
     { label: 'Ship', status: 'pending' },
   ] });
-  assert.match(html, /class="phasestep done"/);
-  assert.match(html, /class="phasestep active"/);
-  assert.match(html, /class="phasestep pending"/);
-  assert.match(html, />Built</);
-  assert.match(html, />Testing</);
-  assert.match(html, />Ship</);
-  assert.match(html, /✓/); // done marker
-  assert.match(html, /▸/); // active marker
-  assert.match(html, /○/); // pending marker
+  assert.match(html, /^<ol class="stops" style="--stopcols:3">/);
+  assert.match(html, /<\/ol>$/);
+  assert.equal((html.match(/<li class="stop">/g) || []).length, 3, 'one .stop li per step');
+  assert.equal((html.match(/class="stop__mark" aria-hidden="true"/g) || []).length, 3, 'a decorative mark per stop');
+  assert.match(html, /<span class="stop__sign">done ✓<\/span>/);
+  assert.match(html, /<span class="stop__sign">active ▸<\/span>/);
+  assert.match(html, /<span class="stop__sign">pending<\/span>/);
+  assert.match(html, /<b>Built<\/b>/);
+  assert.match(html, /<b>Testing<\/b>/);
+  assert.match(html, /<b>Ship<\/b>/);
+  assert.doesNotMatch(html, /phaseflow|phasestep/); // retired markup
 });
 
 test('phaseSteps HTML defaults an unknown / missing status to pending (no injection)', () => {
@@ -498,9 +590,9 @@ test('phaseSteps HTML defaults an unknown / missing status to pending (no inject
     { label: 'c', status: 'bogus' },
   ] });
   assert.doesNotMatch(html, /onmouseover/);              // no attribute smuggled via status
-  assert.doesNotMatch(html, /class="phasestep evil/);    // not an allowlisted class
-  assert.doesNotMatch(html, /class="phasestep bogus"/);  // not an allowlisted class
-  const pendings = html.match(/class="phasestep pending"/g) || [];
+  assert.doesNotMatch(html, /evil/);                     // status never reaches markup raw
+  assert.doesNotMatch(html, /bogus/);                    // not an allowlisted sign
+  const pendings = html.match(/<span class="stop__sign">pending<\/span>/g) || [];
   assert.equal(pendings.length, 3, 'missing + unknown statuses all fall back to pending');
 });
 
@@ -535,21 +627,22 @@ test('phaseSteps MD escapes a malicious label (inert, no raw tag)', () => {
   assert.match(md, /&lt;img/);
 });
 
-// ---- phaseSteps optional per-step `detail` (a muted sub-line under the label) ----
-test('phaseSteps HTML renders an escaped .phase-detail sub-line when a step has detail', () => {
+// ---- phaseSteps optional per-step `detail` (the stop body <p> under the label) ----
+test('phaseSteps HTML renders an escaped body <p> when a step has detail', () => {
   const html = BLOCKS.phaseSteps.html({ type: 'phaseSteps', steps: [
     { label: 'Built', status: 'done', detail: '6 files touched' },
   ] });
-  assert.match(html, /<span class="phase-detail">6 files touched<\/span>/);
-  // the detail sits INSIDE the .phasestep chip, after the label
-  assert.match(html, /Built<span class="phase-detail">6 files touched<\/span>/);
+  // the detail sits INSIDE .stop__body, between the label and the sign
+  assert.match(html, /<b>Built<\/b><p>6 files touched<\/p><span class="stop__sign">/);
 });
 
-test('phaseSteps HTML omits the .phase-detail sub-line when a step has no detail (byte-identical chip)', () => {
+test('phaseSteps HTML omits the body <p> when a step has no detail (byte-identical stop)', () => {
   const html = BLOCKS.phaseSteps.html({ type: 'phaseSteps', steps: [{ label: 'Ship', status: 'pending' }] });
-  assert.doesNotMatch(html, /phase-detail/);
-  // unchanged chip shape
-  assert.equal(html, '<div class="phaseflow"><span class="phasestep pending"><span class="phase-mark">○</span>Ship</span></div>');
+  assert.doesNotMatch(html, /<p>/);
+  // the exact stop shape (pins the full Gate Board markup for one pending step —
+  // a single step is a solo track: --stopcols floors at 1, the rail hides)
+  assert.equal(html, '<ol class="stops stops--solo" style="--stopcols:1"><li class="stop"><span class="stop__mark" aria-hidden="true"><i></i><u></u></span>'
+    + '<div class="stop__body"><span class="stop__n">1</span><b>Ship</b><span class="stop__sign">pending</span></div></li></ol>');
 });
 
 test('phaseSteps HTML escapes a malicious detail (no raw tag survives)', () => {
@@ -576,6 +669,24 @@ test('phaseSteps MD escapes a malicious detail (inert, no raw tag)', () => {
   const md = BLOCKS.phaseSteps.md({ type: 'phaseSteps', steps: [{ label: 'a', status: 'done', detail: '<img onerror=x>' }] });
   assert.doesNotMatch(md, /<img onerror=x>/);
   assert.match(md, /&lt;img/);
+});
+
+// ---- prepr blocker 2: the desktop stops layout must fit ANY step count ----
+// The renderer emits an engine-derived --stopcols custom prop (style.css sizes
+// the desktop grid columns and the rail insets from it) and marks a sub-2-step
+// track .stops--solo, so the marker-to-marker rail (which needs two marker
+// centers to span) hides instead of floating beside a lone stop.
+test('phaseSteps pins --stopcols:N for 1/3/5 steps and stops--solo only below 2', () => {
+  const mk = (n) => BLOCKS.phaseSteps.html({ type: 'phaseSteps',
+    steps: Array.from({ length: n }, (_, i) => ({ label: `S${i + 1}` })) });
+  assert.match(mk(1), /^<ol class="stops stops--solo" style="--stopcols:1">/);
+  assert.match(mk(3), /^<ol class="stops" style="--stopcols:3">/);
+  assert.match(mk(5), /^<ol class="stops" style="--stopcols:5">/);
+  assert.doesNotMatch(mk(2), /stops--solo/);           // two markers = a real rail
+  assert.match(mk(2), /style="--stopcols:2"/);
+  // an empty track floors the engine-derived count at 1 (the CSS division can
+  // never see 0) and is solo
+  assert.match(mk(0), /^<ol class="stops stops--solo" style="--stopcols:1"><\/ol>$/);
 });
 
 test('phaseSteps HTML/MD render an empty-but-valid container for empty / non-array steps (never throws)', () => {
@@ -759,16 +870,17 @@ test('diff twin contains injected text as literal (no real tag/link outside the 
   }
 });
 
-// ---- pillRow ----
-test('pillRow HTML reuses .pill / .pill.ok / .pill.warn with an escaped label', () => {
+// ---- pillRow (BEM .pill--ok/.pill--warn + aria-hidden dot — Gate Board restyle) ----
+test('pillRow HTML emits .pill / .pill--ok / .pill--warn with an aria-hidden dot + escaped label', () => {
   const html = BLOCKS.pillRow.html({ type: 'pillRow', pills: [
     { label: 'Plain' },
     { label: 'Good', variant: 'ok' },
     { label: 'Bad', variant: 'warn' },
   ] });
-  assert.match(html, /class="pill">Plain</);
-  assert.match(html, /class="pill ok">Good</);
-  assert.match(html, /class="pill warn">Bad</);
+  assert.match(html, /class="pill"><i aria-hidden="true"><\/i>Plain</);
+  assert.match(html, /class="pill pill--ok"><i aria-hidden="true"><\/i>Good</);
+  assert.match(html, /class="pill pill--warn"><i aria-hidden="true"><\/i>Bad</);
+  assert.doesNotMatch(html, /class="pill ok"|class="pill warn"/); // legacy space form retired
 });
 
 test('pillRow HTML rejects an unexpected variant (no class/attr injection beyond the allowlist)', () => {
@@ -832,3 +944,314 @@ test('renderBlocks dispatches the three new code/annotation blocks without throw
     { type: 'pillRow', pills: [{ label: 'b' }] },
   ]));
 });
+
+// ============================================================================
+// Gate Board figure blocks — topo, deltaRow (neumorphic Gate Board, Task 1)
+// ============================================================================
+
+test('topo renders root, children, aside with escaping', () => {
+  const html = renderBlocks([{ type: 'topo', root: { title: '<r>', note: 'n' },
+    children: [{ title: 'impl_audit', note: 'auto' }], aside: { value: '0 → 1,060', note: '<x>' } }]);
+  assert.match(html, /class="topo"/);
+  assert.match(html, /&lt;r&gt;/);
+  assert.match(html, /impl_audit/);
+  assert.match(html, /&lt;x&gt;/);
+  assert.ok(!html.includes('<r>'));
+  const md = blocksToMarkdown([{ type: 'topo', root: { title: 'R' }, children: [{ title: 'C1', note: 'n1' }] }]);
+  assert.match(md, /R/); assert.match(md, /C1/);
+});
+
+test('deltaRow clamps positions, renders endpoints, never emits NaN', () => {
+  const html = renderBlocks([{ type: 'deltaRow', items: [
+    { label: 'approve', from: '36%', to: '0%', fromPos: 36, toPos: 1e308, min: '0%', max: '100%' },
+    { label: 'bad', from: 'x', to: 'y', fromPos: 'junk', toPos: -5 },
+    { label: 'inf', from: 'a', to: 'b', fromPos: 1e999, toPos: Infinity }] }]);
+  assert.match(html, /class="deltas"/);
+  assert.ok(!/NaN|Infinity/.test(html));
+  assert.match(html, /--b:100/);           // finite over-range 1e308 clamps to 100
+  assert.match(html, /--a:0/);             // 'junk' falls back to 0
+  assert.match(html, /style="--a:0;--b:0"/); // non-finite 1e999/Infinity => fallback 0, both
+  assert.match(html, /class="delta__f"><span>0%<\/span><span>100%<\/span>/); // min/max endpoints render
+  const md = blocksToMarkdown([{ type: 'deltaRow', items: [{ label: 'L', from: '1', to: '2', min: 'lo', max: 'hi' }] }]);
+  assert.match(md, /L.*1.*2/); assert.match(md, /lo.*hi/); // twin carries endpoints too
+});
+
+test('registry closed-set oracle includes the new figure blocks with html+md', () => {
+  for (const t of ['topo', 'deltaRow', 'duel', 'verdictFan', 'dotMatrix', 'ladder']) {
+    assert.ok(BLOCK_TYPES.includes(t), t);
+    assert.equal(typeof BLOCKS[t].html, 'function');
+    assert.equal(typeof BLOCKS[t].md, 'function');
+  }
+});
+
+// ============================================================================
+// Gate Board figure blocks — duel, verdictFan (neumorphic Gate Board, Task 2)
+// ============================================================================
+
+test('duel renders lanes, optional flatline, escapes', () => {
+  const html = renderBlocks([{ type: 'duel',
+    left: { label: 'Plan', value: '0 / 4', note: '<n>' }, right: { label: 'Code', value: '1 / 1', note: 'ok' },
+    flatline: { label: 'Blockers / round', values: ['8', '7', '8', '7'] } }]);
+  assert.match(html, /class="duel"/); assert.match(html, /&lt;n&gt;/);
+  assert.equal((html.match(/class="flatline"/g) || []).length, 1);
+  const noFlat = renderBlocks([{ type: 'duel', left: { label: 'a', value: '1' }, right: { label: 'b', value: '2' } }]);
+  assert.ok(!noFlat.includes('flatline'));
+});
+
+test('verdictFan allowlists variants and clamps dot counts', () => {
+  const html = renderBlocks([{ type: 'verdictFan', verdict: 'BLOCK', fates: [
+    { count: 6, label: 'fixable', variant: 'ok' },
+    { count: 1e308, label: 'huge', variant: '"><script>' },   // finite over-range → clamp 24
+    { count: 1e999, label: 'inf', variant: 'warn' }] }]);      // non-finite → fallback 0 dots
+  assert.match(html, /BLOCK/);
+  assert.equal((html.match(/class="fate fate--ok"/g) || []).length, 1);
+  assert.equal((html.match(/class="fate fate--x"/g) || []).length, 1);  // injected variant coerced
+  assert.equal((html.match(/class="fate fate--warn"/g) || []).length, 1);
+  // count dots INSIDE the .fate__dots spans only — the .fan ornament carries
+  // decorative connector <i> strokes of its own (fate-count-derived)
+  const dotCount = [...html.matchAll(/class="fate__dots"[^>]*>((?:<i><\/i>)*)</g)]
+    .reduce((n, m) => n + ((m[1].match(/<i><\/i>/g) || []).length), 0);
+  assert.equal(dotCount, 6 + 24 + 0);
+  assert.ok(!html.includes('<script>'));
+});
+
+// ---- prepr blocker: the fan geometry derives from the fate count ----
+// The renderer emits --fatecols:N on the .verdict (N = fates.length guarded
+// into 1..6) and BUILDS the connector set from N: the trunk, a crossbar (only
+// when there are two centers to span), and one drop line per fate carrying an
+// index-derived --fx custom prop (numbers only). The CSS consumes the vars, so
+// the fan and the fates grid fit ANY fate count — not just the reference three.
+const fanOf = (html) => (html.match(/<div class="fan" aria-hidden="true">([\s\S]*?)<\/div>/) || [])[1] ?? '';
+const mkFan = (n) => BLOCKS.verdictFan.html({ type: 'verdictFan', verdict: 'V',
+  fates: Array.from({ length: n }, (_, i) => ({ count: 1, label: `f${i}`, variant: 'ok' })) });
+
+test('verdictFan pins --fatecols and the connector count for 2 / 3 / 5 fates (trunk + crossbar + N drops)', () => {
+  for (const [n, connectors] of [[2, 4], [3, 5], [5, 7]]) {
+    const html = mkFan(n);
+    assert.match(html, new RegExp(`<div class="verdict" style="--fatecols:${n}">`), `--fatecols:${n}`);
+    const fan = fanOf(html);
+    assert.equal((fan.match(/<i /g) || []).length, connectors, `${n} fates => ${connectors} connectors`);
+    assert.equal((fan.match(/class="fan__t"/g) || []).length, 1, 'one trunk');
+    assert.equal((fan.match(/class="fan__x"/g) || []).length, 1, 'one crossbar');
+    assert.equal((fan.match(/class="fan__d"/g) || []).length, n, 'one drop per fate');
+    for (let i = 0; i < n; i++) {
+      assert.ok(fan.includes(`<i class="fan__d" style="--fx:${i}"></i>`), `drop ${i} carries its index --fx`);
+    }
+  }
+});
+
+test('verdictFan single fate: --fatecols:1, NO crossbar (nothing to span), trunk + one drop', () => {
+  const html = mkFan(1);
+  assert.match(html, /<div class="verdict" style="--fatecols:1">/);
+  const fan = fanOf(html);
+  assert.equal((fan.match(/class="fan__x"/g) || []).length, 0, 'the crossbar needs two centers');
+  assert.equal((fan.match(/class="fan__t"/g) || []).length, 1);
+  assert.deepEqual([...fan.matchAll(/class="fan__d" style="--fx:(\d+)"/g)].map((m) => m[1]), ['0']);
+});
+
+test('verdictFan guards --fatecols into 1..6 (0 fates => 1; 9 fates => 6 columns, 6 drops, 6 capped cells)', () => {
+  const zero = mkFan(0);
+  assert.match(zero, /style="--fatecols:1"/);
+  assert.equal((fanOf(zero).match(/class="fan__x"/g) || []).length, 0);
+  const nine = mkFan(9);
+  assert.match(nine, /style="--fatecols:6"/);
+  assert.equal((fanOf(nine).match(/class="fan__d"/g) || []).length, 6);
+  assert.equal((nine.match(/class="fate fate--ok"/g) || []).length, 5, 'the first five render as-is');
+  assert.match(nine, /<b>4<\/b><span>\+4 more<\/span>/, 'the sixth cell aggregates the remaining four (count 1 each)');
+});
+
+// ---- prepr blocker: fates beyond six rendered cards with NO branch ----
+// --fatecols and the drop set are guarded into 1..6, so a 7th+ fate cell
+// wrapped beneath the fan without a connector — a card whose branch simply
+// did not exist. The shipped rule caps the RENDERED cells at 6: the first
+// five render as-is and a sixth AGGREGATE cell absorbs the rest (count = the
+// safeNum'd sum of the remaining counts, label '+N more' over the engine-
+// derived remainder count, variant 'x') — one branch per rendered fate ALWAYS
+// holds. The twin still lists every fate, so nothing is lost from the record.
+test('verdictFan caps rendered fates at 6: the sixth cell aggregates the remainder as +N more', () => {
+  const seven = Array.from({ length: 7 }, (_, i) => ({ count: i + 1, label: `f${i}`, variant: 'ok' }));
+  const html = BLOCKS.verdictFan.html({ type: 'verdictFan', verdict: 'V', fates: seven });
+  assert.match(html, /style="--fatecols:6"/);
+  assert.equal((fanOf(html).match(/class="fan__d"/g) || []).length, 6, 'one drop per rendered cell');
+  assert.equal((html.match(/class="fate fate--/g) || []).length, 6, 'exactly six cells render');
+  assert.equal((html.match(/class="fate fate--ok"/g) || []).length, 5, 'the first five render as-is');
+  // the sixth is the aggregate: variant x, count = 6 + 7 = 13 (13 dots), label '+2 more'
+  assert.match(html, /class="fate fate--x"><span class="fate__dots" aria-hidden="true">(?:<i><\/i>){13}<\/span><b>13<\/b><span>\+2 more<\/span>/);
+  assert.ok(!html.includes('f5<') && !html.includes('f6<'), 'the collapsed fates render no cells of their own');
+  // exactly six fates stay untouched — no spurious aggregate
+  const six = mkFan(6);
+  assert.equal((six.match(/class="fate fate--ok"/g) || []).length, 6);
+  assert.ok(!six.includes('more'));
+  // the twin is the full record: every fate listed, no aggregate line
+  const md = BLOCKS.verdictFan.md({ type: 'verdictFan', verdict: 'V', fates: seven });
+  for (let i = 0; i < 7; i++) assert.match(md, new RegExp(`^- ${i + 1} — f${i}$`, 'm'));
+  assert.ok(!md.includes('more'));
+});
+
+// ============================================================================
+// Gate Board figure blocks — dotMatrix, ladder (neumorphic Gate Board, Task 3)
+// ============================================================================
+
+test('dotMatrix renders marks as filled/miss dots with escaped labels', () => {
+  const html = renderBlocks([{ type: 'dotMatrix', columns: ['a<b', 'B'],
+    rows: [{ label: 'f1', sub: 's', marks: [true, false] }] }]);
+  assert.match(html, /class="matrix"/); assert.match(html, /a&lt;b/);
+  assert.equal((html.match(/class="mx__d miss"/g) || []).length, 1);
+  const md = blocksToMarkdown([{ type: 'dotMatrix', columns: ['A'], rows: [{ label: 'f', marks: [true] }] }]);
+  assert.match(md, /\| yes \|/);
+});
+
+test('dotMatrix carries ARIA table semantics with an sr yes/no per mark (a11y hardening, Task 4b)', () => {
+  const html = BLOCKS.dotMatrix.html({ type: 'dotMatrix', columns: ['A', 'B'],
+    rows: [{ label: 'f1', marks: [true, false] }, { label: 'f2', marks: [false, true] }] });
+  assert.match(html, /class="mx" role="table"/);
+  assert.equal((html.match(/role="columnheader"/g) || []).length, 3, 'corner + one per column');
+  assert.equal((html.match(/role="rowheader"/g) || []).length, 2, 'the label of each body row');
+  assert.equal((html.match(/role="row"/g) || []).length, 3, 'header row + two body rows');
+  assert.equal((html.match(/role="cell"/g) || []).length, 4, 'one cell per mark');
+  assert.equal((html.match(/class="sr">yes</g) || []).length, 2, 'an sr "yes" per lit mark');
+  assert.equal((html.match(/class="sr">no</g) || []).length, 2, 'an sr "no" per miss');
+  // the dot itself is decoration
+  assert.match(html, /<i aria-hidden="true"><\/i>/);
+});
+
+test('ladder allowlists status', () => {
+  const html = renderBlocks([{ type: 'ladder', rows: [
+    { claim: 'delegation', cause: 'ultra', status: 'ok', statusLabel: 'settled' },
+    { claim: 'x', cause: 'y', status: 'evil"', statusLabel: 'z' }] }]);
+  assert.equal((html.match(/lrow__v--ok/g) || []).length, 1);
+  assert.equal((html.match(/lrow__v--no/g) || []).length, 1);
+  assert.ok(!html.includes('evil'));
+});
+
+// ============================================================================
+// prepr round 1 (reworked at prepr blocker 5) — figure-block HTML+twin
+// injection matrix over ALL SIX new Gate Board figure blocks, PER FIELD.
+//
+// EVERY string-bearing ledger field gets its OWN unique marker payload
+// (EVIL_<block>_<field> + an HTML tag, active Markdown, and a newline-smuggled
+// heading), and the assertions walk the field list: each marker must appear
+// esc()-escaped in the HTML AND mdEsc-neutralized in the twin. A single shared
+// payload with a single-occurrence assertion would pass even when one field
+// (topo root.note, duel right.value, dotMatrix row.sub, …) were omitted from a
+// renderer — per-field markers make an omission fail by name. The field list
+// per block is the ONLY maintenance point: add the new field's path when a
+// block grows one. Separately, md() must carry every CLEAN data field (closes
+// the md-behavior coverage for duel / verdictFan / ladder).
+// ============================================================================
+
+const FIGURE_BLOCK_TYPES = ['topo', 'deltaRow', 'duel', 'verdictFan', 'dotMatrix', 'ladder'];
+
+// One unique, field-named payload per (block, field) — tag + bold link + a
+// newline-smuggled heading, so every escaping obligation is exercised per field.
+const evilPayload = (type, field) => `EVIL_${type}_${field.replace(/[^A-Za-z0-9]+/g, '_')}<img x> **[evil](x)** \n# heading`;
+
+// Set a dot-path (array indices are numeric segments) on a base-block skeleton.
+function setPath(obj, path, value) {
+  const parts = path.split('.');
+  let cur = obj;
+  for (const p of parts.slice(0, -1)) cur = cur[p];
+  cur[parts[parts.length - 1]] = value;
+}
+
+// The declarative per-block field map: `base()` is the minimal skeleton
+// (structural non-string bits only), `fields` the dot-paths of EVERY
+// string-bearing ledger field the block renders.
+const FIELD_MAP = {
+  topo: {
+    base: () => ({ type: 'topo', root: {}, children: [{}], aside: {} }),
+    fields: ['root.title', 'root.note', 'children.0.title', 'children.0.note', 'aside.value', 'aside.note'],
+  },
+  deltaRow: {
+    base: () => ({ type: 'deltaRow', items: [{ fromPos: 36, toPos: 0 }] }),
+    fields: ['items.0.label', 'items.0.from', 'items.0.to', 'items.0.min', 'items.0.max'],
+  },
+  duel: {
+    base: () => ({ type: 'duel', left: {}, right: {}, flatline: { values: [''] } }),
+    fields: ['left.label', 'left.value', 'left.note', 'right.label', 'right.value', 'right.note', 'flatline.label', 'flatline.values.0'],
+  },
+  verdictFan: {
+    base: () => ({ type: 'verdictFan', fates: [{ count: 3, variant: 'ok' }] }),
+    fields: ['verdict', 'fates.0.label'],
+  },
+  dotMatrix: {
+    base: () => ({ type: 'dotMatrix', columns: [''], rows: [{ marks: [true] }] }),
+    fields: ['columns.0', 'rows.0.label', 'rows.0.sub'],
+  },
+  ladder: {
+    base: () => ({ type: 'ladder', rows: [{ status: 'ok' }] }),
+    fields: ['rows.0.claim', 'rows.0.cause', 'rows.0.statusLabel'],
+  },
+};
+
+// Clean-render twin coverage: md() must carry every data field of a benign block.
+const FIGURE_MATRIX = {
+  topo: {
+    clean: { type: 'topo', root: { title: 'RootT', note: 'rootN' }, children: [{ title: 'KidT', note: 'kidN' }], aside: { value: '0 → 1,060', note: 'asideN' } },
+    dataBits: ['RootT', 'rootN', 'KidT', 'kidN', '0 → 1,060', 'asideN'],
+  },
+  deltaRow: {
+    clean: { type: 'deltaRow', items: [{ label: 'approve', from: '36%', to: '0%', min: 'lo', max: 'hi', fromPos: 36, toPos: 0 }] },
+    dataBits: ['approve', '36%', '0%', 'lo', 'hi'],
+  },
+  duel: {
+    clean: { type: 'duel', left: { label: 'Plan', value: '0 / 4', note: 'leftN' }, right: { label: 'Code', value: '1 / 1', note: 'rightN' }, flatline: { label: 'Blockers', values: ['8', '7'] } },
+    dataBits: ['Plan', '0 / 4', 'leftN', 'Code', '1 / 1', 'rightN', 'Blockers', '8', '7'], // BOTH duel values + notes + flatline
+  },
+  verdictFan: {
+    clean: { type: 'verdictFan', verdict: 'BLOCK', fates: [{ count: 6, label: 'fixable', variant: 'ok' }, { count: 2, label: 'blocked', variant: 'x' }] },
+    dataBits: ['BLOCK', '6', 'fixable', '2', 'blocked'], // verdict + every count + every label
+  },
+  dotMatrix: {
+    clean: { type: 'dotMatrix', columns: ['ColA', 'ColB'], rows: [{ label: 'rowF', sub: 'rowS', marks: [true, false] }] },
+    dataBits: ['ColA', 'ColB', 'rowF', 'rowS', 'yes'],
+  },
+  ladder: {
+    clean: { type: 'ladder', rows: [{ claim: 'claimA', cause: 'causeA', status: 'ok', statusLabel: 'settled' }, { claim: 'claimB', cause: 'causeB', status: 'mid', statusLabel: 'partly' }] },
+    dataBits: ['claimA', 'causeA', 'settled', 'claimB', 'causeB', 'partly'], // every ladder row, all three fields
+  },
+};
+
+test('the per-field map AND the clean matrix cover exactly the six new figure blocks', () => {
+  assert.deepEqual(Object.keys(FIELD_MAP).sort(), [...FIGURE_BLOCK_TYPES].sort());
+  assert.deepEqual(Object.keys(FIGURE_MATRIX).sort(), [...FIGURE_BLOCK_TYPES].sort());
+});
+
+test('setPath + evilPayload self-test (the loop rides on them)', () => {
+  const o = { a: { b: [{}] } };
+  setPath(o, 'a.b.0.c', 'x');
+  assert.equal(o.a.b[0].c, 'x');
+  assert.ok(evilPayload('topo', 'root.note').startsWith('EVIL_topo_root_note<img x>'));
+  assert.notEqual(evilPayload('topo', 'root.note'), evilPayload('topo', 'root.title'), 'markers are field-unique');
+});
+
+for (const [type, { base, fields }] of Object.entries(FIELD_MAP)) {
+  const poisoned = () => {
+    const block = base();
+    for (const f of fields) setPath(block, f, evilPayload(type, f));
+    return block;
+  };
+  test(`${type}: EVERY string field escapes its own marker payload in the HTML (an omitted field fails by name)`, () => {
+    const html = BLOCKS[type].html(poisoned());
+    assert.ok(!html.includes('<img'), 'no raw <img tag survives anywhere');
+    for (const f of fields) {
+      assert.ok(html.includes(esc(evilPayload(type, f))), `HTML carries the ${f} marker, escaped`);
+    }
+  });
+  test(`${type}: EVERY string field reaches the twin mdEsc-neutralized (an omitted field fails by name)`, () => {
+    const md = BLOCKS[type].md(poisoned());
+    assert.ok(!md.includes('<'), 'no raw < in the twin');
+    assert.doesNotMatch(md, /(?<!\\)\[/, 'every [ is backslash-escaped (no active link/image)');
+    assert.doesNotMatch(md, /^[ \t]*#/m, 'no smuggled line-start heading');
+    for (const f of fields) {
+      assert.ok(md.includes(mdEsc(evilPayload(type, f))), `twin carries the ${f} marker, neutralized`);
+    }
+  });
+}
+
+for (const [type, { clean, dataBits }] of Object.entries(FIGURE_MATRIX)) {
+  test(`${type}: md() carries every data field (nothing silently dropped from the twin)`, () => {
+    const md = BLOCKS[type].md(clean);
+    for (const bit of dataBits) assert.ok(md.includes(bit), `twin carries ${JSON.stringify(bit)}`);
+  });
+}
