@@ -1,7 +1,7 @@
 # Design: the neumorphic Gate Board artifact engine
 
 Initiative: `2026-08-26-neumorphic-gate-board` · Branch: `feat/neumorphic-gate-board`
-Status: **spec for owner review** — approved direction, implementation not started.
+Status: **implemented** on this branch — the full engine shipped and was hardened through the bundle gate (8 rounds) and the pre-PR code gate (10 rounds).
 
 ## 1. Goal and non-goals
 
