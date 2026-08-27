@@ -266,15 +266,24 @@ export function toMarkdown(ledger, type) {
     if (md) lines.push('', md);
   } else if (type === 'dashboard') {
     const d = ledger?.dashboard ?? {};
-    const stats = Array.isArray(d.stats) ? d.stats : null;
+    const stats = Array.isArray(d.stats) ? d.stats : [];
     const rows = Array.isArray(d.rows) ? d.rows : null;
+    // The both-present rule, MIRRORED from templates.mjs dashboard (keep the
+    // two in lockstep) and riding the same rule the liveRun twin above
+    // follows: meta.keyStats — whenever it is an array, the singleBoard hero
+    // pick — takes the head's hero list and d.stats serialize WITHIN the
+    // section as the statRow block (the HTML's visible stat wells); with no
+    // meta.keyStats the PROMOTED d.stats are the head's hero list (before the
+    // ask — the HTML hero's reading order) and are NOT re-serialized as the
+    // section block. Either way the stats appear exactly once.
+    const heroTaken = Array.isArray(meta.keyStats);
     const blocks = [
-      stats && { type: 'statRow', stats },
+      heroTaken && stats.length ? { type: 'statRow', stats } : null,
       d.chart, // straight through => an unknown chart type FAILS CLOSED (parity with the template)
       rows && { type: 'rankedRows', rows },
     ].filter(Boolean);
     const effectiveAsk = askShape(meta.ask) ?? askShape({ headline: d.ask }); // derived candidate gated like meta.ask
-    lines = head(meta, effectiveAsk);
+    lines = head(heroTaken ? meta : { ...meta, keyStats: stats }, effectiveAsk);
     const md = blocksToMarkdown(blocks);
     if (md) lines.push('', md);
   } else {

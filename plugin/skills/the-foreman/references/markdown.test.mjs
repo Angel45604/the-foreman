@@ -336,6 +336,28 @@ test('toMarkdown dashboard twin with BOTH meta.keyStats and d.stats keeps both: 
   assert.ok(md.indexOf('> **The ask:**') < md.indexOf('$0.12'), 'derived stats ride the section, after the head');
 });
 
+// ---- prepr blocker: promoted dashboard stats mirror the HTML hero order ----
+// With no meta.keyStats the HTML promotes d.stats to the HERO tiles — above
+// the ask strip. The twin used to serialize them as the section statRow AFTER
+// the ask, diverging from the HTML's reading order. The promoted stats now
+// ride the head's hero list (before the ask) and the section block is NOT
+// re-serialized — exactly once, the same mirroring liveRun's synthesized pair
+// already follows. The both-present split is pinned unchanged above.
+test('toMarkdown dashboard twin withOUT meta.keyStats: promoted d.stats ride the head, before the ask, exactly once', () => {
+  const md = toMarkdown({
+    meta: META,
+    dashboard: {
+      stats: [{ value: '$0.12', label: 'Spend' }],
+      rows: [{ label: 'Tyler', value: '$10' }],
+      ask: 'approve budget?',
+    },
+  }, 'dashboard').markdown;
+  assert.match(md, /^- \*\*\$0\.12\*\* — Spend$/m);
+  assert.ok(md.indexOf('— Spend') < md.indexOf('> **The ask:**'), 'promoted stats ride the head, before the ask (hero position)');
+  assert.equal((md.match(/— Spend$/gm) || []).length, 1, 'the stats serialize exactly once — never re-serialized as the section block');
+  assert.ok(md.indexOf('> **The ask:**') < md.indexOf('— $10'), 'the section content (rows) still follows the head');
+});
+
 test('toMarkdown dashboard twin FAILS CLOSED on an unknown chart type', () => {
   assert.throws(
     () => toMarkdown({ meta: META, dashboard: { chart: { type: 'bogusChart' } } }, 'dashboard'),
