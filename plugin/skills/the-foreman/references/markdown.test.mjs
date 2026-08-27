@@ -444,6 +444,21 @@ test('twin conflict (decisionCard): meta.ask overrides the decision ask identica
   assert.match(md, /^\*\*Decision:\*\* Q\?$/m);                          // the options evidence still renders
 });
 
+// prepr round 1: the twin's askShape mirror also requires a non-empty string
+// headline — {}, {note:'x'} and {headline:''} fall through to the derived ask.
+for (const [label, ask] of [['empty object', {}], ['note-only object', { note: 'x' }], ['empty-string headline', { headline: '' }]]) {
+  test(`twin askShape parity: ${label} meta.ask falls through to the derived decision ask`, () => {
+    const md = toMarkdown({
+      meta: { ...META, ask },
+      decision: { question: 'Q?', options: [], recommendation: 'A', recommendedBy: 'Codex' },
+    }, 'decisionCard').markdown;
+    assert.match(md, /^> \*\*The ask:\*\* Q\?$/m);                     // derived from the decision
+    assert.match(md, /^> \*\*Recommendation:\*\* A$/m);
+    assert.match(md, /^> \(Codex\)$/m);
+    assert.doesNotMatch(md, /^> x$/m);                                 // no orphan note line rides along
+  });
+}
+
 test('twin askShape parity: a malformed meta.ask (plain string) falls through to the derived ask', () => {
   const md = toMarkdown({
     meta: { ...META, ask: 'not an object' },

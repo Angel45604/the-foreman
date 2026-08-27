@@ -462,3 +462,26 @@ test('decisionCard with NO ask source: content label, no ask strip, no dead link
   assert.deepEqual(chipIds(h), ['top', 'decision']);
   assert.doesNotMatch(h, /class="ask"/);
 });
+
+// ---- prepr round 1: askShape requires a NON-EMPTY string headline ----
+// An object meta.ask without one ({}, {note:'x'}, {headline:''}) used to win the
+// nullish pick, blank the strip, and drop decision.question. Each must fall
+// through to the derived decision ask exactly like the non-object malformed cases.
+for (const [label, ask] of [['empty object', {}], ['note-only object', { note: 'x' }], ['empty-string headline', { headline: '' }]]) {
+  test(`${label} meta.ask is malformed: falls through to the derived decision ask (nothing dropped)`, () => {
+    const h = decisionCard({ meta: { title: 'D', ask }, decision: ASK_DECISION }).bodyHtml;
+    assert.deepEqual(chipIds(h), ['top', 'your-call']);
+    const vis = stripDetails(h);
+    assert.match(vis, /Ship it\?/);                          // decision.question drives strip + target
+    assert.doesNotMatch(h, /<b><\/b>/);                      // never an empty ask headline
+    assert.match(vis, /class="opt\b/);                       // option cards render
+    assert.equal((h.match(/class="rec"/g) || []).length, 1); // the decision's own .rec strip
+    assert.match(h, /Recommendation — <span>A<\/span>/);
+  });
+}
+test('note-only meta.ask does not smuggle its note into the derived ask (planDeck path too)', () => {
+  const { bodyHtml } = planDeck({ meta: { title: 't', ask: { note: 'orphan note' } }, slides: [],
+    decision: { question: 'Q?', options: [], recommendation: 'A' } });
+  assert.match(bodyHtml, /Q\?/);                             // derived ask headline
+  assert.doesNotMatch(bodyHtml, /orphan note/);              // the malformed ask participates not at all
+});

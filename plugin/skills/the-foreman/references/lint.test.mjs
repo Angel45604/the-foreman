@@ -69,10 +69,27 @@ test('missing-ask fires on a gate type with neither meta.ask nor a natural ask s
   assert.deepEqual(lintLedger({ meta, decision: { question: 'q' } }, 'decisionCard'), []);
   assert.deepEqual(lintLedger({ meta, win: { landed: 'x', next: 'ship it' } }, 'brief'), []);
   assert.deepEqual(lintLedger({ meta, liveRun: { what: 'w' } }, 'liveRun'), []);
-  // a malformed (non-object) meta.ask is NOT an ask source — same askShape gate as the templates
-  assert.deepEqual(lintLedger({ meta: { ...meta, ask: 'approve?' } }, 'decisionCard'), ['lint: missing-ask meta']);
+  // a malformed (non-object) meta.ask is NOT an ask source — same askShape gate as the
+  // templates — and, being present-but-malformed, it ALSO fires the malformed-ask rule
+  assert.deepEqual(lintLedger({ meta: { ...meta, ask: 'approve?' } }, 'decisionCard'),
+    ['lint: malformed-ask meta', 'lint: missing-ask meta']);
   // non-gate types never fire it
   assert.deepEqual(lintLedger({ meta }, 'dashboard'), []);
+});
+
+// ---- prepr round 1: malformed-ask fires when meta.ask is present but fails askShape ----
+test('malformed-ask fires for {}, {note}, {headline:""} — the shapes that used to blank the strip', () => {
+  for (const ask of [{}, { note: 'x' }, { headline: '' }, { headline: '   ' }, 'approve?', 7, ['a']]) {
+    const out = lintLedger({ meta: { title: 't', verdict: 'v', ask }, decision: { question: 'q' } }, 'decisionCard');
+    assert.deepEqual(out, ['lint: malformed-ask meta'], JSON.stringify(ask)); // natural ask present => no missing-ask
+  }
+});
+test('malformed-ask never fires for a well-shaped ask, an absent ask, or a non-gate type without one', () => {
+  assert.deepEqual(lintLedger(clean, 'planDeck'), []);
+  assert.deepEqual(lintLedger({ meta: { title: 't' }, dashboard: { stats: [] } }, 'dashboard'), []);
+  // present-but-malformed fires on NON-gate types too (meta.ask overrides every type's derived ask)
+  assert.deepEqual(lintLedger({ meta: { title: 't', ask: {} }, dashboard: { stats: [] } }, 'dashboard'),
+    ['lint: malformed-ask meta']);
 });
 
 test('keystats-count fires when meta.keyStats is present with length outside 3..5', () => {

@@ -26,10 +26,13 @@ import { firstClause } from './scaffold.mjs';
 const fav = (ledger) => (ledger?.meta?.favicon ?? '🛠️');
 
 // The effective-ask gate, MIRRORED VERBATIM from templates.mjs (which keeps it
-// module-local): only a well-shaped object counts as meta.ask; anything else
-// falls through to the type's derived ask — so a conflicting meta.ask wins
-// IDENTICALLY in HTML and twin (design §6, Task 11). Keep the two in lockstep.
-const askShape = (a) => (a && typeof a === 'object' && !Array.isArray(a) ? a : null);
+// module-local — two copies by design; keep the two in lockstep): only an
+// object with a NON-EMPTY string headline counts as meta.ask; anything else
+// ({}, {note:'x'}, {headline:''}, a plain string/number/array) falls through to
+// the type's derived ask — so a conflicting meta.ask wins IDENTICALLY in HTML
+// and twin (design §6, Task 11).
+const askShape = (a) => (a && typeof a === 'object' && !Array.isArray(a)
+  && typeof a.headline === 'string' && a.headline.trim() !== '' ? a : null);
 
 // The shared ask serializer: recommendation and attribution reach the twin
 // EXCLUSIVELY through here (never via decisionToMarkdown or a per-type line).

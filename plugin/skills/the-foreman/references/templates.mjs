@@ -35,13 +35,18 @@ function heroOf(meta, fallbackVerdict = '') {
 // one from its question + recommendation. One computation drives the ask
 // strip, the target chapter's visible header, AND the single .rec strip.
 //
-// askShape is the ONE gate deciding whether meta.ask participates: only a real
-// object counts. A malformed meta.ask (empty string, plain string, number) must
-// fall through to the derived ask — an empty-string ask would otherwise win the
-// nullish check and silently drop a decisionCard's entire payload, and a
-// plain-string ask would spread into an empty headline. Both templates' paths
-// (askOf here, singleBoard below) MUST use this same normalizer.
-const askShape = (a) => (a && typeof a === 'object' && !Array.isArray(a) ? a : null);
+// askShape is the ONE gate deciding whether meta.ask participates: only an
+// object with a NON-EMPTY string headline counts. A malformed meta.ask (empty
+// string, plain string, number, OR an object without a real headline — {},
+// {note:'x'}, {headline:''}) must fall through to the derived ask — such an
+// object would otherwise win the nullish check, blank the ask strip, and
+// silently drop decision.question (a decisionCard's entire payload). Both
+// templates' paths (askOf here, singleBoard below) MUST use this same
+// normalizer. MIRRORED in markdown.mjs (its module-local copy — two copies by
+// design; keep the two in lockstep), and lint.mjs's malformed-ask rule rides
+// the same predicate.
+const askShape = (a) => (a && typeof a === 'object' && !Array.isArray(a)
+  && typeof a.headline === 'string' && a.headline.trim() !== '' ? a : null);
 
 function askOf(ledger) {
   const shaped = askShape(ledger?.meta?.ask);
