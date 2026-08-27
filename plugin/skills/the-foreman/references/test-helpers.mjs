@@ -49,7 +49,11 @@ export function parseRules(css) {
       .flatMap((d) => {
         const idx = d.indexOf(':');
         if (idx === -1) return [];
-        return [{ prop: d.slice(0, idx).trim(), value: d.slice(idx + 1).trim() }];
+        const rawProp = d.slice(0, idx).trim();
+        // standard property names are case-insensitive in CSS (BACKGROUND: is valid);
+        // custom properties (--lineV) are case-SENSITIVE by spec and must not be folded
+        const prop = rawProp.startsWith('--') ? rawProp : rawProp.toLowerCase();
+        return [{ prop, value: d.slice(idx + 1).trim() }];
       });
     rules.push({ selector, declarations });
   };
@@ -86,7 +90,7 @@ export const MARKER_SELECTORS = new Set([
   '.tag i', '.tag--spawn i', '.tag--code i', '.opt__rec i', '.opt__risk i',
   '.opt__risk--low i', '.opt__risk--med i', '.opt__risk--high i',
   '.lrow__v i', '.lrow__v--ok i', '.lrow__v--mid i', '.lrow__v--no i',
-  '.blt i', '.chip crumb', '.scrollx::-webkit-scrollbar-thumb', '.flatline i',
+  '.blt i', '.scrollx::-webkit-scrollbar-thumb', '.flatline i',
   '.pill i', '.arm--ok span i', '.arm--bad span i', '.mx__d.miss i::after',
   '.ev__tog::before', '.ev__tog::after',
 ]);

@@ -57,6 +57,7 @@ test('one-rule oracle mutation checks: forbidden fills and borders are caught', 
   assert.ok(oracleBadBorders(css + '\n.evil{border-image-source:radial-gradient(red,red);}').length > 0);
   assert.ok(oracleOffenders(css + '\n.ring__t.on{background:#ff0000;}').length > 0);
   assert.ok(oracleOffenders(css + '\n.evil{background:radial-gradient(var(--bg),#ff0000);}').length > 0);
+  assert.ok(oracleOffenders(css + '\n.evil{BACKGROUND: #ff0000;}').length > 0); // case-smuggled property
 });
 
 test('embedded fonts: both faces declared with the portfolio weight ranges', () => {
