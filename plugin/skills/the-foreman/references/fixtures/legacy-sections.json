@@ -1,0 +1,73 @@
+{
+  "meta": {
+    "title": "Every typed section in one ledger",
+    "crumb": "LEGACY · ALL SECTIONS",
+    "favicon": "🧪",
+    "subtitle": "A legacy subtitle standing in for the verdict"
+  },
+  "slides": [
+    {
+      "chapter": "One",
+      "kicker": "SLIDE",
+      "heading": "The one content slide",
+      "bullets": ["a bullet"],
+      "blocks": [
+        { "type": "statRow", "stats": [{ "value": "3", "label": "things", "variant": "ok" }] }
+      ]
+    }
+  ],
+  "findings": {
+    "items": [
+      { "title": "F1", "confidence": "High", "evidence": "E1", "verdict": "Confirmed" }
+    ],
+    "sources": [
+      { "label": "files read", "value": "12" }
+    ],
+    "summary": "One finding held."
+  },
+  "liveRun": {
+    "what": "Dry sweep of the corpus.",
+    "cost": "Zero spend · read-only",
+    "blastRadius": "Read-only.",
+    "cleanup": "Nothing to clean."
+  },
+  "decision": {
+    "question": "Ship it?",
+    "options": [
+      { "label": "A — ship", "pros": "It is done.", "cons": "None seen.", "risk": "low" },
+      { "label": "B — wait", "pros": "Safer.", "cons": "Slower.", "risk": "med" }
+    ],
+    "recommendation": "A — ship",
+    "recommendedBy": "Claude"
+  },
+  "win": {
+    "landed": "The corpus renders.",
+    "evidence": "Suite green.",
+    "verified": true,
+    "next": "Run the sweep."
+  },
+  "phaseTracker": {
+    "phases": [
+      { "label": "P1", "status": "done", "detail": "landed" },
+      { "label": "P2", "status": "active" },
+      { "label": "P3" }
+    ],
+    "progress": { "value": 1, "max": 3, "label": "phases" },
+    "note": "Authorize P2?"
+  },
+  "comparison": {
+    "criteria": ["speed", "cost"],
+    "options": [
+      { "label": "A", "scores": ["fast", "$$"], "note": "n1" },
+      { "label": "B", "scores": ["slow", "$"] }
+    ],
+    "recommendation": "A",
+    "recommendedBy": "Claude"
+  },
+  "dashboard": {
+    "stats": [{ "value": "420", "label": "tests" }],
+    "chart": { "type": "bar", "bars": [{ "label": "pass", "value": 420 }], "max": 420 },
+    "rows": [{ "label": "suite", "value": "green" }],
+    "ask": "Keep going?"
+  }
+}
