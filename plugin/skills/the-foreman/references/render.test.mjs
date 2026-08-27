@@ -11,7 +11,7 @@ const base = { meta:{ title:'T', crumb:'C', favicon:'🛠️', accent:'#009ACC' 
 test('renders a self-contained HTML file with style + engine inlined; no external refs', async () => {
   const f = fixture(base); await render(f.ledgerPath,'planDeck',f.out);
   const html = readFileSync(f.out,'utf8');
-  assert.match(html, /<title>T<\/title>/); assert.match(html, /--accent:#009ACC/);
+  assert.match(html, /<title>T<\/title>/); assert.match(html, /--ac: var\(--user-ac, #5b7cfa\)/); // the sheet is inlined (house-default accent chain)
   assert.match(html, /addEventListener\('keydown'/);
   assert.doesNotMatch(html, /<link|<script src=|https?:\/\//);
 });
@@ -41,10 +41,10 @@ test('the rendered HTML ships BOTH the auto dark media query AND a forced [data-
   const f = fixture(base); await render(f.ledgerPath,'planDeck',f.out);
   const html = readFileSync(f.out,'utf8');
   assert.match(html, /@media \(prefers-color-scheme: dark\)/); // auto: respects the viewer's OS
-  // auto carrier overrides light unless the deck forces light, and re-paints the canvas dark
-  assert.match(html, /:root:not\(\[data-theme="light"\]\)\s*\{[^}]*--paper:#0F1419/);
-  // FORCED dark rule with an actual body (not just the selector in a comment) — pins the lifted accent too
-  assert.match(html, /:root\[data-theme="dark"\]\s*\{[^}]*--accent:#3BB7E8/);
+  // auto carrier overrides light unless the deck forces light, and re-paints the canvas Blue Graphite
+  assert.match(html, /:root:not\(\[data-theme="light"\]\)\s*\{[^}]*--bg:#282e39/);
+  // FORCED dark rule with an actual body (not just the selector in a comment) — pins the lifted accent chain too
+  assert.match(html, /:root\[data-theme="dark"\]\s*\{[^}]*--ac: var\(--user-ac, #6687ff\)/);
 });
 test('meta.theme:"dark" injects exactly the inline data-theme init script (no src)', async () => {
   const f = fixture({ ...base, meta:{ ...base.meta, theme:'dark' } });
@@ -89,10 +89,12 @@ test('honors meta.accent (strict hex) by overriding the CSS accent variable', as
   await render(f.ledgerPath,'planDeck',f.out);
   assert.match(readFileSync(f.out,'utf8'), /--accent:#FF0000/);
 });
-test('ignores a non-hex accent (no CSS injection; #009ACC default stands)', async () => {
+test('ignores a non-hex accent (no CSS injection; the house-default accent chain stands)', async () => {
   const f = fixture({ ...base, meta:{ ...base.meta, accent:'red;}body{display:none}' } });
   await render(f.ledgerPath,'planDeck',f.out); const html = readFileSync(f.out,'utf8');
-  assert.doesNotMatch(html, /body\{display:none\}/); assert.match(html, /--accent:#009ACC/);
+  assert.doesNotMatch(html, /body\{display:none\}/);
+  assert.doesNotMatch(html, /<style>:root\{--accent:/);            // no override style emitted
+  assert.match(html, /--ac: var\(--user-ac, #5b7cfa\)/);           // the sheet's default chain stands
 });
 test('FAILS CLOSED on a modern token format (sk-proj) in the ledger', async () => {
   const f = fixture({ ...base, slides:[{ kicker:'K', heading:'key sk-proj-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', cards:[] }] });
@@ -283,17 +285,20 @@ test('chapters rail: a board WITH chapters renders rail chips + matching section
   assert.equal((html.match(/id="discovery"/g) || []).length, 1); // consecutive slides share ONE section
   assert.doesNotMatch(html, /<link|<script src=|https?:\/\//); // the no-external-refs invariant holds
 });
-test('chapters panel does NOT force-open on #toctgl focus (Escape + focus-return must visually close)', async () => {
+// Gate Board successor to the retired #toctgl/#chapters panel pin: navigation is
+// now the sticky rail, and the page must degrade cleanly without JS — the same
+// "chrome never wedges/lies" property, in the new system.
+test('gate-board chrome: sticky rail styled; JS-only controls ship hidden until the script lands', async () => {
   const f = fixture(base); await render(f.ledgerPath,'planDeck',f.out);
   const html = readFileSync(f.out,'utf8');
-  // #toctgl:focus must NOT reveal the panel: closePanel(true) removes .open AND refocuses
-  // #toctgl, so a focus-reveal selector would keep it visible despite the close.
-  assert.doesNotMatch(html, /#toctgl:focus\s*\+\s*#chapters/);
-  assert.match(html, /#chapters\.open\{[^}]*visibility:visible/); // still revealed by the .open click-pin
+  assert.match(html, /\.nav\{\s*position: sticky/);               // the rail pins to the viewport top
+  assert.match(html, /\.jsonly\{ display: none; \}/);             // Expand/Collapse-all hidden no-JS
+  assert.match(html, /\.js \.jsonly\{ display: inline-flex; \}/); // revealed only once the script lands
 });
-test('phaseStep detail stacks UNDER the label (full-width new line, not an inline flex item)', async () => {
+// Gate Board successor to the retired .phasestep detail pin: the stops track's
+// detail paragraph stacks under the label (same stacking property, new markup).
+test('phaseSteps stop detail stacks UNDER the label (flex-column stop body)', async () => {
   const f = fixture(base); await render(f.ledgerPath,'planDeck',f.out);
   const html = readFileSync(f.out,'utf8');
-  assert.match(html, /\.phasestep\{[^}]*flex-wrap:wrap/);                 // chip wraps so detail drops to its own line
-  assert.match(html, /\.phasestep \.phase-detail\{[^}]*flex-basis:100%/); // detail forced full-width on a new line
+  assert.match(html, /\.stop__body\{[^}]*flex-direction: column/); // the stop body is a column: label, detail <p>, sign
 });
