@@ -263,18 +263,28 @@ test('donut MD clamps a FINITE value > max to 100%', () => {
   assert.match(md, /\*\*100%\*\*/);   // finite over-max clamps via Math.min
 });
 
-// ---- bar (horizontal bars; SVG) ----
-test('bar HTML emits an inline svg with role=img and a rect per bar', () => {
-  const html = BLOCKS.bar.html({ type: 'bar', bars: [{ label: 'A', value: 10 }, { label: 'B', value: 5 }] });
-  assert.match(html, /<svg[^>]*role="img"/);
-  const rects = html.match(/<rect/g) || [];
-  assert.ok(rects.length >= 2, 'a rect per bar');
-  assert.match(html, />A</);
-  assert.match(html, />10</);   // value shown as text
+// ---- bar (carved-track rows; HTML, no SVG — the Gate Board restyle) ----
+test('bar renders carved tracks for all bars; tags allowlisted and additive', () => {
+  const untagged = renderBlocks([{ type: 'bar', bars: [{ label: 'a<b', value: 2 }, { label: 'c', value: 4 }] }]);
+  assert.match(untagged, /class="bars"/);
+  assert.match(untagged, /a&lt;b/);
+  assert.match(untagged, /--w:50/);                            // 2/4 of the largest
+  assert.match(untagged, /--w:100/);
+  assert.ok(!untagged.includes('<svg'));                       // SVG form retired
+  const tagged = renderBlocks([{ type: 'bar', bars: [{ label: 'a', value: 1,
+    tags: [{ label: '3 spawns', kind: 'spawn' }, { label: 'x', kind: 'bad"' }] }] }]);
+  assert.match(tagged, /class="tag tag--spawn"/);
+  assert.match(tagged, /class="tag"><i><\/i>x</);              // unknown kind → bare tag, escaped
+  assert.ok(!tagged.includes('bad"'));
 });
 
-test('bar HTML survives NaN / Infinity / overflow / negative values (no NaN/Infinity, width <= track)', () => {
-  const TRACK = 100; // the bar.html track width in user units; bars normalize into this
+test('bar numeric guards survive the restyle', () => {
+  const html = renderBlocks([{ type: 'bar', bars: [{ label: 'x', value: 1e999 }, { label: 'y', value: -3 }] }]);
+  assert.ok(!/NaN|Infinity/.test(html));
+  assert.match(html, /--w:0/);                                 // non-finite → fallback 0; negative → clamped 0
+});
+
+test('bar HTML survives NaN / Infinity / overflow / negative values (no NaN/Infinity, --w within [0,100])', () => {
   const html = BLOCKS.bar.html({ type: 'bar', bars: [
     { label: 'nan', value: NaN },
     { label: 'inf', value: Infinity },
@@ -283,8 +293,10 @@ test('bar HTML survives NaN / Infinity / overflow / negative values (no NaN/Infi
     { label: 'ok', value: 5 },
   ] });
   assert.doesNotMatch(html, BAD_NUM);
-  for (const m of html.matchAll(/<rect[^>]*\bwidth="([\d.]+)"/g)) {
-    assert.ok(Number(m[1]) <= TRACK + 1e-6, `bar width ${m[1]} <= track ${TRACK}`);
+  const ws = [...html.matchAll(/--w:(-?[\d.]+)/g)];
+  assert.ok(ws.length >= 5, 'a --w per bar');
+  for (const m of ws) {
+    assert.ok(Number(m[1]) >= 0 && Number(m[1]) <= 100, `--w ${m[1]} within [0,100]`);
   }
 });
 
@@ -314,6 +326,16 @@ test('bar MD emits inert "- label: value" per bar (escaped)', () => {
 test('bar MD safeNums a bad value (no NaN/Infinity)', () => {
   const md = BLOCKS.bar.md({ type: 'bar', bars: [{ label: 'A', value: OVERFLOW }] });
   assert.doesNotMatch(md, BAD_NUM);
+});
+
+test('bar MD appends escaped tag labels as " [t1, t2]" only when tags exist (line unchanged otherwise)', () => {
+  const md = BLOCKS.bar.md({ type: 'bar', bars: [
+    { label: 'A', value: 10, tags: [{ label: '3 spawns', kind: 'spawn' }, { label: '<x>', kind: 'code' }] },
+    { label: 'B', value: 5 },
+  ] });
+  assert.match(md, /^- A: 10 \[3 spawns, &lt;x&gt;\]$/m); // labels mdEsc'd inside my static brackets
+  assert.match(md, /^- B: 5$/m);                          // untagged line byte-identical to before
+  assert.doesNotMatch(md, /<x>/);
 });
 
 // ---- lineSpark (sparkline; SVG) ----

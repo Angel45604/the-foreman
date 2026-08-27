@@ -69,6 +69,11 @@ const diffOp = (op) => (DIFF_OPS.has(op) ? op : ' ');
 // else (incl. an injection smuggled through `variant`) falls back to bare.
 const PILL_VARIANTS = new Set(['ok', 'warn']);
 
+// bar tag-kind allowlist (Gate Board) — only these pick a `.tag--…` modifier
+// class; anything else (incl. an injection smuggled through `kind`) falls back
+// to the bare `.tag`. Same fail-closed posture as the allowlists above.
+const BAR_TAG_KINDS = new Set(['spawn', 'code']);
+
 // verdictFan fate-variant allowlist (Gate Board) — only these pick a modifier
 // class; anything else (incl. an injection smuggled through `variant`) is
 // coerced to 'x'. Same fail-closed posture as the allowlists above.
@@ -151,7 +156,8 @@ const BLOCKS = {
   },
 
   // ---- metrics / charts (Phase 2b) ----
-  // SVG safety contract (donut/bar/lineSpark): inline <svg> only, with
+  // SVG safety contract (donut/lineSpark; bar is HTML-only since the Gate Board
+  // restyle): inline <svg> only, with
   // <circle>/<rect>/<line>/<polyline>/<text>/<g> + LITERAL geometry and
   // var(--…) colors. NONE of href/xlink:href/<image>/<use>/<foreignObject>/
   // url(...)/style-url/http(s). Labels go through esc(); EVERY number through
@@ -206,8 +212,13 @@ const BLOCKS = {
     },
   },
 
-  // { type:'bar', bars:[{ label:string, value:number }], max?:number }
-  // Horizontal bars; width ∝ safeNum(value,{min:0}) / (max || largest value || 1).
+  // { type:'bar', bars:[{ label:string, value:number, tags?:[{label, kind?:'spawn'|'code'}] }], max?:number }
+  // The carved-track wall-bar figure (Gate Board restyle — HTML, no SVG): one
+  // `.brow` per bar with a `.brow__rail` track whose fill/end-marker widths are
+  // driven by a `--w` custom prop = round(min(100, value/denom*100)), denom per
+  // the ORIGINAL rules (declared max > largest value > 1). Optional per-bar
+  // `tags` render as `.tag` chips; `kind` is strictly allowlisted (BAR_TAG_KINDS)
+  // and only ever PICKS a static modifier class — never interpolated raw.
   bar: {
     html(block) {
       const bars = Array.isArray(block?.bars) ? block.bars : [];
@@ -215,33 +226,28 @@ const BLOCKS = {
       const declaredMax = block?.max != null ? safeNum(block.max, { min: 0 }) : 0;
       const largest = values.reduce((m, v) => (v > m ? v : m), 0);
       const denom = declaredMax > 0 ? declaredMax : largest > 0 ? largest : 1; // never 0
-      // layout: a 320-wide viewBox; the track for each bar is TRACK wide.
-      const TRACK = 100; // bar fills 0..TRACK user-units (the test pins this)
-      const labelW = 96;
-      const rowH = 26;
-      const W = labelW + TRACK + 80; // room for the value text after the bar
-      const H = Math.max(rowH, bars.length * rowH);
-      const aria = esc(`bar chart, ${bars.length} bar${bars.length === 1 ? '' : 's'}`);
-      const rows = bars
-        .map((b, i) => {
-          const v = values[i];
-          const w = round(Math.min(TRACK, (v / denom) * TRACK)); // clamped <= TRACK
-          const y = i * rowH;
-          const cy = round(y + rowH / 2);
-          // Display the SAFE numeric value — never the raw ledger value (which
-          // could be "NaN"/"Infinity"). esc() is belt-and-suspenders over a number.
-          return `<text x="0" y="${round(cy + 4)}" class="bar-label">${esc(b?.label)}</text>`
-            + `<rect x="${labelW}" y="${round(y + 5)}" width="${TRACK}" height="14" rx="4" fill="var(--line)"/>`
-            + `<rect x="${labelW}" y="${round(y + 5)}" width="${w}" height="14" rx="4" fill="var(--accent)"/>`
-            + `<text x="${labelW + TRACK + 8}" y="${round(cy + 4)}" class="bar-value">${esc(v)}</text>`;
-        })
-        .join('');
-      return `<div class="barwrap"><svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="${aria}">${rows}</svg></div>`;
+      const rows = bars.map((b, i) => {
+        const v = values[i];
+        const w = round(Math.min(100, (v / denom) * 100));
+        const tags = (Array.isArray(b?.tags) ? b.tags : []).map((t) => {
+          const kind = BAR_TAG_KINDS.has(t?.kind) ? ` tag--${t.kind}` : '';
+          return `<span class="tag${kind}"><i></i>${esc(t?.label)}</span>`;
+        }).join('');
+        // Display the SAFE numeric value — never the raw ledger value (which
+        // could be "NaN"/"Infinity"). esc() is belt-and-suspenders over a number.
+        return `<div class="brow"><div class="brow__l"><b>${esc(b?.label)}</b>${tags ? `<span class="brow__tags">${tags}</span>` : ''}</div>`
+          + `<div class="brow__bar"><div class="brow__rail"><i style="--w:${w}"></i><em style="--w:${w}"></em></div>`
+          + `<span class="brow__v">${esc(v)}</span></div></div>`;
+      }).join('');
+      return `<div class="bars">${rows}</div>`;
     },
     md(block) {
       const bars = Array.isArray(block?.bars) ? block.bars : [];
-      // safeNum the value so the twin never emits "NaN"/"Infinity" either.
-      return bars.map((b) => `- ${mdEsc(b?.label)}: ${mdEsc(safeNum(b?.value, { min: 0 }))}`).join('\n');
+      // safeNum the value so the twin never emits "NaN"/"Infinity" either. The
+      // ` [tag1, tag2]` brackets are static literals I author; only each tag
+      // label is ledger-derived, so only it needs mdEsc. Untagged bars emit a
+      // line byte-identical to the pre-restyle twin.
+      return bars.map((b) => `- ${mdEsc(b?.label)}: ${mdEsc(safeNum(b?.value, { min: 0 }))}${Array.isArray(b?.tags) && b.tags.length ? ` [${b.tags.map((t) => mdEsc(t?.label)).join(', ')}]` : ''}`).join('\n');
     },
   },
 
