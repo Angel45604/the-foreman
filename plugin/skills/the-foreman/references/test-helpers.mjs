@@ -29,12 +29,17 @@ export function stripDetails(html) {
 //
 // parseRules(css): a brace-depth walker over the stylesheet. Comments are
 // stripped first; every `{` pushes the pending prelude as a selector and every
-// `}` pops it, flushing one {selector, declarations} record — so rules nested
-// inside @media / @supports bodies are captured with their OWN selectors (a
-// naive split('}') skips the first nested rule and would let a media-query
-// fill through). Declarations split on ';' then on the FIRST ':'; fragments
-// without a colon (e.g. the tail of a semicolon-bearing data: URI) are
-// skipped — they can never carry a background/border prop.
+// `}` pops it, flushing one {selector, declarations, atAncestry} record — so
+// rules nested inside @media / @supports bodies are captured with their OWN
+// selectors (a naive split('}') skips the first nested rule and would let a
+// media-query fill through). atAncestry (additive, prepr blocker) is the
+// rule's enclosing at-rule preludes outermost-first (e.g.
+// ['@media (prefers-color-scheme: dark)']) — WITHOUT it the walker flattens
+// at-rules and nothing can assert WHERE a rule sits, so a dark carrier hoisted
+// to top level (dark forced on everyone) parsed identically to the guarded
+// one. Declarations split on ';' then on the FIRST ':'; fragments without a
+// colon (e.g. the tail of a semicolon-bearing data: URI) are skipped — they
+// can never carry a background/border prop.
 export function parseRules(css) {
   const s = String(css ?? '').replace(/\/\*[\s\S]*?\*\//g, '');
   const rules = [];
@@ -55,7 +60,9 @@ export function parseRules(css) {
         const prop = rawProp.startsWith('--') ? rawProp : rawProp.toLowerCase();
         return [{ prop, value: d.slice(idx + 1).trim() }];
       });
-    rules.push({ selector, declarations });
+    // the caller pops the rule's own prelude BEFORE flushing, so the stack now
+    // holds exactly the enclosing preludes; the at-rules among them are the ancestry
+    rules.push({ selector, declarations, atAncestry: stack.filter((sel) => sel.startsWith('@')) });
   };
   for (const ch of s) {
     if (ch === '{') {
@@ -169,6 +176,28 @@ export function oracleTokenOffenses(css) {
     const map = Object.fromEntries(r.declarations.map((d) => [d.prop, d.value]));
     for (const [prop, value] of Object.entries(LIGHT_TOKENS)) {
       if (map[prop] !== value) offenses.push(`:root → ${prop}:${map[prop] ?? '(missing)'} (expected ${value})`);
+    }
+  }
+  return offenses;
+}
+
+// Auto-dark containment (prepr blocker): the media-guarded dark carrier
+// :root:not([data-theme="light"]) OVERRIDES light for every viewer wherever it
+// applies — its entire safety is the @media (prefers-color-scheme: dark)
+// guard. This oracle pins that containment: every rule whose selector list
+// carries the auto carrier must have the dark media query in its atAncestry.
+// A top-level copy (or one smuggled under any OTHER at-rule) is an offense.
+// The stamped carrier :root[data-theme="dark"] is deliberately NOT covered —
+// it is unconditional by design (the explicit toggle must win in both themes).
+const AUTO_DARK_CARRIER = ':root:not([data-theme="light"])';
+const DARK_MEDIA_RE = /^@media[^{]*prefers-color-scheme:\s*dark/;
+export function oracleAutoDarkOffenses(css) {
+  const offenses = [];
+  for (const r of parseRules(css)) {
+    const sels = r.selector.split(',').map((s) => s.trim());
+    if (!sels.includes(AUTO_DARK_CARRIER)) continue;
+    if (!r.atAncestry.some((a) => DARK_MEDIA_RE.test(a))) {
+      offenses.push(`${r.selector} → outside @media (prefers-color-scheme: dark) [${r.atAncestry.join(' > ') || 'top level'}]`);
     }
   }
   return offenses;

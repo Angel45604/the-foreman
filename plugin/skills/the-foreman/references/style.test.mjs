@@ -14,7 +14,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseRules, oracleOffenders, oracleBadBorders, oracleTokenOffenses } from './test-helpers.mjs';
+import { parseRules, oracleOffenders, oracleBadBorders, oracleTokenOffenses, oracleAutoDarkOffenses } from './test-helpers.mjs';
 import { liveRun } from './templates.mjs';
 const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8');
 
@@ -71,6 +71,42 @@ test('the one rule: no visible borders, no second surface fills, engraved divide
   assert.ok(!/url\(\s*['"]?https?:/.test(css));                  // no external requests (ADR-003)
   assert.match(css, /data:font\/woff2;base64,/);                 // fonts embedded
   assert.match(css, /SIL OPEN FONT LICENSE|OFL/);                // license notice rides in the stylesheet
+});
+
+// ---- prepr blocker: at-rule ANCESTRY, not just capture ----
+// parseRules used to flatten at-rules: nested rules were captured with their
+// own selectors, but NOTHING proved the auto-dark carrier actually sits INSIDE
+// @media (prefers-color-scheme: dark) — a mutation hoisting
+// :root:not([data-theme="light"]) to top level (forcing dark on every viewer)
+// passed every assertion. Each rule now records its at-rule ancestry, and the
+// auto-dark containment oracle pins WHERE the carrier lives.
+test('at-rule ancestry: the auto-dark carrier is INSIDE the dark media query; stamped carrier + light :root at top level', () => {
+  const rules = parseRules(css);
+  const auto = rules.filter((r) => r.selector === ':root:not([data-theme="light"])');
+  assert.equal(auto.length, 1, 'exactly one auto-dark carrier rule');
+  assert.deepEqual(auto[0].atAncestry, ['@media (prefers-color-scheme: dark)'],
+    'the auto carrier applies ONLY under prefers-color-scheme: dark');
+  const stamped = rules.filter((r) => r.selector === ':root[data-theme="dark"]');
+  assert.equal(stamped.length, 1, 'exactly one stamped dark carrier rule');
+  assert.deepEqual(stamped[0].atAncestry, [], 'the stamped carrier is unconditional (the toggle wins)');
+  // the token-defining light :root (the seven-token map) is bare top level —
+  // responsive :root rules (--pad) exist under min-width medias and are not it
+  const light = rules.filter((r) => r.selector === ':root' && r.declarations.some((d) => d.prop === '--bg'));
+  assert.equal(light.length, 1, 'exactly one token-defining light :root');
+  assert.deepEqual(light[0].atAncestry, [], 'the light token map is unconditional');
+});
+test('auto-dark containment oracle: the carrier selector appears ONLY inside the dark media at-rule', () => {
+  assert.deepEqual(oracleAutoDarkOffenses(css), []);                 // the real sheet passes
+  // MUTATION CONTROL: a top-level copy of the auto carrier (dark forced on
+  // everyone) must now produce a detectable violation
+  assert.ok(oracleAutoDarkOffenses(css + '\n:root:not([data-theme="light"]){--bg:#282e39;}').length > 0);
+  // smuggled under the WRONG at-rule is a violation too
+  assert.ok(oracleAutoDarkOffenses(css + '\n@media (min-width:600px){:root:not([data-theme="light"]){--bg:#282e39;}}').length > 0);
+  // and hiding it in a selector LIST does not slip past the oracle
+  assert.ok(oracleAutoDarkOffenses(css + '\nbody, :root:not([data-theme="light"]){--bg:#282e39;}').length > 0);
+  // positive control: another copy INSIDE the dark media passes the oracle
+  // (the carrier-count pin above still rejects it — this isolates containment)
+  assert.deepEqual(oracleAutoDarkOffenses(css + '\n@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#282e39;}}'), []);
 });
 
 // ---- prepr blocker: the oracle's three bypasses are closed ----
