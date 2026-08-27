@@ -117,6 +117,22 @@ test('sweep: a secret-shaped unknown block type reports FAIL unknown-block — t
   assert.ok(!lines.join('\n').includes(secret), 'the ledger-derived block type must never be echoed');
 });
 
+test('sweep: an inherited-key block type ("__proto__") reports FAIL unknown-block, not template-throw', () => {
+  // BLOCKS['__proto__'] resolves through the prototype chain — an unguarded
+  // dispatcher dies with a TypeError there, which the sweep would misclassify
+  // as template-throw. The own-checked dispatcher keeps the contractual
+  // unknown-block error, so the sweep's fixed category stays correct.
+  const root = mkdtempSync(join(tmpdir(), 'foreman-sweep-'));
+  writeFileSync(join(root, 'ledger.json'), JSON.stringify({
+    meta: { title: 'proto-key' },
+    slides: [{ heading: 'h', blocks: [{ type: '__proto__' }] }],
+  }));
+  const lines = [];
+  const { failures } = sweep(root, (l) => lines.push(l));
+  assert.equal(failures, 1);
+  assert.deepEqual(lines, [`${join(root, 'ledger.json')}: FAIL unknown-block`]);
+});
+
 test('sweep: unparseable json reports FAIL parse-error (fixed category, not the parser message)', () => {
   const root = mkdtempSync(join(tmpdir(), 'foreman-sweep-'));
   writeFileSync(join(root, 'broken.json'), '{"meta": {"title": "sk-ant-api03-oops"');

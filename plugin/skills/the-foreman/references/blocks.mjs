@@ -589,13 +589,22 @@ const BLOCKS = {
 // The closed set — derived from the registry so it can never drift from BLOCKS.
 const BLOCK_TYPES = Object.keys(BLOCKS);
 
+// Prototype-safe registry lookup — the ONE gate both dispatchers ride. A plain
+// BLOCKS[type] resolves inherited Object.prototype keys ('__proto__',
+// 'constructor', 'toString') to truthy non-renderers, skipping the contractual
+// unknown-block throw and escaping as a TypeError instead — which would break
+// the CLI's sanitized unknown-block category and the sweep's classification.
+// Object.hasOwn coerces any type value (undefined included) to a key string,
+// so only a key the registry actually OWNS ever dispatches.
+const blockDef = (type) => (Object.hasOwn(BLOCKS, type) ? BLOCKS[type] : null);
+
 // Render per-slide blocks to HTML. Empty / non-array => ''. An unknown type
 // THROWS (fail-closed — see file header).
 function renderBlocks(blocks) {
   if (!Array.isArray(blocks) || blocks.length === 0) return '';
   return blocks
     .map((block) => {
-      const def = BLOCKS[block?.type];
+      const def = blockDef(block?.type);
       if (!def) throw new Error('unknown block type: ' + block?.type);
       return def.html(block);
     })
@@ -610,7 +619,7 @@ function blocksToMarkdown(blocks) {
   if (!Array.isArray(blocks) || blocks.length === 0) return '';
   return blocks
     .map((block) => {
-      const def = BLOCKS[block?.type];
+      const def = blockDef(block?.type);
       if (!def) throw new Error('unknown block type: ' + block?.type);
       return def.md(block);
     })

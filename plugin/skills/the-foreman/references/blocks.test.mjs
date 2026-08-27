@@ -114,6 +114,21 @@ test('blocksToMarkdown THROWS on an unknown block type (twin parity)', () => {
   assert.throws(() => blocksToMarkdown([{ type: 'bogus' }]), /unknown block type: bogus/);
 });
 
+// ---- prototype-safe dispatch: inherited Object.prototype keys are NOT blocks ----
+// An unguarded BLOCKS[type] lookup resolves '__proto__' / 'constructor' /
+// 'toString' through the prototype chain to a truthy non-renderer, so the
+// contractual unknown-block throw is skipped and a TypeError escapes instead —
+// breaking the CLI's sanitized unknown-block category and the sweep's
+// classification. Both dispatchers must own-check before the lookup.
+for (const type of ['__proto__', 'constructor', 'toString']) {
+  test(`renderBlocks THROWS the contractual unknown-block error for inherited key "${type}"`, () => {
+    assert.throws(() => renderBlocks([{ type }]), /unknown block type/);
+  });
+  test(`blocksToMarkdown THROWS the contractual unknown-block error for inherited key "${type}"`, () => {
+    assert.throws(() => blocksToMarkdown([{ type }]), /unknown block type/);
+  });
+}
+
 test('renderBlocks joins multiple known blocks with a newline', () => {
   const out = renderBlocks([
     { type: 'rankedRows', rows: [{ label: 'A', value: '1' }] },
