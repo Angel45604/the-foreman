@@ -36,6 +36,15 @@ test('number keys cover 1..9 bounded by the derived chapter count', () => {
   assert.match(js, /< ids\.length|ids\.length >/);               // index bounded by the derived array
 });
 
+test('end-of-document handler: a passive rAF-throttled scroll listener lights the LAST derived chapter', () => {
+  // the observer's mid-viewport band (-40%/-55%) never fires for a final
+  // section shorter than ~55vh, so document-end must set the last chip live
+  assert.match(js, /addEventListener\('scroll', [A-Za-z_$][\w$]*, \{ passive: true \}\)/);
+  assert.match(js, /requestAnimationFrame/);
+  assert.match(js, /window\.innerHeight \+ window\.scrollY >= document\.documentElement\.scrollHeight - 2/);
+  assert.match(js, /setLive\(ids\[ids\.length - 1\]\)/);   // last-id selection stays DERIVED, never literal
+});
+
 test('script never references deck-era elements', () => {
   assert.ok(!/#dots|#prev|#next|#crumb|\.slide\b/.test(js));
 });

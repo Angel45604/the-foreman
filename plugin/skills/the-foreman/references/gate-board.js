@@ -65,6 +65,24 @@
     });
   }
 
+  /* end-of-document: the observer's mid-viewport band (-40%/-55%) never fires
+     for a final section shorter than ~55vh, so the last rail chip could stay
+     stale after a jump to the ask. When the viewport bottom reaches the
+     document end, the LAST derived chapter is live (passive scroll listener,
+     rAF-throttled; the observer keeps deciding everywhere else). */
+  var endTick = false;
+  function onEndScroll(){
+    if (endTick) return;
+    endTick = true;
+    requestAnimationFrame(function(){
+      endTick = false;
+      if (ids.length && window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2){
+        setLive(ids[ids.length - 1]);
+      }
+    });
+  }
+  window.addEventListener('scroll', onEndScroll, { passive: true });
+
   /* immediate feedback on click; the observer confirms on arrival */
   ids.forEach(function(k){
     if (chips[k]) chips[k].addEventListener('click', function(){ setLive(k); });
