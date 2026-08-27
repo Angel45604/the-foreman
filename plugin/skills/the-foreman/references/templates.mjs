@@ -1,7 +1,11 @@
 // the-foreman artifact templates.
 // Each template: (ledger) => { title, favicon, bodyHtml }.
 // bodyHtml is the inner markup only; render.mjs wraps it with <title>, the
-// inlined style.css, the svg <defs> SYMBOLS, and slide-engine.js.
+// inlined style.css, and the page script.
+//
+// planDeck renders the Gate Board (design.md §3/§6): one scrolling verdict-first
+// page composed via scaffold.mjs. The remaining seven types still compose the
+// legacy deck() until Task 7 moves them onto the same scaffold.
 //
 // SAFETY: esc() escapes every ledger-derived string before it reaches the
 // markup. The "templates HTML-escape ledger text" test pins this — never
@@ -9,8 +13,125 @@
 
 import { esc } from './esc.mjs';
 import { renderBlocks } from './blocks.mjs';
+import { gateBoard, unit, allocateIds, firstClause } from './scaffold.mjs';
 
-// ---- shared markup components (mirror plan-deck-reference.html) ----
+// ---- Gate Board shared helpers (Tasks 6–7: every template composes these) ----
+
+const fav = (ledger) => (ledger?.meta?.favicon ?? '🛠️');
+const crumbOf = (ledger) => (ledger?.meta?.crumb ?? 'THE-FOREMAN · DEV WORKFLOW');
+
+// Hero fields (design §4 fallbacks): verdict falls back to meta.subtitle, then
+// to the type's own fallback line; lede is optional.
+function heroOf(meta, fallbackVerdict = '') {
+  return {
+    verdict: meta?.verdict ?? meta?.subtitle ?? fallbackVerdict,
+    lede: meta?.lede ?? '',
+  };
+}
+
+// The effective ask (AUTHORITATIVE rule, design §6): meta.ask is the author's
+// intent and WINS over any derived ask. With no meta.ask, a decision derives
+// one from its question + recommendation. One computation drives the ask
+// strip, the target chapter's visible header, AND the single .rec strip.
+function askOf(ledger) {
+  const meta = ledger?.meta ?? {};
+  if (meta.ask) return meta.ask;
+  const d = ledger?.decision;
+  if (d) return { headline: d.question ?? '', recommendation: d.recommendation, recommendedBy: d.recommendedBy };
+  return null;
+}
+
+// The figure-capable set (design §4): a unit's dominant visual is the explicit
+// `figure` when given, else the FIRST block whose type is in this set (that
+// block is promoted out of the drawer); everything else stays drawer evidence.
+const FIGURE_TYPES = ['statRow', 'bar', 'donut', 'phaseSteps', 'topo', 'deltaRow', 'duel', 'verdictFan', 'dotMatrix', 'ladder'];
+
+function figureSplit(blocks, explicitFigure) {
+  const list = Array.isArray(blocks) ? blocks : [];
+  if (explicitFigure) return { figureHtml: renderBlocks([explicitFigure]), drawerBlocks: list };
+  const idx = list.findIndex((b) => FIGURE_TYPES.includes(b?.type));
+  if (idx === -1) return { figureHtml: '', drawerBlocks: list };
+  return { figureHtml: renderBlocks([list[idx]]), drawerBlocks: list.filter((_, i) => i !== idx) };
+}
+
+// Option-card risk chip allowlist — `risk` only ever PICKS a static modifier
+// class (unknown/absent-from-list values, e.g. legacy 'medium', coerce to
+// 'med'); the risk TEXT itself is esc'd. Same fail-closed posture as blocks.mjs.
+const RISK_LEVELS = new Set(['low', 'med', 'high']);
+const riskLevel = (r) => (RISK_LEVELS.has(r) ? r : 'med');
+
+// Decision option cards (reference lines ~1161–1229): letter well, recommended
+// marker (keyed off decision.recommendation matching the option label — data
+// about the options, never a second ask), allowlisted risk chip, one-line gist
+// via firstClause, and the verbatim pros/cons collapsed in <details class="optpc">.
+function optionCards(d) {
+  const options = Array.isArray(d?.options) ? d.options : [];
+  if (!options.length) return '';
+  const cards = options.map((o) => {
+    const label = String(o?.label ?? '');
+    const [ltr, ...restParts] = label.split(' — ');
+    const optTitle = restParts.length ? `<b class="opt__t">${esc(restParts.join(' — '))}</b>` : '';
+    const recommended = d?.recommendation != null && label === d.recommendation;
+    const recMark = recommended ? '<span class="opt__rec"><i></i>Recommended</span>' : '';
+    const risk = o?.risk != null && o.risk !== ''
+      ? `<span class="opt__risk opt__risk--${riskLevel(o.risk)}"><i></i>${esc(o.risk)} risk</span>` : '';
+    const gist = o?.pros ? `<p class="opt__gist">${esc(firstClause(o.pros))}</p>` : '';
+    const pc = (o?.pros || o?.cons)
+      ? '<details class="optpc"><summary>Pros &amp; cons</summary><div class="optpc__b">'
+        + `<h4>Pros</h4><p>${esc(o?.pros ?? '—')}</p><h4 class="con">Cons</h4><p>${esc(o?.cons ?? '—')}</p></div></details>`
+      : '';
+    return `<section class="opt${recommended ? ' opt--rec' : ''}" aria-label="Option ${esc(ltr)}">`
+      + `<div class="opt__top"><span class="opt__ltr">${esc(ltr)}</span>${recMark}${risk}</div>${optTitle}${gist}${pc}</section>`;
+  }).join('');
+  return `<div class="opts">${cards}</div>`;
+}
+
+// The SINGLE recommendation strip — renders the EFFECTIVE ask's recommendation
+// and attribution exactly once (a decision's own recommendation line is never
+// separately rendered when meta.ask overrides it).
+function recStrip(ask) {
+  if (!ask || (ask.recommendation == null && ask.recommendedBy == null)) return '';
+  const b = ask.recommendation != null ? `<b>Recommendation — <span>${esc(ask.recommendation)}</span></b>` : '';
+  const p = ask.recommendedBy != null ? `<p>${esc(ask.recommendedBy)}</p>` : '';
+  return `<div class="rec"><span class="rec__dot" aria-hidden="true"></span><div class="rec__txt">${b}${p}</div></div>`;
+}
+
+// The ask chapter's unit: the effective ask VISIBLE up top (headline + note —
+// never inside a drawer), option cards as evidence when a decision exists,
+// then the single .rec strip.
+function askChapterHtml(effectiveAsk, decision) {
+  const head = '<header class="unit__head"><span class="kick">The ask</span>'
+    + `<h3 class="hline">${esc(effectiveAsk.headline ?? '')}</h3>`
+    + `${effectiveAsk.note ? `<p class="lead">${esc(effectiveAsk.note)}</p>` : ''}</header>`;
+  return `<article class="unit">${head}${decision ? optionCards(decision) : ''}${recStrip(effectiveAsk)}</article>`;
+}
+
+// One ledger slide -> one Gate Board unit: plain-statement headline, dominant
+// figure, pill rows OUTSIDE the drawer, and the full evidence (bullets, cards,
+// callout, remaining blocks) inside the collapsed drawer. Every legacy field
+// still renders somewhere — nothing is dropped.
+function slideUnit(s) {
+  const { figureHtml, drawerBlocks } = figureSplit(s?.blocks, s?.figure);
+  const pillBlocks = drawerBlocks.filter((b) => b?.type === 'pillRow');
+  const rest = drawerBlocks.filter((b) => b?.type !== 'pillRow');
+  const bullets = Array.isArray(s?.bullets) && s.bullets.length
+    ? `<ul>${s.bullets.map((b) => `<li>${esc(b)}</li>`).join('')}</ul>` : '';
+  const cardsHtml = Array.isArray(s?.cards) && s.cards.length
+    ? s.cards.map((c) => `<div class="co"><b>${esc(c?.title)}</b><p>${esc(c?.body)}</p></div>`).join('') : '';
+  const note = s?.callout ? `<div class="co co--warn"><p>${esc(s.callout)}</p></div>` : '';
+  const drawerHtml = [bullets, cardsHtml, note, renderBlocks(rest)].filter(Boolean).join('');
+  return unit({
+    kicker: s?.kicker ?? '',
+    statement: s?.statement ?? s?.heading ?? '',
+    lead: s?.lead ?? '',
+    figureHtml,
+    pillsHtml: renderBlocks(pillBlocks),
+    drawerHtml,
+  });
+}
+
+// ---- legacy deck markup components (used by the seven pre-Gate-Board types
+// below until Task 7 moves them onto the scaffold; deleted then) ----
 
 // A single deck slide. `on` adds the initial-visible class the slide-engine toggles.
 // `chapter` (optional) stamps an escaped data-section the chapters navigator groups on.
@@ -54,60 +175,51 @@ ${sections.join('\n\n')}
 </div></div>`;
 }
 
-const fav = (ledger) => (ledger?.meta?.favicon ?? '🛠️');
-const crumbOf = (ledger) => (ledger?.meta?.crumb ?? 'MINDCLOUD · DEV WORKFLOW');
-
 // ---- templates ----
 
-// Full plan deck: title slide + overview + one slide per ledger slide.
+// Full plan board: verdict hero + stat tiles + ask strip + one chapter per
+// consecutive run of slide.chapter (+ the appended `Your call` ask chapter).
 export function planDeck(ledger) {
   const meta = ledger?.meta ?? {};
   const title = String(meta.title ?? 'the-foreman plan');
   const slides = Array.isArray(ledger?.slides) ? ledger.slides : [];
+  const { verdict, lede } = heroOf(meta);
 
-  const sections = [];
+  // Chapters group CONSECUTIVE slides by `chapter ?? 'Board'` (non-consecutive
+  // repeats become separate sections; allocateIds keeps their ids unique).
+  const groups = [];
+  for (const s of slides) {
+    const label = String(s?.chapter ?? 'Board');
+    const last = groups[groups.length - 1];
+    if (last && last.label === label) last.slides.push(s);
+    else groups.push({ label, slides: [s] });
+  }
 
-  // Title slide.
-  sections.push(
-    slide({
-      icon: 'i-cog',
-      kicker: 'Plan · the-foreman',
-      heading: title,
-      on: true,
-      num: '01',
-      inner: `    <p class="lead">${esc(meta.subtitle ?? 'A gated plan, rendered as a MindCloud deck.')}</p>`,
-    }),
-  );
+  // Ask resolution (single source of truth): build the FULL chapter-label list
+  // — content chapters plus the appended `Your call` chapter whenever an
+  // effective ask exists — then allocate ids ONCE. gateBoard re-derives the
+  // same ids from the same list, so the strip's targetId always resolves.
+  const effectiveAsk = askOf(ledger);
+  const labels = groups.map((g) => g.label);
+  const ids = allocateIds(effectiveAsk ? [...labels, 'Your call'] : labels);
+  const askTargetId = effectiveAsk ? ids[ids.length - 1] : null;
 
-  // One content slide per ledger slide.
-  slides.forEach((s, idx) => {
-    const cards = Array.isArray(s?.cards) ? s.cards : [];
-    const cardsHtml = cards.length
-      ? `    <div class="grid g2">\n      ${cards
-          .map((c) => card({ icon: c.icon ?? 'i-route', title: c.title, body: c.body, variant: c.variant }))
-          .join('\n      ')}\n    </div>`
-      : '';
-    const bullets = Array.isArray(s?.bullets) && s.bullets.length
-      ? `    <ul>\n      ${s.bullets.map((b) => `<li>${esc(b)}</li>`).join('\n      ')}\n    </ul>`
-      : '';
-    const note = s?.callout ? `    ${callout(esc(s.callout))}` : '';
-    // Per-slide content blocks (Phase 2a). renderBlocks() returns '' for a
-    // block-less slide (filtered out below => block-less slides stay byte-identical).
-    const blocksHtml = renderBlocks(s?.blocks);
-    const inner = [cardsHtml, bullets, note, blocksHtml].filter(Boolean).join('\n');
-    sections.push(
-      slide({
-        icon: s?.icon ?? 'i-flag',
-        kicker: s?.kicker ?? '',
-        heading: s?.heading ?? '',
-        inner,
-        num: String(idx + 2).padStart(2, '0'),
-        chapter: s?.chapter,
-      }),
-    );
+  const chapters = groups.map((g) => ({ label: g.label, unitsHtml: g.slides.map(slideUnit).join('') }));
+  if (effectiveAsk) chapters.push({ label: 'Your call', unitsHtml: askChapterHtml(effectiveAsk, ledger?.decision) });
+
+  const sources = Array.isArray(ledger?.findings?.sources) ? ledger.findings.sources : [];
+
+  const { bodyHtml } = gateBoard({
+    crumb: crumbOf(ledger),
+    title,
+    verdict,
+    lede,
+    keyStats: Array.isArray(meta.keyStats) ? meta.keyStats : [],
+    ask: effectiveAsk ? { ...effectiveAsk, targetId: askTargetId } : null,
+    chapters,
+    sources,
   });
-
-  return { title, favicon: fav(ledger), bodyHtml: deck(crumbOf(ledger), sections) };
+  return { title, favicon: fav(ledger), bodyHtml };
 }
 
 // Win / pause brief: landed + evidence, verified-vs-claimed, the ask.

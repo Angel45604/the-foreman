@@ -269,7 +269,7 @@ test('FAILS CLOSED: an unknown dashboard chart type makes render() reject and wr
   assert.equal(existsSync(f.out.replace(/\.html$/, '.md')), false);
 });
 
-test('chapters navigator: a deck WITH chapters renders the toc chrome + escaped data-section and STILL has no external refs', async () => {
+test('chapters rail: a board WITH chapters renders rail chips + matching section ids and STILL has no external refs', async () => {
   const f = fixture({ ...base, slides:[
     { kicker:'PLAN', heading:'Intro' },
     { kicker:'BUILD', heading:'Step one', chapter:'Discovery' },
@@ -277,10 +277,10 @@ test('chapters navigator: a deck WITH chapters renders the toc chrome + escaped 
   ] });
   await render(f.ledgerPath,'planDeck',f.out);
   const html = readFileSync(f.out,'utf8');
-  assert.match(html, /id="toctgl"/);                 // toggle button present
-  assert.match(html, /<div id="chapters" role="menu"><\/div>/); // empty container engine fills
-  assert.match(html, /data-section="Discovery"/);    // chapter stamped on the slide
-  assert.match(html, /<use href="#i-list"\/>/);       // internal-fragment icon ref
+  assert.match(html, /id="navtrack"/);               // the sticky chapter rail
+  assert.match(html, /href="#discovery"/);           // rail chip for the ledger chapter…
+  assert.match(html, /id="discovery"/);              // …resolving to a real section id
+  assert.equal((html.match(/id="discovery"/g) || []).length, 1); // consecutive slides share ONE section
   assert.doesNotMatch(html, /<link|<script src=|https?:\/\//); // the no-external-refs invariant holds
 });
 test('chapters panel does NOT force-open on #toctgl focus (Escape + focus-return must visually close)', async () => {
