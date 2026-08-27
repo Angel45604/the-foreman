@@ -437,7 +437,7 @@ test('dashboard twin escapes injection in a stat value + ask', () => {
 // EXCLUSIVELY by askToMarkdown, figures (explicit once + fallback never twice),
 // the planDeck `## Your call` decision chapter, and the evidence-base list.
 
-const REF_LEDGER = JSON.parse(readFileSync(new URL('../../../../docs/initiatives/2026-08-26-neumorphic-gate-board/reference-ledger.json', import.meta.url), 'utf8'));
+const REF_LEDGER = JSON.parse(readFileSync(new URL('./fixtures/legacy-plandeck.json', import.meta.url), 'utf8'));
 
 test('planDeck twin: reference ledger gets executive summary + Your call + evidence base', () => {
   const md = toMarkdown(REF_LEDGER, 'planDeck').markdown;

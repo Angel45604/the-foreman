@@ -10,7 +10,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, relative } from 'node:path';
 import { FORBIDDEN_BRAND_RE, debrandOffenses } from './test-helpers.mjs';
@@ -30,13 +30,21 @@ test('the scan predicate bites on every forbidden form (positive controls, assem
 });
 
 test('de-brand: docs, evals, README, and every references/ source are free of forbidden strings', () => {
-  const files = [
+  // Skill-local members are ALWAYS scanned (they ship in every install). Repo-root
+  // members exist only in the repo checkout — the installed skill directory has no
+  // ROOT — so they are scanned exactly when present. In-repo presence is proven by
+  // the guard below: when ROOT is a real repo checkout (its plugin/ dir exists),
+  // README.md must exist and joins the scan; a missing README there is a failure,
+  // not a skip.
+  const skillLocal = [
     join(HERE, '..', 'SKILL.md'),
     join(HERE, 'ledger.schema.md'),
     join(HERE, '..', 'evals', 'evals.json'),
-    join(ROOT, 'README.md'),
     ...readdirSync(HERE).filter((f) => /\.(mjs|js|css)$/.test(f)).sort().map((f) => join(HERE, f)),
   ];
+  const inRepo = existsSync(join(ROOT, 'plugin'));
+  if (inRepo) assert.ok(existsSync(join(ROOT, 'README.md')), 'repo checkout must carry README.md in scan scope');
+  const files = [...skillLocal, ...(inRepo ? [join(ROOT, 'README.md')] : [])];
   const offenses = files.flatMap((f) =>
     debrandOffenses(readFileSync(f, 'utf8')).map((o) => `${relative(ROOT, f)}:${o}`));
   assert.deepEqual(offenses, [], 'forbidden legacy-brand strings survive in scan scope');

@@ -212,7 +212,7 @@ test('.ask__by wraps: white-space normal + overflow-wrap anywhere on the carved 
 // enriched ledger) they land as .well__v wells while the hero .tile b carries
 // meta.keyStats — so neither selector may force nowrap.
 test('long liveRun stat values wrap: no nowrap remains on .tile b / .well__v (enriched-ledger render)', () => {
-  const ledger = JSON.parse(readFileSync(new URL('../../../../docs/initiatives/2026-08-26-neumorphic-gate-board/gate-board-ledger.json', import.meta.url), 'utf8'));
+  const ledger = JSON.parse(readFileSync(new URL('./fixtures/gate-board-ledger.json', import.meta.url), 'utf8'));
   const { bodyHtml } = liveRun(ledger);
   assert.match(bodyHtml, /class="well__v"[^>]*>One bundle round per arm at the tier/); // the ~80-char firstClause cost value in a well
   assert.match(bodyHtml, /class="tile[^"]*" role="listitem"><b>36% → 0%</);           // hero tiles carry meta.keyStats
