@@ -112,7 +112,8 @@ test('decisionCard: meta.ask WINS over the decision in strip/target/.rec; option
   assert.equal((h.match(/class="rec"/g) || []).length, 1);
   assert.match(h, /Recommendation — <span>Meta rec<\/span>/);
   assert.doesNotMatch(h, /Recommendation — <span>A<\/span>/);    // never the decision's own line
-  assert.match(h, /class="opts"/); assert.match(h, /class="opt__rec"/);
+  assert.match(h, /class="opts"/);
+  assert.doesNotMatch(h, /class="opt__rec"/);                    // 'Meta rec' matches no option — badge NOTHING (the badge follows the effective ask)
   assert.doesNotMatch(h, /Persist events how\?/);                // stale question out of strip + header
 });
 test('decisionCard escapes a malicious question (no raw tag)', () => {
@@ -207,7 +208,7 @@ test('planDeck with BOTH meta.ask and decision: meta.ask wins strip/target/.rec;
   assert.match(bodyHtml, /Recommendation — <span>Meta rec<\/span>/); // …carrying meta.ask's recommendation
   assert.doesNotMatch(bodyHtml, /Recommendation — <span>A<\/span>/); // never the decision's own line
   assert.match(bodyHtml, /class="opts"/);                       // options still render as evidence
-  assert.match(bodyHtml, /class="opt__rec"/);                   // recommended marker keys off decision.recommendation
+  assert.doesNotMatch(bodyHtml, /class="opt__rec"/);            // the badge follows the EFFECTIVE ask — 'Meta rec' matches no option
   assert.match(bodyHtml, /pro text/); assert.match(bodyHtml, /con text/);
 });
 test('planDeck derives the ask from the decision when meta.ask is absent (question drives the strip)', () => {
@@ -663,6 +664,42 @@ test('well-shaped meta.ask + malformed decision: options render ONCE as Your cal
   assert.deepEqual(chipIds(h), ['top', 'your-call']);
   assert.match(h, /Approve\?/);
   assert.equal((h.match(/class="opts"/g) || []).length, 1);
+});
+
+// ---- prepr blocker: the Recommended badge follows the EFFECTIVE ask ----
+// Option cards used to badge from decision.recommendation even when a valid
+// meta.ask overrode it — the board could badge option A while the .rec strip
+// said B. The badge now keys off the EFFECTIVE ask's recommendation (same
+// label-equality matching rule); a recommendation matching no option badges
+// nothing, and the no-override case is unchanged.
+const CONFLICT_DECISION = {
+  question: 'Q?',
+  options: [{ label: 'A — x', pros: 'p' }, { label: 'B — y', pros: 'p2' }],
+  recommendation: 'A — x', recommendedBy: 'Codex',
+};
+test('meta.ask recommending B: the badge lands on B, never on the decision\'s stale A', () => {
+  const h = decisionCard({ meta: { title: 'D', ask: { headline: 'H', recommendation: 'B — y' } },
+    decision: CONFLICT_DECISION }).bodyHtml;
+  assert.match(h, /class="opt opt--rec" aria-label="Option B"/);     // badge on B…
+  assert.doesNotMatch(h, /class="opt opt--rec" aria-label="Option A"/); // …never on A
+  assert.equal((h.match(/class="opt__rec"/g) || []).length, 1);
+  assert.match(h, /Recommendation — <span>B — y<\/span>/);           // strip and badge agree
+});
+test('meta.ask recommendation matching NO option label: no badge anywhere', () => {
+  const h = decisionCard({ meta: { title: 'D', ask: { headline: 'H', recommendation: 'Something else' } },
+    decision: CONFLICT_DECISION }).bodyHtml;
+  assert.doesNotMatch(h, /opt--rec/);
+  assert.doesNotMatch(h, /class="opt__rec"/);
+});
+test('meta.ask override WITHOUT a recommendation: the stale decision badge does not resurface', () => {
+  const h = decisionCard({ meta: { title: 'D', ask: { headline: 'H' } }, decision: CONFLICT_DECISION }).bodyHtml;
+  assert.doesNotMatch(h, /opt--rec/);
+  assert.doesNotMatch(h, /class="rec"/); // the effective ask carries no recommendation — no strip either
+});
+test('no-override case unchanged: the derived ask still badges the decision recommendation', () => {
+  const h = decisionCard({ meta: { title: 'D' }, decision: CONFLICT_DECISION }).bodyHtml;
+  assert.match(h, /class="opt opt--rec" aria-label="Option A"/);
+  assert.doesNotMatch(h, /class="opt opt--rec" aria-label="Option B"/);
 });
 
 // ---- prepr blocker: EVERY derived ask rides the askShape gate ----

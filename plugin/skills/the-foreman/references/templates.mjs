@@ -92,9 +92,13 @@ const RISK_LEVELS = new Set(['low', 'med', 'high']);
 const riskLevel = (r) => (RISK_LEVELS.has(r) ? r : 'med');
 
 // Decision option cards (reference lines ~1161–1229): letter well, recommended
-// marker (keyed off decision.recommendation matching the option label — data
-// about the options, never a second ask), allowlisted risk chip, one-line gist
-// via firstClause, and the verbatim pros/cons collapsed in <details class="optpc">.
+// marker (keyed off the EFFECTIVE ask's recommendation matching the option
+// label — the badge must always agree with the single .rec strip, so a valid
+// meta.ask override moves it; a recommendation matching no option badges
+// nothing), allowlisted risk chip, one-line gist via firstClause, and the
+// verbatim pros/cons collapsed in <details class="optpc">. When no effective
+// ask exists (the orphan content-labeled chapters), effectiveRec defaults to
+// the decision's own recommendation — the only source there is.
 //
 // Label robustness (prepr blocker): the label NEVER splits — the FULL label is
 // always the visible .opt__t title, so a legacy 'A · Title' / a plain
@@ -106,14 +110,14 @@ const riskLevel = (r) => (RISK_LEVELS.has(r) ? r : 'med');
 const wellLetter = (label, index) =>
   (/^[A-Za-z0-9][\s·—:.-]/.test(label) ? label[0] : String.fromCharCode(65 + (index % 26)));
 
-function optionCards(d) {
+function optionCards(d, effectiveRec = d?.recommendation) {
   const options = Array.isArray(d?.options) ? d.options : [];
   if (!options.length) return '';
   const cards = options.map((o, i) => {
     const label = String(o?.label ?? '');
     const ltr = wellLetter(label, i);
     const optTitle = label ? `<b class="opt__t">${esc(label)}</b>` : '';
-    const recommended = d?.recommendation != null && label === d.recommendation;
+    const recommended = effectiveRec != null && label === effectiveRec;
     const recMark = recommended ? '<span class="opt__rec"><i></i>Recommended</span>' : '';
     const risk = o?.risk != null && o.risk !== ''
       ? `<span class="opt__risk opt__risk--${riskLevel(o.risk)}"><i></i>${esc(o.risk)} risk</span>` : '';
@@ -145,7 +149,9 @@ function askChapterHtml(effectiveAsk, decision) {
   const head = '<header class="unit__head"><span class="kick">The ask</span>'
     + `<h3 class="hline">${esc(effectiveAsk.headline ?? '')}</h3>`
     + `${effectiveAsk.note ? `<p class="lead">${esc(effectiveAsk.note)}</p>` : ''}</header>`;
-  return `<article class="unit">${head}${decision ? optionCards(decision) : ''}${recStrip(effectiveAsk)}</article>`;
+  // ?? null: an effective ask WITHOUT a recommendation badges nothing — never
+  // let the default parameter resurface the overridden decision.recommendation
+  return `<article class="unit">${head}${decision ? optionCards(decision, effectiveAsk.recommendation ?? null) : ''}${recStrip(effectiveAsk)}</article>`;
 }
 
 // One ledger slide -> one Gate Board unit: plain-statement headline, dominant
