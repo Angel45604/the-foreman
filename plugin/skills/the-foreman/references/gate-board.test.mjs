@@ -144,6 +144,23 @@ test('initial atEnd sample: one shared endState() drives the scroll tick and a s
   assert.match(js, /atEnd = endState\(\);\s*\n\s*applyLive\(\);/); // the startup sample applies immediately
 });
 
+// ---- prepr blocker: layout changes recompute the end state ----
+// atEnd was sampled only at startup and inside the scroll tick, but toggling a
+// <details> drawer, Expand/Collapse All, a window resize, and a late font load
+// all change scrollHeight WITHOUT firing a scroll event — a short page kept a
+// stale atEnd (and the wrong chip) until the next real scroll. The SAME
+// rAF-throttled tick now also runs on: window resize, the document 'toggle'
+// event (capture:true — toggle does not bubble in older engines), after the
+// expand/collapse-all handler mutates every drawer, and on font-load reflow.
+test('layout changes recompute atEnd: resize + capture-phase toggle + expand/collapse-all ride the rAF tick', () => {
+  assert.match(js, /window\.addEventListener\('resize', onEndScroll\);/);
+  assert.match(js, /document\.addEventListener\('toggle', onEndScroll, \{ capture: true \}\);/);
+  // ONE wire-up covers both buttons: setAll recomputes AFTER mutating the drawers
+  assert.match(js, /function setAll\(open\)\{\s*\n\s*document\.querySelectorAll\('details'\)\.forEach\(function\(d\)\{ d\.open = open; \}\);\s*\n\s*onEndScroll\(\);\s*\n\s*\}/);
+  // the font-load reflow path recomputes beside the existing offset re-measure
+  assert.match(js, /document\.fonts\.ready\.then\(function\(\)\{ syncOffset\(\); onEndScroll\(\); \}\);/);
+});
+
 test('script never references deck-era elements', () => {
   assert.ok(!/#dots|#prev|#next|#crumb|\.slide\b/.test(js));
 });

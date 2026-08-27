@@ -49,14 +49,18 @@
   syncOffset();
   window.addEventListener('resize', syncOffset);
   if (document.fonts && document.fonts.ready && document.fonts.ready.then){
-    document.fonts.ready.then(syncOffset);
+    /* the swapped-in faces reflow the text, changing scrollHeight too — so the
+       font-load path re-measures the rail AND re-samples the end state (the
+       tick function is hoisted; fonts.ready resolves long after init) */
+    document.fonts.ready.then(function(){ syncOffset(); onEndScroll(); });
   }
 
   /* scrollspy — a thin band around the viewport's middle decides the chapter.
      THREE tracked signals drive the live chip: observerId (written ONLY by
      the observer callback), atEnd (computed by the shared end-state helper —
-     sampled once at startup and re-sampled by the rAF-throttled scroll tick
-     below), and navId (armed by jump(); release rule pinned below).
+     sampled once at startup and re-sampled by the rAF-throttled tick below on
+     scroll AND on the layout-change paths that move the document end without
+     one), and navId (armed by jump(); release rule pinned below).
      applyLive() recomputes the selection from all three, so releasing the end
      override restores the observer's chapter WITHOUT a fresh observer event —
      scrolling up from the end may produce none, because the section above the
@@ -159,6 +163,17 @@
     });
   }
   window.addEventListener('scroll', onEndScroll, { passive: true });
+  /* layout changes move the document end WITHOUT a scroll event: a window
+     resize, a <details> drawer toggling (Expand/Collapse All included), and a
+     late font load all change scrollHeight while scrollY stays put — on a
+     short page atEnd went stale until the next real scroll. Every such path
+     rides the SAME rAF-throttled tick (edge-applied, so mid-document repaints
+     never fire): resize here, the document-level 'toggle' listener (capture:
+     true — toggle does not bubble in older engines, so a bubble listener would
+     miss the drawers), setAll() below for the expand/collapse-all buttons, and
+     the fonts.ready hook up top. */
+  window.addEventListener('resize', onEndScroll);
+  document.addEventListener('toggle', onEndScroll, { capture: true });
   /* startup sample: a document that already fits the viewport fires NO scroll
      event, ever — atEnd would stay false and the markup's Top chip would sit
      stale over an on-screen ask. Sample the end state once at initialization
@@ -206,11 +221,15 @@
     jump(id);
   });
 
-  /* expand / collapse every drawer on the page */
+  /* expand / collapse every drawer on the page — then re-sample the end state:
+     the bulk mutation changes scrollHeight with no scroll event (the per-
+     drawer 'toggle' events also fire, but a direct call here is synchronous-
+     ordering-proof and costs one shared rAF either way) */
   var exp = document.getElementById('exp-all');
   var col = document.getElementById('col-all');
   function setAll(open){
     document.querySelectorAll('details').forEach(function(d){ d.open = open; });
+    onEndScroll();
   }
   if (exp) exp.addEventListener('click', function(){ setAll(true); });
   if (col) col.addEventListener('click', function(){ setAll(false); });
