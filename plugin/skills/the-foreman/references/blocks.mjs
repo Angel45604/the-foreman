@@ -75,6 +75,12 @@ const PILL_VARIANTS = new Set(['ok', 'warn']);
 const FATE_VARIANTS = new Set(['ok', 'warn', 'x']);
 const fateVariant = (v) => (FATE_VARIANTS.has(v) ? v : 'x');
 
+// ladder row-status allowlist (Gate Board) — only these pick a `.lrow__v--…`
+// modifier class; anything else (incl. an injection smuggled through `status`)
+// is coerced to 'no'. Same fail-closed posture as the allowlists above.
+const LADDER_STATUS = new Set(['ok', 'mid', 'no']);
+const ladderStatus = (s) => (LADDER_STATUS.has(s) ? s : 'no');
+
 // Sanitize a fenced-code INFO string (the word after the opening fence) to
 // alphanumeric only, capped at 20 chars — so `lang` can never inject a newline,
 // a backtick, or any structure into the twin.
@@ -503,6 +509,48 @@ const BLOCKS = {
       const fates = Array.isArray(block?.fates) ? block.fates : [];
       return [`**${mdEsc(block?.verdict)}**`,
         ...fates.map((f) => `- ${mdEsc(safeNum(f?.count, { min: 0, fallback: 0 }))} — ${mdEsc(f?.label)}`)].join('\n');
+    },
+  },
+
+  // { type:'dotMatrix', columns:[string], rows:[{label, sub?, marks:[boolean]}] }
+  dotMatrix: {
+    html(block) {
+      const cols = Array.isArray(block?.columns) ? block.columns : [];
+      const rows = Array.isArray(block?.rows) ? block.rows : [];
+      const head = `<div class="mx__r mx__r--h"><span></span>${cols.map((c) => `<span>${esc(c)}</span>`).join('')}</div>`;
+      const body = rows.map((r) => {
+        const marks = Array.isArray(r?.marks) ? r.marks : [];
+        const dots = cols.map((_, i) => `<span class="mx__d${marks[i] ? '' : ' miss'}"><i></i></span>`).join('');
+        return `<div class="mx__r"><span class="mx__f">${esc(r?.label)}${r?.sub ? `<small>${esc(r.sub)}</small>` : ''}</span>${dots}</div>`;
+      }).join('');
+      return `<div class="matrix"><div class="scrollx"><div class="mx" style="--mxcols:${cols.length}">${head}${body}</div></div></div>`;
+    },
+    md(block) {
+      const cols = Array.isArray(block?.columns) ? block.columns : [];
+      const rows = Array.isArray(block?.rows) ? block.rows : [];
+      const header = `| ${['finding', ...cols.map((c) => mdEsc(c))].join(' | ')} |`;
+      const sep = `| ${['finding', ...cols].map(() => '---').join(' | ')} |`;
+      const body = rows.map((r) => {
+        const marks = Array.isArray(r?.marks) ? r.marks : [];
+        return `| ${mdEsc(r?.label)}${r?.sub ? ` (${mdEsc(r.sub)})` : ''} | ${cols.map((_, i) => (marks[i] ? 'yes' : '—')).join(' | ')} |`;
+      }).join('\n');
+      return [header, sep, body].filter(Boolean).join('\n');
+    },
+  },
+
+  // { type:'ladder', rows:[{claim, cause, status?:'ok'|'mid'|'no', statusLabel}] }
+  ladder: {
+    html(block) {
+      const rows = Array.isArray(block?.rows) ? block.rows : [];
+      return `<div class="ladder">${rows.map((r) => {
+        const st = ladderStatus(r?.status);
+        return `<div class="lrow"><span class="lrow__s">${esc(r?.claim)}</span><i class="lrow__j" aria-hidden="true"></i>`
+          + `<span class="lrow__c">${esc(r?.cause)}</span><span class="lrow__v lrow__v--${st}"><i></i>${esc(r?.statusLabel)}</span></div>`;
+      }).join('')}</div>`;
+    },
+    md(block) {
+      const rows = Array.isArray(block?.rows) ? block.rows : [];
+      return rows.map((r) => `- **${mdEsc(r?.claim)}** ← ${mdEsc(r?.cause)} — ${mdEsc(r?.statusLabel)}`).join('\n');
     },
   },
 };

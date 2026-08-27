@@ -6,7 +6,7 @@ import { BLOCKS, BLOCK_TYPES, renderBlocks, blocksToMarkdown } from './blocks.mj
 // A literal expected list, independent of the module — a new block type added
 // WITHOUT both an html + md renderer fails this, and a coordinated edit can't
 // silently widen the set without updating the oracle here too.
-const EXPECTED_BLOCK_TYPES = ['table', 'rankedRows', 'statRow', 'donut', 'bar', 'lineSpark', 'flow', 'phaseSteps', 'code', 'diff', 'pillRow', 'topo', 'deltaRow', 'duel', 'verdictFan'];
+const EXPECTED_BLOCK_TYPES = ['table', 'rankedRows', 'statRow', 'donut', 'bar', 'lineSpark', 'flow', 'phaseSteps', 'code', 'diff', 'pillRow', 'topo', 'deltaRow', 'duel', 'verdictFan', 'dotMatrix', 'ladder'];
 
 test('BLOCK_TYPES is exactly the closed expected set (literal oracle)', () => {
   assert.deepEqual([...BLOCK_TYPES].sort(), [...EXPECTED_BLOCK_TYPES].sort());
@@ -865,7 +865,7 @@ test('deltaRow clamps positions, renders endpoints, never emits NaN', () => {
 });
 
 test('registry closed-set oracle includes the new figure blocks with html+md', () => {
-  for (const t of ['topo', 'deltaRow', 'duel', 'verdictFan']) {
+  for (const t of ['topo', 'deltaRow', 'duel', 'verdictFan', 'dotMatrix', 'ladder']) {
     assert.ok(BLOCK_TYPES.includes(t), t);
     assert.equal(typeof BLOCKS[t].html, 'function');
     assert.equal(typeof BLOCKS[t].md, 'function');
@@ -901,4 +901,26 @@ test('verdictFan allowlists variants and clamps dot counts', () => {
     .reduce((n, m) => n + ((m[1].match(/<i><\/i>/g) || []).length), 0);
   assert.equal(dotCount, 6 + 24 + 0);
   assert.ok(!html.includes('<script>'));
+});
+
+// ============================================================================
+// Gate Board figure blocks — dotMatrix, ladder (neumorphic Gate Board, Task 3)
+// ============================================================================
+
+test('dotMatrix renders marks as filled/miss dots with escaped labels', () => {
+  const html = renderBlocks([{ type: 'dotMatrix', columns: ['a<b', 'B'],
+    rows: [{ label: 'f1', sub: 's', marks: [true, false] }] }]);
+  assert.match(html, /class="matrix"/); assert.match(html, /a&lt;b/);
+  assert.equal((html.match(/class="mx__d miss"/g) || []).length, 1);
+  const md = blocksToMarkdown([{ type: 'dotMatrix', columns: ['A'], rows: [{ label: 'f', marks: [true] }] }]);
+  assert.match(md, /\| yes \|/);
+});
+
+test('ladder allowlists status', () => {
+  const html = renderBlocks([{ type: 'ladder', rows: [
+    { claim: 'delegation', cause: 'ultra', status: 'ok', statusLabel: 'settled' },
+    { claim: 'x', cause: 'y', status: 'evil"', statusLabel: 'z' }] }]);
+  assert.equal((html.match(/lrow__v--ok/g) || []).length, 1);
+  assert.equal((html.match(/lrow__v--no/g) || []).length, 1);
+  assert.ok(!html.includes('evil'));
 });
