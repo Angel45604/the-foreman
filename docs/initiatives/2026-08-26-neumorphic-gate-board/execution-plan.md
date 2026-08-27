@@ -550,15 +550,15 @@ export function gateBoard({ crumb = '', title = '', verdict = '', lede = '', key
   const askTarget = ask?.targetId && (ask.targetId === 'top' || ids.includes(ask.targetId)) ? ask.targetId : null;
   const askStrip = ask
     ? `<div class="ask"><div class="ask__txt"><span class="ask__kick">What is being asked of you</span><b>${esc(ask.headline)}</b>${askBits ? `<p>${askBits}</p>` : ''}</div>${askTarget ? `<a class="btn btn--accent" href="#${askTarget}">Jump to the ask</a>` : ''}</div>` : '';
-  const head = `<section id="top" aria-label="Verdict"><header class="wrap crumbrow"><span class="chip crumb">${esc(crumb)}</span><div class="tools"><span class="chip">Gate artifact</span><button class="btn btn--sm jsonly" id="exp-all" type="button">Expand all</button><button class="btn btn--sm jsonly" id="col-all" type="button">Collapse all</button></div></header>`
-    + `<div class="wrap hero"><h1>${esc(title)}</h1>${verdict ? `<p class="verdictline">${esc(verdict)}</p>` : ''}${lede ? `<p class="lede">${esc(lede)}</p>` : ''}</div>`
-    + `<div class="wrap">${tiles}${askStrip}${srcInTop}</div></section>`;
   // evidence-source chips render INSIDE the FINAL chapter section (the ask chapter
   // when one exists) so they are part of the rail-addressable ask target (design §3.6);
   // with ZERO chapters they fall back into the #top section so they can never be
   // silently dropped (content-preservation contract).
   const src = sources.length ? `<div class="src" aria-label="Evidence base">${sources.map((s) => `<span class="chip"><b>${esc(s?.value)}</b>&nbsp;${esc(s?.label)}</span>`).join('')}</div>` : '';
   const srcInTop = chs.length === 0 ? src : '';
+  const head = `<section id="top" aria-label="Verdict"><header class="wrap crumbrow"><span class="chip crumb">${esc(crumb)}</span><div class="tools"><span class="chip">Gate artifact</span><button class="btn btn--sm jsonly" id="exp-all" type="button">Expand all</button><button class="btn btn--sm jsonly" id="col-all" type="button">Collapse all</button></div></header>`
+    + `<div class="wrap hero"><h1>${esc(title)}</h1>${verdict ? `<p class="verdictline">${esc(verdict)}</p>` : ''}${lede ? `<p class="lede">${esc(lede)}</p>` : ''}</div>`
+    + `<div class="wrap">${tiles}${askStrip}${srcInTop}</div></section>`;
   const sections = chs.map((c, i) => `<section class="chap" id="${c.id}" aria-label="${esc(c.label)}"><div class="wrap"><div class="seclab"><span></span><h2>${esc(c.label)}</h2></div>${c.unitsHtml}${i === chs.length - 1 ? src : ''}</div></section>`).join('');
   const footer = foot ? `<p class="wrap foot">${esc(foot)}</p>` : '';
   return { bodyHtml: `${nav}\n${head}\n${sections}\n${footer}`, ids };
