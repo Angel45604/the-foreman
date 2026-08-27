@@ -34,9 +34,18 @@ function heroOf(meta, fallbackVerdict = '') {
 // intent and WINS over any derived ask. With no meta.ask, a decision derives
 // one from its question + recommendation. One computation drives the ask
 // strip, the target chapter's visible header, AND the single .rec strip.
+//
+// askShape is the ONE gate deciding whether meta.ask participates: only a real
+// object counts. A malformed meta.ask (empty string, plain string, number) must
+// fall through to the derived ask — an empty-string ask would otherwise win the
+// nullish check and silently drop a decisionCard's entire payload, and a
+// plain-string ask would spread into an empty headline. Both templates' paths
+// (askOf here, singleBoard below) MUST use this same normalizer.
+const askShape = (a) => (a && typeof a === 'object' && !Array.isArray(a) ? a : null);
+
 function askOf(ledger) {
-  const meta = ledger?.meta ?? {};
-  if (meta.ask) return meta.ask;
+  const shaped = askShape(ledger?.meta?.ask);
+  if (shaped) return shaped;
   const d = ledger?.decision;
   if (d) return { headline: d.question ?? '', recommendation: d.recommendation, recommendedBy: d.recommendedBy };
   return null;
@@ -144,7 +153,7 @@ function slideUnit(s) {
 function singleBoard(ledger, { fallbackTitle, contentLabel, unitHtml, derivedAsk = null, decision = null, keyStats = null, sources = [] }) {
   const meta = ledger?.meta ?? {};
   const title = String(meta.title ?? fallbackTitle);
-  const effectiveAsk = meta.ask ?? derivedAsk; // the author's meta.ask always wins (design §6)
+  const effectiveAsk = askShape(meta.ask) ?? derivedAsk; // the author's meta.ask wins ONLY when well-shaped (design §6; askShape is the single gate)
   const label = effectiveAsk ? 'Your call' : contentLabel;
   const [targetId] = allocateIds([label]);
   const unitsHtml = `${unitHtml}${effectiveAsk ? askChapterHtml(effectiveAsk, decision) : ''}`;

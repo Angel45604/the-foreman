@@ -440,3 +440,24 @@ test('dashboard escapes a malicious stat value (no raw tag) and ask', () => {
   assert.doesNotMatch(h, /<img onerror=ask>/);
   assert.match(h, /&lt;img/);
 });
+
+// ---- askShape: malformed meta.ask never silently drops content (wave-B review P2/P3) ----
+const ASK_DECISION = { question: 'Ship it?', options: [{ label: 'A', pros: 'p', cons: 'c', risk: 'low' }], recommendation: 'A', recommendedBy: 'Claude' };
+test('empty-string meta.ask falls through to the derived ask — the decision still renders in full', () => {
+  const h = decisionCard({ meta: { title: 'D', ask: '' }, decision: ASK_DECISION }).bodyHtml;
+  assert.deepEqual(chipIds(h), ['top', 'your-call']);
+  const vis = stripDetails(h);
+  assert.match(vis, /Ship it\?/);                       // question visible at the target
+  assert.match(vis, /class="opt\b/);                    // option cards render
+  assert.equal((h.match(/class="rec"/g) || []).length, 1);
+});
+test('plain-string meta.ask is malformed: no empty-headline strip, derived ask wins', () => {
+  const h = decisionCard({ meta: { title: 'D', ask: 'Approve the plan?' }, decision: ASK_DECISION }).bodyHtml;
+  assert.doesNotMatch(h, /<b><\/b>/);                   // never an empty ask headline
+  assert.match(stripDetails(h), /Ship it\?/);           // derived headline drives strip + target
+});
+test('decisionCard with NO ask source: content label, no ask strip, no dead link', () => {
+  const h = decisionCard({ meta: { title: 'D' } }).bodyHtml;
+  assert.deepEqual(chipIds(h), ['top', 'decision']);
+  assert.doesNotMatch(h, /class="ask"/);
+});
