@@ -387,7 +387,7 @@ Twin: keep today's lines, appending `${Array.isArray(b?.tags) && b.tags.length ?
 **Files:** `blocks.mjs` (`donut`, `phaseSteps`, `table`, `pillRow`, `statRow` html renderers — ledger shapes and md() untouched), `blocks.test.mjs`.
 
 **Interfaces:** every emitted class pairs with a styled selector in Task 8's CSS:
-- `donut` → the tick-ring: `.ringwrap/.ring/.ring__t(.on)/.ring__c/.ring__legend` (reference ~857–866); the `.ring` carries `role="img"` + an esc'd `aria-label` stating the computed `value / max` and label (the ticks are `aria-hidden` decoration). Center shows `value / max` (or `pct%` when max is 100) + esc'd label. All numbers through `safeNum` first; tick/lit counts per the numeric contract below.
+- `donut` → the tick-ring: `.ringwrap/.ring/.ring__t(.on)/.ring__c/.ring__legend` (reference ~857–866); the `.ring` carries `role="img"` + an esc'd `aria-label` stating the computed `value / max` and label (the ticks are `aria-hidden` decoration). Center shows `value / max` (or `pct%` when max is 100) + esc'd label. **`md()` changes to MIRROR that display** (the only md() change in this task): `pct%` when max is 100, else `**value / max** (pct%)` — twin tests pin max-100, non-100 (`2/3`), and zero-max (`0 / 0`, no NaN) cases. All numbers through `safeNum` first; tick/lit counts per the numeric contract below.
 - `phaseSteps` → the stops track: `.stops/.stop/.stop__mark/.stop__n/.stop__body/.stop__sign` (reference ~1030–1036); status renders as the `.stop__sign` text (`done ✓` / `active ▸` / `pending`), detail as the body `<p>`; the `.stops` container is a `<ol class="stops">` with `<li class="stop">` children (native list semantics preserved).
 - `table` → **KEEPS native `<table>` semantics** (the existing renderer's accessible structure must not regress): `<div class="scrollx"><table class="t">` with `<caption>` (esc'd), `<thead><th scope="col">`, `<tbody><td>` — styled per the Gate Brief pattern (engraved `--lineH` row separators via td background-image, no borders). The `.gt` div-grid form is NOT used for the table block.
 - `pillRow` → `.pill--ok/.pill--warn` (BEM double-dash replaces the legacy `pill ok` space form) with the `<i>` dot (`aria-hidden`), label text carrying the meaning.
@@ -397,7 +397,7 @@ Twin: keep today's lines, appending `${Array.isArray(b?.tags) && b.tags.length ?
 **Tick-ring numeric contract (donut):** `max = safeNum(block.max ?? 100, {min: 0, fallback: 100})`; `ticks = max > 0 ? Math.min(24, Math.max(4, Math.round(max <= 24 ? max : 24))) : 13` (always a positive integer); `lit = max > 0 ? Math.round((safeNum(value,{min:0,max}) / max) * ticks) : 0` (0 when max is 0 — an all-off ring, never a division). Tick angles `round(i * 360 / ticks)`. Repetition counts are these integers only — never ledger values.
 
 - [ ] **Step 1: Failing tests**: for each renderer, assert the new class family appears, the retired markup (`donutwrap`, `phaseflow`, `"pill ok"`, `statrow`, `.gt` for tables) does NOT, escaping holds, and numeric counts are guard-derived. Donut edge matrix: `{value:1e999}` → 0 lit; `{max:0}` → 13 unlit ticks, 0 lit, no NaN; `{max:-3}` → same as 0; `{max:2.6}` → integer ticks (4); `{max:1e308}` → 24 ticks. A11y pins: table output CONTAINS `<table class="t"`, `<caption>`, `scope="col"`; dotMatrix output contains `role="table"`, `role="columnheader"`, `role="rowheader"`, and one `class="sr">yes<`/`no<` per mark; donut `.ring` has `role="img"` with a computed aria-label; phaseSteps renders `<ol class="stops">`.
-- [ ] **Step 2: Run → FAIL.** - [ ] **Step 3: Implement the five renderers.** - [ ] **Step 4: Run the FULL suite** — update every `templates.test.mjs` / `render.test.mjs` / `markdown.test.mjs` assertion that pinned the old class markup for these five blocks in this same task → PASS (md() outputs byte-identical — pin one md() case per block).
+- [ ] **Step 2: Run → FAIL.** - [ ] **Step 3: Implement the five renderers.** - [ ] **Step 4: Run the FULL suite** — update every `templates.test.mjs` / `render.test.mjs` / `markdown.test.mjs` assertion that pinned the old class markup for these five blocks in this same task → PASS (md() outputs byte-identical for phaseSteps/table/pillRow/statRow — pin one md() case each; donut's md() intentionally changes per its bullet above and its twin tests pin the new form).
 - [ ] **Step 5: Commit**: `git add -A && git commit -m "feat(blocks): legacy renderers emit the Gate Board class families"`
 
 ### Task 5: `scaffold.mjs` — the Gate Board shell
@@ -477,6 +477,11 @@ test('gateBoard renders rail chips for Top + every chapter, with matching sectio
   assert.ok(!/#009ACC|MINDCLOUD/i.test(bodyHtml));
 });
 
+test('sources survive a zero-chapter board (fall back into #top)', () => {
+  const { bodyHtml } = gateBoard({ title: 't', chapters: [], sources: [{ label: 'rounds mined', value: '1,002' }] });
+  assert.match(bodyHtml, /Evidence base/); assert.match(bodyHtml, /1,002/);
+});
+
 test('unit + drawer compose; empty drawer collapses to nothing', () => {
   const u = unit({ kicker: 'K', statement: 'S', figureHtml: '<div class="fig">f</div>',
     drawerLabel: 'Detail', drawerHtml: '<p>evidence</p>' });
@@ -547,10 +552,13 @@ export function gateBoard({ crumb = '', title = '', verdict = '', lede = '', key
     ? `<div class="ask"><div class="ask__txt"><span class="ask__kick">What is being asked of you</span><b>${esc(ask.headline)}</b>${askBits ? `<p>${askBits}</p>` : ''}</div>${askTarget ? `<a class="btn btn--accent" href="#${askTarget}">Jump to the ask</a>` : ''}</div>` : '';
   const head = `<section id="top" aria-label="Verdict"><header class="wrap crumbrow"><span class="chip crumb">${esc(crumb)}</span><div class="tools"><span class="chip">Gate artifact</span><button class="btn btn--sm jsonly" id="exp-all" type="button">Expand all</button><button class="btn btn--sm jsonly" id="col-all" type="button">Collapse all</button></div></header>`
     + `<div class="wrap hero"><h1>${esc(title)}</h1>${verdict ? `<p class="verdictline">${esc(verdict)}</p>` : ''}${lede ? `<p class="lede">${esc(lede)}</p>` : ''}</div>`
-    + `<div class="wrap">${tiles}${askStrip}</div></section>`;
+    + `<div class="wrap">${tiles}${askStrip}${srcInTop}</div></section>`;
   // evidence-source chips render INSIDE the FINAL chapter section (the ask chapter
-  // when one exists) so they are part of the rail-addressable ask target (design §3.6)
+  // when one exists) so they are part of the rail-addressable ask target (design §3.6);
+  // with ZERO chapters they fall back into the #top section so they can never be
+  // silently dropped (content-preservation contract).
   const src = sources.length ? `<div class="src" aria-label="Evidence base">${sources.map((s) => `<span class="chip"><b>${esc(s?.value)}</b>&nbsp;${esc(s?.label)}</span>`).join('')}</div>` : '';
+  const srcInTop = chs.length === 0 ? src : '';
   const sections = chs.map((c, i) => `<section class="chap" id="${c.id}" aria-label="${esc(c.label)}"><div class="wrap"><div class="seclab"><span></span><h2>${esc(c.label)}</h2></div>${c.unitsHtml}${i === chs.length - 1 ? src : ''}</div></section>`).join('');
   const footer = foot ? `<p class="wrap foot">${esc(foot)}</p>` : '';
   return { bodyHtml: `${nav}\n${head}\n${sections}\n${footer}`, ids };
@@ -663,8 +671,9 @@ test('the one rule: no visible borders, no second surface fills, engraved divide
   // borders: only complete 0/none resets pass — '0.5px solid x' must fail
   const badBorders = [];
   for (const r of rules) for (const d of r.declarations) {
-    if (/^border(-(top|right|bottom|left|width|style|color|block|inline)(-(start|end))?(-(width|style|color))?)?$/.test(d.prop)
-        && !/^(0|none)$/.test(d.value.trim())) badBorders.push(`${r.selector} → ${d.prop}:${d.value}`);
+    const isBorderProp = /^border(-(top|right|bottom|left|width|style|color|block|inline)(-(start|end))?(-(width|style|color))?)?$/.test(d.prop)
+      || /^border-image(-source|-slice|-width|-outset|-repeat)?$/.test(d.prop);
+    if (isBorderProp && !/^(0|none)$/.test(d.value.trim())) badBorders.push(`${r.selector} → ${d.prop}:${d.value}`);
   }
   assert.deepEqual(badBorders, []);
   // gradients exist ONLY as the two engraved token DEFINITIONS
@@ -707,6 +716,7 @@ test('one-rule oracle mutation checks: forbidden fills and borders are caught', 
   assert.ok(oracleOffenders(css + '\n@media (min-width:600px){.evil{background:var(--sd);}}').length > 0);
   assert.ok(oracleBadBorders(css + '\n.evil{border:0.5px solid var(--sd);}').length > 0);
   assert.ok(oracleBadBorders(css + '\n.evil{border-block-start:1px solid red;}').length > 0);
+  assert.ok(oracleBadBorders(css + '\n.evil{border-image-source:radial-gradient(red,red);}').length > 0);
   assert.ok(oracleOffenders(css + '\n.ring__t.on{background:#ff0000;}').length > 0);
   assert.ok(oracleOffenders(css + '\n.evil{background:radial-gradient(var(--bg),#ff0000);}').length > 0);
 });
@@ -797,7 +807,7 @@ Changes — the twin mirrors EVERY content addition the HTML gained (ADR-003 por
 1. `head(meta)` gains, after the crumb: `meta.verdict ?? meta.subtitle` as a bold line, `meta.lede` as a paragraph, `meta.keyStats` as a `- **value** — label` list, and a shared `askToMarkdown(effectiveAsk)` serializer emitting `> **The ask:** headline` plus separate lines for note, `**Recommendation:** …`, and `(recommendedBy)` — each independently when present. **Every type's twin computes the SAME `effectiveAsk = meta.ask ?? derivedAsk` the HTML template computes and calls `askToMarkdown` with it, REPLACING that type's old natural-ask lines** (e.g. brief's `**The ask / next:**` line and decisionCard's trailing recommendation line come from the shared serializer now) — so a conflicting `meta.ask` wins identically in HTML and twin. Test the conflict case in the twin too.
 2. planDeck slide headings become `## ${mdEsc(s?.kicker ?? '')} — ${mdEsc(s?.statement ?? s?.heading ?? '')}`; `s.lead` renders as a paragraph.
 3. **Figures**: when `s.figure` is present, serialize it via `blocksToMarkdown([s.figure])` BEFORE the slide's other content; when the figure was the FALLBACK (picked from `s.blocks`), do NOT serialize it twice — `blocksToMarkdown(s.blocks)` already covers it (test both cases).
-4. **Decision chapter**: planDeck with `ledger.decision` appends a `## Your call` section reusing the existing decisionCard twin body (question, per-option pros/cons/risk lines, attributed recommendation) — extract that body into a shared `decisionToMarkdown(d)` used by both planDeck and decisionCard.
+4. **Decision chapter**: planDeck with `ledger.decision` appends a `## Your call` section via a shared `decisionToMarkdown(d)` used by both planDeck and decisionCard — serializing ONLY the decision question and the per-option pros/cons/risk evidence lines. **Recommendation and attribution are serialized EXCLUSIVELY by `askToMarkdown(effectiveAsk)`** (never by decisionToMarkdown): with a derived ask the recommendation appears once via the effective ask; with an overriding `meta.ask` the decision's stale recommendation appears nowhere except inside option evidence text. Tests pin both cases — derived (exactly one recommendation line, the decision's) and conflicting (exactly one, meta.ask's).
 5. **Sources**: `ledger.findings?.sources` appends an `**Evidence base:**` list on planDeck.
 
 - [ ] **Step 1: Failing tests**: render the reference ledger + a synthetic ledger carrying `meta.keyStats`, `meta.ask` (recommendation, no note), an explicit `figure`, AND a fallback figure from `blocks`; assert the twin contains the verdict line, each keyStat, the ask + recommendation lines, the explicit figure's serialization exactly once, the fallback figure exactly once, the `## Your call` decision section with all four options, the sources list, and a `statement`-overridden heading; assert injection strings stay escaped (`mdEsc`).
