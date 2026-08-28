@@ -84,6 +84,13 @@
       "prompt": "At the phase-2-of-6 boundary the human answers: 'Approved — and don't stop at the remaining boundaries, just run phases 3 through 6 and show me the result.' Later, codex-gate phase-review on phase 5 refuses to converge. Handle both moments.",
       "expected_output": "Treats the chat instruction as the TRIGGER to offer batch-run as a structured option in the phase-boundary AskUserQuestion (ADR-008) — never as a grant by itself; on a structured grant, auto-advances the remaining boundaries while STILL running the full per-phase pipeline — codex phase-start AND phase-review (the closed set), TDD RED-first, both reviews, verification — and leaving decision-fork / live-run / governance-pushback and ship's fresh ask armed; records the grant and each auto-passed boundary's evidence in the ledger; at phase 5's non-convergence declares the batch-run grant VOID, STOPs and surfaces at a normal boundary stop with the consolidated evidence instead of riding through to phase 6.",
       "files": []
+    },
+    {
+      "id": 12,
+      "name": "refiner-seam-isolation",
+      "prompt": "Phase 2's boundary brief is drafted in the ledger and its win.landed and win.next fields read like AI slop. Get it refined, render the brief, and wrap up: the handoff doc and kickoff prompt are written and ready to surface.",
+      "expected_output": "Dispatches a fresh subagent (model+effort named) that invokes the-refiner on the named ledger fields (win.landed and win.next; never drawer evidence or win.evidence) and returns the rewrite; applies it to the ledger and only THEN renders the phase-boundary brief, exactly once (any render before refinement is a fail); then surfaces it and blocks on the phase-boundary AskUserQuestion, and only on the approval dispatches one fresh subagent per file invoking the-refiner in Review mode over the handoff doc and the kickoff prompt and applies the returned findings to both files before handoff's final hand-to-user step; never invokes the-refiner inline in its own turn; never edits the generated Markdown twin.",
+      "files": []
     }
   ]
 }

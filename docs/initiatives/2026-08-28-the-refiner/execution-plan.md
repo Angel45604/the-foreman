@@ -464,9 +464,17 @@ deliverable to satisfy the script.
 ```bash
 set -euo pipefail
 cd /Users/angel/personal/the-foreman-refiner
-n=$(grep -o 'the-refiner' plugin/skills/the-foreman/SKILL.md | wc -l | tr -d ' '); [ "$n" -eq 4 ] || { echo "SKILL occurrences: $n != 4"; exit 1; }
+# 5 the-refiner occurrences in SKILL.md, at these locations: the orchestration sentence's routing
+# clause (§ intro), the §4 seam's two (the "invokes the-refiner" dispatch + the never-inline rule),
+# the §5 handoff seam's one, and the Red Flags row.
+n=$(grep -o 'the-refiner' plugin/skills/the-foreman/SKILL.md | wc -l | tr -d ' '); [ "$n" -eq 5 ] || { echo "SKILL occurrences: $n != 5"; exit 1; }
+# 2 lines carry "invokes the-refiner": the §4 ledger-prose dispatch and the §5 per-file Review dispatch.
 [ "$(grep -c 'invokes the-refiner' plugin/skills/the-foreman/SKILL.md)" -eq 2 ] || { echo 'seam sentences != 2'; exit 1; }
-grep -q ', \`the-refiner\`, \`commit-push-pr\`' plugin/skills/the-foreman/SKILL.md || { echo 'delegate clause missing'; exit 1; }
+# the-refiner must NOT sit in the Delegate list: "Delegate X" is defined as invoke-inline-this-turn,
+# which is exactly what the refiner must never be. It is routed at the sentence's end instead.
+if grep -qF '`the-refiner`, `commit-push-pr`' plugin/skills/the-foreman/SKILL.md; then echo 'the-refiner wrongly inside the Delegate list'; exit 1; fi
+grep -qF 'wrap `handoff` (§5); route' plugin/skills/the-foreman/SKILL.md || { echo 'routing clause head missing'; exit 1; }
+grep -qF '`the-refiner` through a fresh subagent, never inline (§4, §5).' plugin/skills/the-foreman/SKILL.md || { echo 'routing clause tail missing'; exit 1; }
 grep -q 'the-refiner' plugin/skills/the-foreman/references/lifecycle.md || { echo 'lifecycle delegate missing'; exit 1; }
 grep -q 'five skills' README.md || { echo 'README five-skills sentence missing'; exit 1; }
 if grep -q 'four skills\|All four' README.md; then echo 'stale four-skill inventory remains'; exit 1; fi
@@ -486,11 +494,36 @@ node --test plugin/skills/the-foreman/references/*.test.mjs plugin/skills/the-fo
 bash plugin/skills/codex-gate/codex-gate.test.sh
 ```
 
-Expected: four the-refiner occurrences in SKILL.md (one delegate, two seam sentences
-containing `invokes the-refiner`, one more in the §4 sentence pair), one lifecycle hit,
+Expected: five the-refiner occurrences in SKILL.md (the routing clause, two seam
+sentences containing `invokes the-refiner`, the §4 never-inline sentence, and the Red
+Flags row), the routing clause present with the-refiner ABSENT from the Delegate list,
+one lifecycle hit,
 the five-skills hit, no stale `four` inventory, `metadata-ok`, `readme-inventory-ok`,
 `readme-style-note-ok`, `readme-testcmd-ok`, both suites green with totals reported
 verbatim.
+
+**As-built amendments (Phase 2 quality review, 2026-08-28).** `the-refiner` was pulled
+back out of the Delegate list, because SKILL.md's Non-negotiables define "Delegate X" as
+invoke-inline-this-turn and that is precisely what the refiner must never be; it is now
+routed at the end of the orchestration sentence, and lifecycle.md's delegate list, Stage
+4, and Stage 7 carry the matching routing clauses. Both seams were rewritten to name
+their trigger conditions, forbid handing a subagent the ledger path, keep the dispatch
+synchronous so no §7 gate render slips past the turn, and split the §5 Review pass into
+one subagent per file before handoff's final hand-to-user step; the §4 cadence line now
+says handoff docs are never rendered as Gate Boards, a Red Flags row was added for the
+"it's just a paragraph" rationalization, eval 12's expected_output was retightened to
+the phase-boundary gate ordering, and README.md gained the third test suite and an
+`output-styles/` tree line. Step 7 above now asserts FIVE SKILL.md occurrences, which
+supersedes the "four" in the Expected paragraph, plus two `invokes the-refiner` seam
+lines and the routing clause in place of the old delegate-list grep. A follow-up
+re-review then corrected the §4 trigger: its render-lint arm was dead, because the lint
+checks statement length, code tokens, a missing verdict or ask, and keyStats count but
+never voice, so the seam became a labeled **Prose refinement (never inline):** sub-block
+that names the slots it actually governs (meta.lede and a slide's lead or statement) and
+excludes drawer evidence, which stays verbatim in a gate artifact. A codex P1 then caught
+that a `brief` renders its unit from the win fields, so the seam's slot list and the
+eval's first dispatch clause now also name win.landed, win.next, and the prose of an
+overriding meta.ask, while drawer evidence and win.evidence stay verbatim.
 
 ---
 
