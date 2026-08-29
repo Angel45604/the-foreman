@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadEvals, buildProbePrompt, buildJudgePrompt, parseVerdict, summarize, extractCliError, resolveResultsDir, SKILL_PATH, executeEval, runAll, EVIDENCE_SOURCES, exitCode, parseArgs } from './run-evals.mjs';
-import { writeFileSync, mkdtempSync, readFileSync } from 'node:fs';
+import { loadEvals, buildProbePrompt, buildJudgePrompt, parseVerdict, summarize, extractCliError, resolveResultsDir, SKILL_PATH, executeEval, runAll, EVIDENCE_SOURCES, exitCode, parseArgs, FIXTURE_ROOT, mkWorkspace, dryRunPrompt } from './run-evals.mjs';
+import { materialize as fxMaterialize } from './fixtures.mjs';
+import { writeFileSync, mkdtempSync, readFileSync, mkdirSync, unlinkSync, existsSync, rmSync, symlinkSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, sep, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -254,6 +255,32 @@ test('loadEvals throws when a declared criteria key is malformed (fail-closed at
     'a whitespace-only id is not a non-empty string id, loadEvals and parseVerdict must agree on this');
 });
 
+test('loadEvals throws when files is present but not a real array (string, number, true, array-like object)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'foreman-evals-'));
+  const cases = [
+    ['a-string', 'sub/ledger.json'],
+    ['a-number', 42],
+    ['true', true],
+    ['array-like-object', { length: 1, 0: 'sub/ledger.json' }],
+  ];
+  for (const [label, badFiles] of cases) {
+    const p = join(dir, `evals-${label}.json`);
+    writeFileSync(p, JSON.stringify({
+      evals: [{ id: 60, name: 'bad-files', prompt: 'p', expected_output: 'e', files: badFiles }],
+    }));
+    assert.throws(() => loadEvals(p), /eval 60/, `files=${label} must throw, naming the eval`);
+  }
+});
+
+test('loadEvals throws when files contains an empty string', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'foreman-evals-'));
+  const p = join(dir, 'evals-blank-file.json');
+  writeFileSync(p, JSON.stringify({
+    evals: [{ id: 61, name: 'blank-file', prompt: 'p', expected_output: 'e', files: ['sub/ledger.json', ''] }],
+  }));
+  assert.throws(() => loadEvals(p), /eval 61/);
+});
+
 test('loadEvals accepts an eval with no criteria key at all (legacy path stays fine)', () => {
   const dir = mkdtempSync(join(tmpdir(), 'foreman-evals-'));
   const fixturePath = join(dir, 'evals.json');
@@ -450,4 +477,240 @@ test('parseArgs rejects --runs 0, a negative --runs, and a non-numeric --runs', 
 test('parseArgs accepts a valid --runs and leaves other defaults alone', () => {
   const opts = parseArgs(['--runs', '3']);
   assert.equal(opts.runs, 3);
+});
+
+// --- Task 4 Step 6: evals 12 and 13 get their own fixture sets ---
+
+test('the split refiner seam evals declare real, existing fixture files', () => {
+  for (const id of [12, 13]) {
+    const e = loadEvals().find((x) => x.id === id);
+    assert.ok(Array.isArray(e.files) && e.files.length > 0, `eval ${id} must declare fixtures`);
+    for (const rel of e.files) {
+      assert.ok(existsSync(join(FIXTURE_ROOT, rel)), `eval ${id} fixture missing: ${rel}`);
+    }
+  }
+});
+
+test('the pre ledger fixture carries the exact state the scenario needs', () => {
+  const L = JSON.parse(readFileSync(join(FIXTURE_ROOT, 'fixtures/refiner-seam-pre/ledger.json'), 'utf8'));
+  assert.ok(L.meta && typeof L.meta.title === 'string' && L.meta.title.length > 0);
+  assert.ok(L.win, 'the fixture must carry a win block for the boundary brief');
+  for (const k of ['landed', 'evidence', 'next']) {
+    assert.ok(typeof L.win[k] === 'string' && L.win[k].length > 0, `win.${k} required`);
+  }
+  assert.strictEqual(L.win.verified, true);
+  assert.ok(Array.isArray(L.slides) && L.slides.length > 0 && L.slides[0].bullets,
+    'the fixture must carry drawer evidence the eval forbids touching');
+});
+
+test('the pre ledger fixture prose is actually refinable and its protected fields are not', () => {
+  const L = JSON.parse(readFileSync(join(FIXTURE_ROOT, 'fixtures/refiner-seam-pre/ledger.json'), 'utf8'));
+  const TELLS = /leverag|robust|seamless|crucial|it's worth noting|comprehensive/i;
+  assert.match(L.win.landed, TELLS, 'win.landed must contain a tell for the refiner to remove');
+  assert.match(L.win.next, TELLS, 'win.next must contain a tell for the refiner to remove');
+  assert.doesNotMatch(L.win.evidence, TELLS,
+    'win.evidence must be clean, so any change to it is unambiguous evidence of a seam violation');
+});
+
+test('both markdown fixtures are non-empty and give the Review pass something to find', () => {
+  const TELLS = /leverag|robust|seamless|crucial|it's worth noting|firstly/i;
+  for (const rel of ['fixtures/refiner-seam-pre/handoff.md', 'fixtures/refiner-seam-pre/kickoff.md',
+                     'fixtures/refiner-seam-post/handoff.md', 'fixtures/refiner-seam-post/kickoff.md']) {
+    const body = readFileSync(join(FIXTURE_ROOT, rel), 'utf8');
+    assert.ok(body.trim().length > 200, `${rel} must be a real document, not a stub`);
+    assert.match(body, TELLS, `${rel} must contain a tell the Review pass should report`);
+  }
+});
+
+test('mkWorkspace creates a unique per-run directory under root, no collisions', () => {
+  const root = mkdtempSync(join(tmpdir(), 'mkws-'));
+  const w1 = mkWorkspace(root, { id: 7 });
+  const w2 = mkWorkspace(root, { id: 7 });
+  assert.notStrictEqual(w1, w2, 'two workspaces for the same eval id must never collide, even for the same eval');
+  assert.ok(w1.startsWith(join(root, 'eval-7-')));
+  rmSync(root, { recursive: true, force: true });
+});
+
+// --- Task 4 Step 7: materialize/verifyUnchanged wired into executeEval ---
+// Every test below injects a temp fixtureRoot and workspaceRoot, so nothing touches the committed
+// fixtures under plugin/skills/the-foreman/evals/fixtures/ or the real per-user results directory.
+function fxEval() {
+  return { id: 98, name: 'fx', prompt: 'p', expected_output: 'e', files: ['sub/ledger.json'] };
+}
+function tempRoots() {
+  const src = mkdtempSync(join(tmpdir(), 'rt-src-'));
+  mkdirSync(join(src, 'sub'), { recursive: true });
+  writeFileSync(join(src, 'sub', 'ledger.json'), '{"ok":true}');
+  return { src, work: mkdtempSync(join(tmpdir(), 'rt-work-')) };
+}
+const GOOD = JSON.stringify({ criteria: [{ id: 'c1', text: 'a', passed: true }] });
+const ONE_CRIT = { ...fxEval(), criteria: [{ id: 'c1', text: 'a', kind: 'semantic', evidence: 'transcript' }] };
+
+test('a fixture run that leaves the originals untouched keeps its verdict', () => {
+  const { src, work } = tempRoots();
+  const run = executeEval(ONE_CRIT, { model: 'm', judgeModel: 'j' },
+    { runClaude: (p, m, o) => (o ? 'transcript' : GOOD), fixtureRoot: src, workspaceRoot: work });
+  assert.strictEqual(run.verdict.pass_rate, 1);
+  assert.strictEqual(run.fixtures.unchanged, true);
+  assert.strictEqual(run.error, undefined);
+  rmSync(src, { recursive: true, force: true }); rmSync(work, { recursive: true, force: true });
+});
+
+test('a fixture run whose executor modified an original fails and discards the verdict', () => {
+  const { src, work } = tempRoots();
+  const run = executeEval(ONE_CRIT, { model: 'm', judgeModel: 'j' }, {
+    runClaude: (p, m, o) => {
+      if (o) { writeFileSync(join(src, 'sub', 'ledger.json'), 'tampered'); return 'transcript'; }
+      return GOOD;
+    }, fixtureRoot: src, workspaceRoot: work });
+  assert.strictEqual(run.verdict, null, 'a drifted run must never report a pass_rate');
+  assert.match(run.error, /sub\/ledger\.json/);
+  assert.strictEqual(run.fixtures.unchanged, false);
+  rmSync(src, { recursive: true, force: true }); rmSync(work, { recursive: true, force: true });
+});
+
+test('a fixture run whose executor deleted an original fails the run', () => {
+  const { src, work } = tempRoots();
+  const run = executeEval(ONE_CRIT, { model: 'm', judgeModel: 'j' }, {
+    runClaude: (p, m, o) => { if (o) { unlinkSync(join(src, 'sub', 'ledger.json')); return 't'; } return GOOD; },
+    fixtureRoot: src, workspaceRoot: work });
+  assert.strictEqual(run.verdict, null);
+  assert.match(run.error, /sub\/ledger\.json/);
+  rmSync(src, { recursive: true, force: true }); rmSync(work, { recursive: true, force: true });
+});
+
+test('a fixture run whose executor threw still verifies the originals and never rethrows', () => {
+  const { src, work } = tempRoots();
+  const run = executeEval(ONE_CRIT, { model: 'm', judgeModel: 'j' }, {
+    runClaude: () => { throw new Error('executor exploded'); }, fixtureRoot: src, workspaceRoot: work });
+  assert.match(run.error, /executor exploded/);
+  assert.strictEqual(run.fixtures.unchanged, true, 'verification must still have run');
+  rmSync(src, { recursive: true, force: true }); rmSync(work, { recursive: true, force: true });
+});
+
+test('a run whose verification itself throws fails closed rather than escaping executeEval', () => {
+  const { src, work } = tempRoots();
+  const run = executeEval(ONE_CRIT, { model: 'm', judgeModel: 'j' }, {
+    runClaude: (p, m, o) => (o ? 'transcript' : GOOD),
+    verifyUnchanged: () => { throw new Error('hash IO error'); },
+    fixtureRoot: src, workspaceRoot: work });
+  assert.strictEqual(run.verdict, null, 'an unverifiable run is not a passing run');
+  assert.match(run.error, /hash IO error/);
+  assert.strictEqual(run.fixtures.unchanged, null);
+  rmSync(src, { recursive: true, force: true }); rmSync(work, { recursive: true, force: true });
+});
+
+test('executeEval verifies against the root materialize actually resolved, immune to a fixtureRoot that has drifted away from it', () => {
+  const { src, work } = tempRoots();
+  // Stands in for deps.fixtureRoot and the root materialize actually used having come apart: a
+  // decoy directory holding the SAME (untampered) bytes materialize copied from src. Before this
+  // fix, executeEval verified against d.fixtureRoot (here, the decoy) rather than the root
+  // materialize resolved, so tampering the real source (src) after materialization would go
+  // undetected as long as the decoy stayed byte-identical.
+  const decoy = mkdtempSync(join(tmpdir(), 'rt-decoy-'));
+  mkdirSync(join(decoy, 'sub'), { recursive: true });
+  writeFileSync(join(decoy, 'sub', 'ledger.json'), '{"ok":true}');
+  const run = executeEval(ONE_CRIT, { model: 'm', judgeModel: 'j' }, {
+    runClaude: (p, m, o) => {
+      if (o) { writeFileSync(join(src, 'sub', 'ledger.json'), 'tampered'); return 'transcript'; }
+      return GOOD;
+    },
+    // materialize always copies from src regardless of the srcRoot argument executeEval passes it
+    // (d.fixtureRoot, set to decoy below), modeling the two knobs having diverged.
+    materialize: (files, dest) => fxMaterialize(files, dest, src),
+    fixtureRoot: decoy, workspaceRoot: work,
+  });
+  assert.strictEqual(run.verdict, null,
+    'drift in the ACTUAL materialization root (src) must still be caught even though the decoy fixtureRoot is untouched and byte-identical');
+  assert.match(run.error, /sub\/ledger\.json/);
+  rmSync(src, { recursive: true, force: true }); rmSync(work, { recursive: true, force: true });
+  rmSync(decoy, { recursive: true, force: true });
+});
+
+test('executeEval catches the root itself swapped for a symlink to an outside directory of byte-identical files', () => {
+  // The gap this closes: verifyUnchanged called with no anchor only asks whether entries are
+  // unchanged relative to whatever fixtureRoot resolves to RIGHT NOW, never whether fixtureRoot
+  // still points where materialize resolved it. An executor that deletes the root directory and
+  // replaces it with a symlink to an outside directory holding byte-identical files at the same
+  // relative paths passes every per-entry check under that call. Passing fx.root as the anchor
+  // too (the fix) closes it: the anchor is compared BEFORE any entry is touched, so the swap
+  // itself is caught even though every entry underneath it still matches byte-for-byte.
+  const holder = mkdtempSync(join(tmpdir(), 'rt-holder-'));
+  const root = join(holder, 'root');
+  mkdirSync(join(root, 'sub'), { recursive: true });
+  writeFileSync(join(root, 'sub', 'ledger.json'), '{"ok":true}');
+  const outside = mkdtempSync(join(tmpdir(), 'rt-outside-'));
+  mkdirSync(join(outside, 'sub'), { recursive: true });
+  writeFileSync(join(outside, 'sub', 'ledger.json'), '{"ok":true}');
+  const work = mkdtempSync(join(tmpdir(), 'rt-work-'));
+
+  const run = executeEval(ONE_CRIT, { model: 'm', judgeModel: 'j' }, {
+    runClaude: (p, m, o) => {
+      if (o) {
+        // The executor call: swap the root itself out from under the harness.
+        rmSync(root, { recursive: true, force: true });
+        symlinkSync(outside, root, 'dir');
+        return 'transcript';
+      }
+      // The judge call: a verdict that would otherwise pass cleanly.
+      return GOOD;
+    },
+    fixtureRoot: root, workspaceRoot: work,
+  });
+
+  assert.strictEqual(run.verdict, null,
+    'a root swapped for a symlink to an outside directory of identical bytes must still be caught');
+  assert.match(run.error, /sub\/ledger\.json/, 'the error must name the drifted fixture path');
+
+  rmSync(holder, { recursive: true, force: true });
+  rmSync(outside, { recursive: true, force: true });
+  rmSync(work, { recursive: true, force: true });
+});
+
+// --- Task 4 Step 7b: buildProbePrompt actually carries the fixtures ---
+
+test('buildProbePrompt names the workspace and every relative path when fixtures are present', () => {
+  const fx = { workspace: '/tmp/ws-1', entries: [{ rel: 'a/b.json' }, { rel: 'c.md' }] };
+  const p = buildProbePrompt({ id: 1, name: 'n', prompt: 'scenario text' }, { fixtures: fx });
+  assert.ok(p.includes('/tmp/ws-1'), 'the workspace path must reach the executor');
+  assert.ok(p.includes('- a/b.json'), 'every declared relative path must reach the executor');
+  assert.ok(p.includes('- c.md'));
+});
+
+test('buildProbePrompt is byte-identical to the legacy prompt when no fixtures are present', () => {
+  const e = { id: 1, name: 'n', prompt: 'scenario text' };
+  assert.strictEqual(buildProbePrompt(e, { fixtures: null }), buildProbePrompt(e));
+  assert.doesNotMatch(buildProbePrompt(e), /Fixture workspace/);
+});
+
+// --- Task 4 Step 8: dry runs share executeEval's own materialization path ---
+
+test('a dry run materializes fixtures but never invokes runClaude', () => {
+  const { src, work } = tempRoots();
+  let called = 0;
+  const out = dryRunPrompt(ONE_CRIT, { model: 'm', judgeModel: 'j', dryRun: true },
+    { runClaude: () => { called += 1; return 'x'; }, fixtureRoot: src, workspaceRoot: work });
+  assert.strictEqual(called, 0, 'a dry run must never spend a call');
+  assert.match(out, /Fixture workspace:/);
+  rmSync(src, { recursive: true, force: true }); rmSync(work, { recursive: true, force: true });
+});
+
+test('dryRunPrompt removes the workspace it created before returning, so --dry-run leaves no orphaned directory', () => {
+  const { src, work } = tempRoots();
+  const out = dryRunPrompt(ONE_CRIT, { model: 'm', judgeModel: 'j', dryRun: true },
+    { runClaude: () => 'x', fixtureRoot: src, workspaceRoot: work });
+  const m = out.match(/Fixture workspace: (\S+)/);
+  assert.ok(m, 'the prompt must still name the workspace it built the prompt against');
+  assert.strictEqual(existsSync(m[1]), false,
+    'the workspace directory must not survive dryRunPrompt returning');
+  rmSync(src, { recursive: true, force: true }); rmSync(work, { recursive: true, force: true });
+});
+
+test('dryRunPrompt still builds the correct prompt shape (unaffected by cleaning up after itself)', () => {
+  const { src, work } = tempRoots();
+  const noFx = { id: 1, name: 'n', prompt: 'scenario text' };
+  const out = dryRunPrompt(noFx, { model: 'm', judgeModel: 'j', dryRun: true },
+    { runClaude: () => 'x', fixtureRoot: src, workspaceRoot: work });
+  assert.doesNotMatch(out, /Fixture workspace/, 'no files declared means no workspace to build or clean up');
+  rmSync(src, { recursive: true, force: true }); rmSync(work, { recursive: true, force: true });
 });

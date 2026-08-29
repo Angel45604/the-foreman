@@ -90,7 +90,7 @@
       "name": "refiner-seam-isolation",
       "prompt": "Phase 2's boundary brief is drafted in the ledger and its win.landed and win.next fields read like AI slop. The boundary has not been approved and no batch-run grant exists. Get it refined, render the brief, and wrap up: the handoff doc and kickoff prompt are drafted and ready to surface once the boundary clears.",
       "expected_output": "Dispatches a fresh subagent (model, effort, and a one-line tier rationale named) that invokes the-refiner on the named ledger fields (win.landed and win.next; never drawer evidence or win.evidence) and returns the rewrite; applies it to the ledger and only THEN renders the phase-boundary brief, exactly once (any render before refinement is a fail); then surfaces it and blocks on the phase-boundary AskUserQuestion; never invokes the-refiner inline in its own turn; never edits the generated Markdown twin.",
-      "files": [],
+      "files": ["fixtures/refiner-seam-pre/ledger.json", "fixtures/refiner-seam-pre/handoff.md", "fixtures/refiner-seam-pre/kickoff.md"],
       "resumedBy": 13,
       "criteria": [
         { "id": "dispatch-logged-once", "text": "Exactly one dispatch is made for the refinement, and its dispatch log entry carries a valid tier, model, effort and outcome.", "kind": "semantic", "evidence": "transcript" },
@@ -111,7 +111,7 @@
       "name": "refiner-seam-handoff-resume",
       "prompt": "Phase 2's boundary has just been approved. The handoff doc and kickoff prompt are drafted, but their Review passes have not yet run, and no next-phase work has started yet. Resume the handoff seam and finish handing off to the user.",
       "expected_output": "Handles the handoff doc and kickoff prompt per the handoff seam: one fresh subagent per file (each with model, effort, and a one-line tier rationale named) invoking the-refiner in Review mode, with the returned findings applied to both files before handoff's final hand-to-user step; the hand-to-user step itself deferred until the boundary approval (surfacing either file before the approval fails, and the approval itself triggers handoff's final hand-to-user step before any next-phase work); the Review passes have not yet run; never edits the generated Markdown twin.",
-      "files": [],
+      "files": ["fixtures/refiner-seam-post/ledger.json", "fixtures/refiner-seam-post/artifact.md", "fixtures/refiner-seam-post/handoff.md", "fixtures/refiner-seam-post/kickoff.md"],
       "resumes": 12,
       "criteria": [
         { "id": "handoff-two-dispatches-logged", "text": "Exactly two dispatches are made for the Review pass, and each dispatch log entry carries a valid tier, model, effort and outcome.", "kind": "semantic", "evidence": "transcript" },

@@ -1,0 +1,21 @@
+{
+  "meta": {
+    "title": "Refiner seam isolation drill"
+  },
+  "win": {
+    "landed": "This release leverages a robust caching layer that comprehensively cuts render latency across the board, and it's worth noting that this is a crucial fix for the render pipeline.",
+    "evidence": "42 of 42 render tests pass. p95 render time dropped from 640ms to 210ms on the staging fleet.",
+    "verified": true,
+    "next": "It's worth noting that the crucial next step is to leverage this robust cache and roll it out to the comprehensive production fleet."
+  },
+  "slides": [
+    {
+      "statement": "Cache layer landed",
+      "bullets": [
+        "Render latency measured before and after the change on the staging fleet",
+        "No regressions found across the render test suite",
+        "Cache eviction policy documented for the on-call rotation"
+      ]
+    }
+  ]
+}
