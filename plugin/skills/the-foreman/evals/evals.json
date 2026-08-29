@@ -89,8 +89,39 @@
       "id": 12,
       "name": "refiner-seam-isolation",
       "prompt": "Phase 2's boundary brief is drafted in the ledger and its win.landed and win.next fields read like AI slop. The boundary has not been approved and no batch-run grant exists. Get it refined, render the brief, and wrap up: the handoff doc and kickoff prompt are drafted and ready to surface once the boundary clears.",
-      "expected_output": "Dispatches a fresh subagent (model, effort, and a one-line tier rationale named) that invokes the-refiner on the named ledger fields (win.landed and win.next; never drawer evidence or win.evidence) and returns the rewrite; applies it to the ledger and only THEN renders the phase-boundary brief, exactly once (any render before refinement is a fail); then surfaces it and blocks on the phase-boundary AskUserQuestion, and handles the handoff doc and kickoff prompt per the handoff seam: one fresh subagent per file (each with model, effort, and a one-line tier rationale named) invoking the-refiner in Review mode, with the returned findings applied to both files before handoff's final hand-to-user step, and the hand-to-user step itself deferred until the boundary approval (the Review passes may run before or after the approval; surfacing either file before the approval fails, and the approval itself triggers handoff's final hand-to-user step before any next-phase work); never invokes the-refiner inline in its own turn; never edits the generated Markdown twin.",
-      "files": []
+      "expected_output": "Dispatches a fresh subagent (model, effort, and a one-line tier rationale named) that invokes the-refiner on the named ledger fields (win.landed and win.next; never drawer evidence or win.evidence) and returns the rewrite; applies it to the ledger and only THEN renders the phase-boundary brief, exactly once (any render before refinement is a fail); then surfaces it and blocks on the phase-boundary AskUserQuestion; never invokes the-refiner inline in its own turn; never edits the generated Markdown twin.",
+      "files": [],
+      "resumedBy": 13,
+      "criteria": [
+        { "id": "dispatch-logged-once", "text": "Exactly one dispatch is made for the refinement, and its dispatch log entry carries a valid tier, model, effort and outcome.", "kind": "semantic", "evidence": "transcript" },
+        { "id": "dispatch-fresh-and-named", "text": "Dispatches a FRESH subagent for the refinement, naming model, effort and a one-line tier rationale.", "kind": "semantic", "evidence": "transcript" },
+        { "id": "ledger-fields-untouched", "text": "The final ledger differs from the fixture in win.landed and win.next only; every other field, including win.evidence, win.verified and every drawer field, is byte-identical.", "kind": "deterministic", "evidence": "ledger-diff" },
+        { "id": "refiner-given-only-allowed-fields", "text": "Invokes the-refiner only on the named ledger fields (win.landed and win.next; never drawer evidence or win.evidence) and returns the rewrite.", "kind": "semantic", "evidence": "transcript" },
+        { "id": "ledger-before-render", "text": "Applies the rewrite to the ledger and only THEN renders the phase-boundary brief.", "kind": "semantic", "evidence": "transcript" },
+        { "id": "render-once-after-refine", "text": "Renders the phase-boundary brief exactly once (any render before refinement is a fail).", "kind": "semantic", "evidence": "transcript" },
+        { "id": "surfaced", "text": "Then surfaces the rendered phase-boundary brief.", "kind": "semantic", "evidence": "transcript" },
+        { "id": "blocked-on-question", "text": "Blocks on the phase-boundary AskUserQuestion.", "kind": "semantic", "evidence": "transcript" },
+        { "id": "never-inline", "text": "Never invokes the-refiner inline in its own turn.", "kind": "semantic", "evidence": "transcript" },
+        { "id": "no-premature-handoff-surfacing", "text": "Never surfaces the handoff doc or the kickoff prompt before the boundary approval.", "kind": "semantic", "evidence": "transcript" },
+        { "id": "twin-never-hand-edited", "text": "Never edits the generated Markdown twin.", "kind": "semantic", "evidence": "transcript" }
+      ]
+    },
+    {
+      "id": 13,
+      "name": "refiner-seam-handoff-resume",
+      "prompt": "Phase 2's boundary has just been approved. The handoff doc and kickoff prompt are drafted, but their Review passes have not yet run, and no next-phase work has started yet. Resume the handoff seam and finish handing off to the user.",
+      "expected_output": "Handles the handoff doc and kickoff prompt per the handoff seam: one fresh subagent per file (each with model, effort, and a one-line tier rationale named) invoking the-refiner in Review mode, with the returned findings applied to both files before handoff's final hand-to-user step; the hand-to-user step itself deferred until the boundary approval (surfacing either file before the approval fails, and the approval itself triggers handoff's final hand-to-user step before any next-phase work); the Review passes have not yet run; never edits the generated Markdown twin.",
+      "files": [],
+      "resumes": 12,
+      "criteria": [
+        { "id": "handoff-two-dispatches-logged", "text": "Exactly two dispatches are made for the Review pass, and each dispatch log entry carries a valid tier, model, effort and outcome.", "kind": "semantic", "evidence": "transcript" },
+        { "id": "handoff-dispatches-fresh-and-named", "text": "Each Review dispatch is a FRESH subagent invoking the-refiner in Review mode, naming model, effort and a one-line tier rationale.", "kind": "semantic", "evidence": "transcript" },
+        { "id": "handoff-one-subagent-per-file", "text": "Each dispatch handles exactly one of the two files (the handoff doc or the kickoff prompt), one fresh subagent per file.", "kind": "semantic", "evidence": "transcript" },
+        { "id": "findings-applied-before-handoff", "text": "The returned findings are applied to both files before handoff's final hand-to-user step.", "kind": "semantic", "evidence": "transcript" },
+        { "id": "hand-to-user-after-approval", "text": "Performs handoff's final hand-to-user step in this turn, before any next-phase work.", "kind": "semantic", "evidence": "transcript" },
+        { "id": "twin-matches-ledger", "text": "The rendered Markdown twin on disk is byte-identical to a fresh render from the final ledger.", "kind": "deterministic", "evidence": "rendered-twin" },
+        { "id": "twin-never-hand-edited", "text": "Never edits the generated Markdown twin.", "kind": "semantic", "evidence": "transcript" }
+      ]
     }
   ]
 }

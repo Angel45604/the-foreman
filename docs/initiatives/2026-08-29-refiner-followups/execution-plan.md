@@ -575,12 +575,13 @@ git commit -m "Grade evals against a declared criterion sequence and wire it int
 - [ ] **Step 1: Write the failing tests**
 
 ```javascript
-const E12_IDS = ['dispatch-named', 'ledger-fields-untouched', 'refiner-given-only-allowed-fields',
-                 'ledger-before-render', 'render-once-after-refine', 'surfaced',
-                 'blocked-on-question', 'never-inline'];
-const E13_IDS = ['handoff-two-dispatches-named', 'handoff-one-subagent-per-file',
-                 'findings-applied-before-handoff', 'hand-to-user-after-approval',
-                 'twin-matches-ledger', 'twin-never-hand-edited'];
+const E12_IDS = ['dispatch-logged-once', 'dispatch-fresh-and-named', 'ledger-fields-untouched',
+                 'refiner-given-only-allowed-fields', 'ledger-before-render',
+                 'render-once-after-refine', 'surfaced', 'blocked-on-question', 'never-inline',
+                 'no-premature-handoff-surfacing', 'twin-never-hand-edited'];
+const E13_IDS = ['handoff-two-dispatches-logged', 'handoff-dispatches-fresh-and-named',
+                 'handoff-one-subagent-per-file', 'findings-applied-before-handoff',
+                 'hand-to-user-after-approval', 'twin-matches-ledger', 'twin-never-hand-edited'];
 
 test('eval 12 is the pre-approval case, pinned to its exact criterion sequence', () => {
   const e = loadEvals().find((x) => x.id === 12);
@@ -597,6 +598,7 @@ test('eval 13 is the resumed post-approval case, pinned and linked back', () => 
   assert.strictEqual(e.resumes, 12, 'eval 13 must name the case it resumes');
   assert.match(e.prompt, /has just been approved/);
   assert.match(e.prompt, /handoff doc and kickoff prompt are drafted/);
+  assert.match(e.prompt, /Review passes have not yet run/);
 });
 
 test('the eval 12 and eval 13 linkage is mutual and consistent', () => {
@@ -634,13 +636,43 @@ expected and is not evidence of anything; it only becomes meaningful after Step 
 - [ ] **Step 3: Rewrite eval 12 and add eval 13**
 
 Eval 12 keeps its scenario text up to the boundary stop and gains `"resumedBy": 13` plus these
-eight criteria, in this order. Two of them are deliberate splits of a single clause of the old
-`expected_output`: a final-state half a deterministic check can prove, and a historical half only
-the transcript can speak to. Splitting them is what keeps a `deterministic` label honest.
+ELEVEN criteria, in this order. Several of them are deliberate splits of a single clause (or, for
+the dispatch pair, a single compound claim) from the old `expected_output`: a final-state, count, or
+field-presence half a deterministic check can prove, and a historical, freshness, or naming half
+only the transcript can speak to. Splitting them is what keeps a `deterministic` label honest.
+
+The `no-premature-handoff-surfacing` and `twin-never-hand-edited` rows were NOT in this table when
+the plan was approved. The Task 3 quality review found that `no-premature-handoff-surfacing` belongs
+only in eval 12, because only a pre-approval transcript can violate it, while `twin-never-hand-edited`
+belongs in BOTH eval 12 and eval 13, because each transcript can hand-edit the twin and each must pin
+the prohibition for itself. This table is corrected rather than left to disagree with the code:
+  - `no-premature-handoff-surfacing`. Eval 12's own prompt tells the agent the handoff files are
+    "drafted and ready to surface once the boundary clears" and to "wrap up", and the original
+    `expected_output` carried "surfacing either file before the approval fails". The split had left
+    that obligation only in eval 13, whose scenario is post-approval, so nothing tested it in the
+    one case that can actually violate it. An eval 12 transcript could surface both files early and
+    still score full marks.
+  - `twin-never-hand-edited`. `render.mjs` writes the Markdown twin during the phase-boundary
+    render, and that render is eval 12's work. Eval 13 never renders. Leaving both twin criteria in
+    eval 13 meant the only run that produces a twin carried no twin criterion at all.
+
+The `dispatch-named` row is a later, separate correction. It was labelled `deterministic` with
+evidence `dispatch-log`, but its text claimed a FRESH subagent and a named one-line tier
+rationale, neither of which `validateEntry` in `references/dispatch-log.mjs` records. That function
+requires exactly session, shape, why, tier, model, effort and outcome, with `phase` and `notes`
+optional; it says nothing about subagent freshness, the dispatch's purpose, which file it handled,
+Review mode, or whether a rationale is one line. Labelling that compound claim deterministic wrongly
+removed semantic residue from the canary scope the evidence gate measures. The row split into
+`dispatch-logged-once` (the count and field-presence half) and `dispatch-fresh-and-named` (the
+freshness and naming claim the log cannot prove). Eval 13's `handoff-two-dispatches-named` had the
+identical defect and split the same way, below. A LATER correction reclassifies `dispatch-logged-once`
+itself (and its eval 13 counterpart) again, for an unrelated reason: see the paragraph after the
+eval 13 table.
 
 | id | kind | evidence | why this source can decide it |
 |---|---|---|---|
-| `dispatch-named` | deterministic | `dispatch-log` | the log line carries tier, model, effort and outcome |
+| `dispatch-logged-once` | semantic | `transcript` | RECLASSIFIED: `defaultLogPath` resolves to a durable, per-user, append-only `dispatch-log.jsonl` that the runner never scopes, isolates, snapshots, or overrides per run, so a count over it cannot distinguish this run's dispatch from unrelated historical entries. Not decidable by `dispatch-log` until the runner adds run-scoped isolation; only the transcript can currently speak to the count and to whether the entry carries a valid tier, model, effort and outcome |
+| `dispatch-fresh-and-named` | semantic | `transcript` | freshness and the one-line tier rationale leave no artifact in the log; only the transcript can show a genuinely fresh subagent was invoked and hear it name model, effort and the rationale |
 | `ledger-fields-untouched` | deterministic | `ledger-diff` | stated as a final-state guarantee: the final ledger differs from the fixture ONLY in `win.landed` and `win.next`, with `win.evidence` and every drawer field byte-identical. A diff proves that. It does NOT prove which inputs the refiner was handed, so that separate claim is the next row |
 | `refiner-given-only-allowed-fields` | semantic | `transcript` | what was passed INTO the subagent leaves no artifact |
 | `ledger-before-render` | semantic | `transcript` | ordering, and nothing on disk records when the ledger was written relative to the render |
@@ -648,28 +680,64 @@ the transcript can speak to. Splitting them is what keeps a `deterministic` labe
 | `surfaced` | semantic | `transcript` | a rendered HTML file existing does not prove anyone was shown it |
 | `blocked-on-question` | semantic | `transcript` | the normal `AskUserQuestion` path writes no file; `escalation.mjs` only fires on the fallback path |
 | `never-inline` | semantic | `transcript` | an absence of an inline invocation leaves no artifact |
+| `no-premature-handoff-surfacing` | semantic | `transcript` | added by review: the pre-approval negative the original prose carried, which only this case can violate |
+| `twin-never-hand-edited` | semantic | `transcript` | added by review: the historical claim, placed in the case that actually renders the twin |
 
-Two of the eight are deterministic and six are semantic. That ratio is the honest one, and it is
-lower than two earlier drafts of this plan claimed. Do NOT read it as the final residue. The residue
-is whatever the evidence gate measures after Tasks 1 to 5 have actually run, not a number declared
-here in advance.
+One of the eleven is deterministic and ten are semantic. That ratio is the honest one, and it is
+lower than two earlier drafts of this plan claimed, and lower again than the eleven-criteria table
+first read before `dispatch-logged-once` was itself reclassified (see the paragraph after the eval 13
+table). Do NOT read it as the final residue. The residue is whatever the evidence gate measures after
+Tasks 1 to 5 have actually run, not a number declared here in advance.
 
 Eval 13 is new. Its prompt states that the boundary has just been approved and that the handoff doc
-and kickoff prompt are drafted and ready. It carries `"resumes": 12` and these six criteria, in
-this order. As in eval 12, a claim is split whenever one half is provable from an artifact and the
-other is not, rather than labelling the whole thing deterministic and hoping:
+and kickoff prompt are drafted, but their Review passes have not yet run. It carries `"resumes": 12`
+and these SEVEN criteria, in this order. As in eval 12, a claim is split whenever one half is
+provable from an artifact and the other is not, rather than labelling the whole thing deterministic
+and hoping.
+
+`twin-never-hand-edited` lives in BOTH eval 12 and eval 13; it was never moved, only added to
+eval 13 as well. Eval 12 keeps its copy because `render.mjs` writes the Markdown twin during eval
+12's own render. Eval 13 gets its own copy because an eval 13 transcript can hand-edit that same
+twin and restore it before the run ends: `twin-matches-ledger` only compares final state, fixed-rubric
+judging ignores `expected_output` entirely, and eval 12 cannot judge actions that happen in eval 13's
+resumed transcript. Each case must pin the prohibition for its own transcript.
 
 | id | kind | evidence | why this source can decide it |
 |---|---|---|---|
-| `handoff-two-dispatches-named` | deterministic | `dispatch-log` | the log records exactly two Review dispatches for this phase, each with a validated tier, model, effort and outcome. Count and field presence are provable |
+| `handoff-two-dispatches-logged` | semantic | `transcript` | RECLASSIFIED: the same durable, per-user, run-unscoped `dispatch-log.jsonl` cannot decide a count of exactly two entries against the unrelated historical entries already in the file. Not decidable by `dispatch-log` until the runner adds run-scoped isolation; only the transcript can currently speak to the count and to whether each entry carries a valid tier, model, effort and outcome |
+| `handoff-dispatches-fresh-and-named` | semantic | `transcript` | the log records nothing about subagent freshness, which file a dispatch handled, or Review mode; only the transcript can show each dispatch was a fresh subagent invoking the-refiner in Review mode and naming model, effort and a one-line tier rationale |
 | `handoff-one-subagent-per-file` | semantic | `transcript` | WHICH file each dispatch handled is not in the log. `validateEntry` requires session, shape, why, tier, model, effort and outcome, with no target or file identity, and a convention buried in free-form `shape` or `why` text is not a validated field |
 | `findings-applied-before-handoff` | semantic | `transcript` | the findings land in the handoff files, not the ledger, and ordering leaves no artifact |
-| `hand-to-user-after-approval` | semantic | `transcript` | ordering relative to the approval leaves no artifact |
-| `twin-matches-ledger` | deterministic | `rendered-twin` | stated as a final-state guarantee: the twin on disk is byte-identical to a fresh render from the final ledger. Eval 13's own fixture set supplies both the post-approval ledger and its renderer-generated `artifact.md`, so the comparison has real inputs. An edit-then-restore would still pass, so the historical claim is the next row |
-| `twin-never-hand-edited` | semantic | `transcript` | the historical claim, which no final artifact can settle |
+| `hand-to-user-after-approval` | semantic | `transcript` | rewritten by review for the resumed frame. Its original text described a window outside eval 13's transcript, since eval 13 begins after the approval, so it passed for any transcript at all |
+| `twin-matches-ledger` | deterministic | `rendered-twin` | stated as a final-state guarantee: the twin on disk is byte-identical to a fresh render from the final ledger. Eval 13's own fixture set supplies both the post-approval ledger and its renderer-generated `artifact.md`, so the comparison has real inputs. An edit-then-restore would still pass on this row alone, which is why the historical half is pinned separately, below |
+| `twin-never-hand-edited` | semantic | `transcript` | added by review: an eval 13 transcript could hand-edit the twin and restore it, satisfying `twin-matches-ledger`'s final-state check while still violating the prohibition; only the transcript can catch the hand-edit itself |
 
-Each criterion's `text` restates the corresponding clause of the old eval 12 `expected_output`
-verbatim, so nothing in the original contract is lost in the split.
+One of the seven is deterministic and six are semantic.
+
+**Neither table cites `dispatch-log`, and here is why.** `dispatch-logged-once` (eval 12) and
+`handoff-two-dispatches-logged` (eval 13) were both reclassified from `deterministic`/`dispatch-log`
+to `semantic`/`transcript`, so no criterion in either eval currently cites `dispatch-log` as its
+evidence source. Measured against the real runner: `defaultLogPath` in `run-evals.mjs` resolves to
+`~/.claude/the-foreman/dispatch-log.jsonl`, a durable, append-only, PER-USER file that currently
+holds 210 entries from many unrelated sessions, and `run-evals.mjs` never reads, isolates, snapshots,
+or overrides that file before or after an eval runs (`grep -n DISPATCH_LOG` on the runner returns
+only the `EVIDENCE_SOURCES` comment). A count over that file cannot distinguish this run's dispatch
+from any pre-existing unrelated entry, so "exactly one dispatch is recorded" and "exactly two
+dispatches are recorded" are not decidable claims against it: either they read as always false against
+the real file, or they are satisfiable by entries this run never produced. Labelling either criterion
+`deterministic` on `dispatch-log` would be exactly the overstatement the earlier `dispatch-named` /
+`handoff-two-dispatches-named` split was already trying to fix, just moved one layer down.
+
+Promoting either criterion back to `deterministic` requires run-scoped isolation first: for example,
+the runner setting `FOREMAN_DISPATCH_LOG` to a per-run path before the probe executes, or capturing a
+pre-run and post-run snapshot of the log and diffing the delta. That isolation is NOT built by this
+plan. It is recorded here only as an input for the evidence gate to weigh alongside the residue the
+gate already computes, not as work this plan performs.
+
+Each criterion's `text` restates the corresponding clause of the old eval 12 `expected_output`,
+except where a clause was deliberately split into a provable final-state (or count) half and a
+historical (or freshness/naming) half. `ledger-fields-untouched` and `twin-matches-ledger` are the
+two criteria that add a final-state obligation the original clause did not state.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -688,6 +756,10 @@ git commit -m "Split the refiner seam eval into linked pre-approval and post-app
 ## Phase 4: Make the fixture field live
 
 ### Task 4: Real fixtures, containment-safe materialization, and a drift check that fails the run
+
+Note: `ledger-fields-untouched` (eval 12) cites `ledger-diff` and `twin-matches-ledger` (eval 13)
+cites `rendered-twin`, but no fixture ledger or twin exists until this task lands. A red result on
+either eval before this task's fixtures land is not a skill regression.
 
 **Files:**
 - Create: `plugin/skills/the-foreman/evals/fixtures.mjs`

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadEvals, buildProbePrompt, buildJudgePrompt, parseVerdict, summarize, extractCliError, resolveResultsDir, SKILL_PATH, executeEval, runAll } from './run-evals.mjs';
-import { writeFileSync, mkdtempSync } from 'node:fs';
+import { loadEvals, buildProbePrompt, buildJudgePrompt, parseVerdict, summarize, extractCliError, resolveResultsDir, SKILL_PATH, executeEval, runAll, EVIDENCE_SOURCES, exitCode, parseArgs } from './run-evals.mjs';
+import { writeFileSync, mkdtempSync, readFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, sep, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +22,7 @@ test('loadEvals reads the real catalog and every eval has the required fields', 
   for (const e of evals) {
     assert.equal(typeof e.id, 'number');
     for (const k of ['name', 'prompt', 'expected_output']) assert.ok(typeof e[k] === 'string' && e[k].length > 0, `eval ${e.id} ${k}`);
+    assert.ok(Array.isArray(e.files), `eval ${e.id} files must be an array`);
   }
   assert.equal(new Set(evals.map((e) => e.id)).size, evals.length, 'eval ids unique');
 });
@@ -289,4 +290,164 @@ test('parseVerdict still takes the legacy path when no criteria key is present a
   assert.equal(parseVerdict(body, { id: 1, name: 'legacy' }).pass_rate, 1);
   assert.equal(parseVerdict(body, {}).pass_rate, 1);
   assert.equal(parseVerdict(body).pass_rate, 1);
+});
+
+// Pinned as full [id, kind, evidence] triples, not just id sequence: an id-only pin lets a future
+// edit silently re-promote a criterion's kind or evidence (e.g. dispatch-logged-once back to
+// deterministic/dispatch-log) without failing a single test, since the id list would still match.
+const E12_CRITERIA = [
+  ['dispatch-logged-once', 'semantic', 'transcript'],
+  ['dispatch-fresh-and-named', 'semantic', 'transcript'],
+  ['ledger-fields-untouched', 'deterministic', 'ledger-diff'],
+  ['refiner-given-only-allowed-fields', 'semantic', 'transcript'],
+  ['ledger-before-render', 'semantic', 'transcript'],
+  ['render-once-after-refine', 'semantic', 'transcript'],
+  ['surfaced', 'semantic', 'transcript'],
+  ['blocked-on-question', 'semantic', 'transcript'],
+  ['never-inline', 'semantic', 'transcript'],
+  ['no-premature-handoff-surfacing', 'semantic', 'transcript'],
+  ['twin-never-hand-edited', 'semantic', 'transcript'],
+];
+const E13_CRITERIA = [
+  ['handoff-two-dispatches-logged', 'semantic', 'transcript'],
+  ['handoff-dispatches-fresh-and-named', 'semantic', 'transcript'],
+  ['handoff-one-subagent-per-file', 'semantic', 'transcript'],
+  ['findings-applied-before-handoff', 'semantic', 'transcript'],
+  ['hand-to-user-after-approval', 'semantic', 'transcript'],
+  ['twin-matches-ledger', 'deterministic', 'rendered-twin'],
+  ['twin-never-hand-edited', 'semantic', 'transcript'],
+];
+
+test('eval 12 is the pre-approval case, pinned to its exact criterion sequence', () => {
+  const e = loadEvals().find((x) => x.id === 12);
+  assert.ok(e, 'eval 12 must exist');
+  assert.deepEqual(e.criteria.map((c) => [c.id, c.kind, c.evidence]), E12_CRITERIA);
+  assert.match(e.prompt, /has not been approved/);
+  assert.equal(e.resumedBy, 13, 'eval 12 must name its resumed case');
+});
+
+// eval 12's expected_output is legacy narrative text: buildJudgePrompt never sends it to the judge
+// once criteria is declared, so it grades nothing, but it still documents the eval's contract for a
+// human reader. Before this test it was left byte-identical to the pre-split, whole-flow contract
+// (dispatch through handoff), which now falsely claims eval 12 covers ground that belongs solely to
+// eval 13's resumed, post-approval case.
+test('eval 12 expected_output is trimmed to the pre-approval half and never mentions the handoff doc', () => {
+  const e = loadEvals().find((x) => x.id === 12);
+  assert.doesNotMatch(e.expected_output, /handoff doc/);
+  assert.match(e.expected_output, /AskUserQuestion/);
+});
+
+test('eval 13 is the resumed post-approval case, pinned and linked back', () => {
+  const e = loadEvals().find((x) => x.id === 13);
+  assert.ok(e, 'eval 13 must exist');
+  assert.deepEqual(e.criteria.map((c) => [c.id, c.kind, c.evidence]), E13_CRITERIA);
+  assert.equal(e.resumes, 12, 'eval 13 must name the case it resumes');
+  assert.match(e.prompt, /has just been approved/);
+  assert.match(e.prompt, /handoff doc and kickoff prompt are drafted/);
+  assert.match(e.prompt, /Review passes have not/);
+});
+
+test('the eval 12 and eval 13 linkage is mutual and consistent', () => {
+  const evals = loadEvals();
+  const e12 = evals.find((x) => x.id === 12);
+  const e13 = evals.find((x) => x.id === 13);
+  assert.equal(evals.find((x) => x.id === e12.resumedBy).resumes, e12.id);
+  assert.equal(evals.find((x) => x.id === e13.resumes).resumedBy, e13.id);
+});
+
+test('every declared criterion has a unique id, a known kind, and a known evidence source', () => {
+  // Read the catalog directly, bypassing loadEvals: validateEvalCriteria enforces these same four
+  // rules and THROWS inside loadEvals on any violation, so going through loadEvals would make this
+  // test's own per-rule assertions unreachable: a violation would surface as loadEvals's own throw,
+  // never as one of the assert.ok calls below. Reading the file directly checks the catalog
+  // independently of the loader.
+  const catalogPath = join(dirname(fileURLToPath(import.meta.url)), 'evals.json');
+  const evals = JSON.parse(readFileSync(catalogPath, 'utf8')).evals;
+  for (const e of evals) {
+    if (!e.criteria) continue;
+    const ids = e.criteria.map((c) => c.id);
+    assert.equal(new Set(ids).size, ids.length, `eval ${e.id} ids must be unique`);
+    for (const c of e.criteria) {
+      assert.ok(['deterministic', 'semantic'].includes(c.kind), `eval ${e.id}/${c.id} kind`);
+      assert.ok(EVIDENCE_SOURCES.includes(c.evidence), `eval ${e.id}/${c.id} evidence source`);
+      assert.ok(typeof c.text === 'string' && c.text.length > 0, `eval ${e.id}/${c.id} text`);
+    }
+  }
+});
+
+test('no criterion claims dispatch-log evidence while the log is not run-scoped', () => {
+  for (const e of loadEvals()) {
+    for (const c of e.criteria ?? []) {
+      assert.notEqual(c.evidence, 'dispatch-log',
+        `${e.id}/${c.id}: the dispatch log is a durable per-user file the runner does not scope to a run, so a count over it cannot decide a criterion. Promote only after run-scoped isolation exists.`);
+    }
+  }
+});
+
+// Owner-approved addition folded into Task 3 at the Task 2 boundary (not in the written plan):
+// summarize's displayed mean is ROUNDED (.toFixed(2)), so a true mean of 0.995 or higher displays
+// as 1 while the per-run detail above it still shows a real failure. The old isMain gate exited 0
+// whenever s.mean === 1, trusting that rounded number instead of the raw per-run verdicts. This
+// test proves the rounding is real (summarize(runs).mean is 1) and that the gate no longer trusts
+// it (exitCode(runs) is non-zero because one judged run did not pass every one of its criteria).
+test('exitCode gates on every judged run passing every one of its criteria, not on the rounded mean', () => {
+  const fullPass = (i) => ({ eval_id: i, name: `eval-${i}`, verdict: { pass_rate: 1, passed: 4, criteria: Array(4).fill(0) } });
+  const runs = [
+    ...Array.from({ length: 13 }, (_, i) => fullPass(i)),
+    { eval_id: 13, name: 'eval-13', verdict: { pass_rate: 0.95, passed: 19, criteria: Array(20).fill(0) } },
+  ];
+  assert.equal(summarize(runs).mean, 1, 'rounding really does round 13.95/14 up to a displayed 1');
+  assert.equal(exitCode(runs), 1, 'the gate must not trust the rounded mean when a run failed a criterion');
+});
+
+test('exitCode returns 1 on an empty runs array (zero evidence must never read as a pass)', () => {
+  assert.equal(exitCode([]), 1);
+});
+
+test('exitCode returns 0 for a perfect run, for contrast with the empty-array case', () => {
+  const runs = [{ eval_id: 0, name: 'a', verdict: { passed: 3, criteria: [1, 2, 3] } }];
+  assert.equal(exitCode(runs), 0);
+});
+
+test('exitCode returns 1 when a run carries a null verdict', () => {
+  assert.equal(exitCode([{ eval_id: 0, name: 'a', verdict: null }]), 1);
+});
+
+test('exitCode returns 1 for a mixed judged and unjudged array', () => {
+  const judged = { eval_id: 0, name: 'a', verdict: { passed: 2, criteria: [1, 2] } };
+  const unjudged = { eval_id: 1, name: 'b', verdict: null };
+  assert.equal(exitCode([judged, unjudged]), 1);
+});
+
+test('exitCode returns 1 for an all-errored sweep (no verdict was ever produced)', () => {
+  const runs = [
+    { eval_id: 0, name: 'a', error: 'claude -p failed', verdict: null },
+    { eval_id: 1, name: 'b', error: 'claude -p failed', verdict: null },
+  ];
+  assert.equal(exitCode(runs), 1);
+});
+
+test('exitCode returns 1 for a run carrying both an error and a stale truthy verdict', () => {
+  // A stale verdict left over from a prior attempt must never override a recorded error, even when
+  // that stale verdict looks like a perfect pass on its own.
+  const runs = [
+    { eval_id: 0, name: 'a', error: 'timed out on retry', verdict: { passed: 4, criteria: [1, 2, 3, 4] } },
+  ];
+  assert.equal(exitCode(runs), 1);
+});
+
+test('exitCode returns 1 when a verdict declares an empty criteria array (vacuously "every criterion passed")', () => {
+  const runs = [{ eval_id: 0, name: 'a', verdict: { passed: 0, criteria: [] } }];
+  assert.equal(exitCode(runs), 1);
+});
+
+test('parseArgs rejects --runs 0, a negative --runs, and a non-numeric --runs', () => {
+  for (const bad of ['0', '-1', 'abc']) {
+    assert.throws(() => parseArgs(['--runs', bad]), /--runs must be an integer >= 1/, `--runs ${bad} must throw`);
+  }
+});
+
+test('parseArgs accepts a valid --runs and leaves other defaults alone', () => {
+  const opts = parseArgs(['--runs', '3']);
+  assert.equal(opts.runs, 3);
 });

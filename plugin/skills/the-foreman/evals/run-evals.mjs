@@ -163,6 +163,28 @@ export function parseVerdict(text, evalDef) {
   return null;
 }
 
+// Exit-code gate, extracted to a pure function so a test can drive it directly with a fake runs
+// array and zero paid calls. summarize's displayed mean is ROUNDED (.toFixed(2)) for readability,
+// so a true mean of 0.995 or higher already displays as 1 while the per-run detail printed just
+// above it still shows a real failure. This function does not read that rounded mean at all: exit
+// 0 only when (1) at least one run was attempted (an empty runs array is zero evidence, never a
+// pass), (2) every run was judged (judged.length === runs.length, so a null verdict or an
+// all-errored sweep fails closed), (3) no judged run also carries r.error (a stale verdict left
+// over from a retry must never override a recorded failure), and (4) every judged run's verdict
+// declares a non-empty criteria array and passed every one of them
+// (r.verdict.passed === r.verdict.criteria.length): a verdict with an empty criteria array is
+// vacuously "every criterion passed" and must not be trusted.
+export function exitCode(runs) {
+  if (runs.length === 0) return 1;
+  const judged = runs.filter((r) => r.verdict);
+  if (judged.length !== runs.length) return 1;
+  return judged.every((r) => {
+    if (r.error) return false;
+    const v = r.verdict;
+    return Array.isArray(v.criteria) && v.criteria.length > 0 && v.passed === v.criteria.length;
+  }) ? 0 : 1;
+}
+
 export function summarize(runs) {
   const ok = runs.filter((r) => r.verdict);
   const lines = runs.map((r) => {
@@ -253,14 +275,24 @@ export function runAll(evals, opts, deps = {}) {
   return runs;
 }
 
-function parseArgs(argv) {
+// Exported so a test (and a probe) can drive it directly, without executing this file as a
+// program. --runs feeds `for (let n = 1; n <= opts.runs; n++)` in runAll: an unvalidated 0,
+// negative, or NaN makes that loop run zero times, producing an empty runs array that used to
+// read as a pass (see exitCode above), so a bad --runs value must fail closed here, before any
+// paid call, the same way an unrecognized flag already does.
+export function parseArgs(argv) {
   const opts = { ids: null, model: 'sonnet', judgeModel: 'opus', runs: 1, baseline: false, dryRun: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--ids') opts.ids = argv[++i].split(',').map(Number);
     else if (a === '--model') opts.model = argv[++i];
     else if (a === '--judge-model') opts.judgeModel = argv[++i];
-    else if (a === '--runs') opts.runs = Number(argv[++i]);
+    else if (a === '--runs') {
+      const raw = argv[++i];
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 1) throw new Error(`--runs must be an integer >= 1, got: ${raw}`);
+      opts.runs = n;
+    }
     else if (a === '--baseline') opts.baseline = true;
     else if (a === '--dry-run') opts.dryRun = true;
     else throw new Error(`unknown arg: ${a}`);
@@ -293,5 +325,5 @@ if (isMain(import.meta.url)) {
   }, null, 2));
   console.log(s.lines.join('\n'));
   console.log(`mean pass_rate=${s.mean} (${s.judged}/${s.total} judged) → ${outPath}`);
-  process.exit(s.judged === s.total && s.mean === 1 ? 0 : 1);
+  process.exit(exitCode(runs));
 }
