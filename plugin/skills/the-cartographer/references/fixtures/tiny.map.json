@@ -1,0 +1,327 @@
+{
+  "coverage": {
+    "partial": [],
+    "read": [
+      "plugin/skills/the-cartographer/references/fixtures/tiny/SKILL.md",
+      "plugin/skills/the-cartographer/references/fixtures/tiny/run.sh"
+    ],
+    "skipped": []
+  },
+  "edges": [
+    {
+      "evidence": [
+        {
+          "line": 12,
+          "note": "tiny_core check",
+          "path": "plugin/skills/the-cartographer/references/fixtures/tiny/run.sh"
+        }
+      ],
+      "from": "mode.check",
+      "id": "e.control.mode.check>component.tiny_core",
+      "kind": "control",
+      "label": "calls",
+      "to": "component.tiny_core"
+    },
+    {
+      "evidence": [
+        {
+          "line": 13,
+          "note": "emit_pass",
+          "path": "plugin/skills/the-cartographer/references/fixtures/tiny/run.sh"
+        }
+      ],
+      "from": "mode.check",
+      "id": "e.control.mode.check>outcome.pass",
+      "kind": "control",
+      "label": "emits",
+      "to": "outcome.pass"
+    },
+    {
+      "evidence": [
+        {
+          "line": 7,
+          "note": "\"${TINY_DEBUG:-0}\"",
+          "path": "plugin/skills/the-cartographer/references/fixtures/tiny/run.sh"
+        }
+      ],
+      "from": "component.tiny_core",
+      "id": "e.data.component.tiny_core>env.tiny_debug",
+      "kind": "data",
+      "label": "reads",
+      "to": "env.tiny_debug"
+    },
+    {
+      "evidence": [
+        {
+          "line": 12,
+          "note": "tiny_core check",
+          "path": "plugin/skills/the-cartographer/references/fixtures/tiny/run.sh"
+        }
+      ],
+      "from": "mode.check",
+      "id": "e.data.mode.check>component.tiny_core",
+      "kind": "data",
+      "label": "passes mode name",
+      "to": "component.tiny_core"
+    }
+  ],
+  "extractorVersion": "1.0.0",
+  "nodes": [
+    {
+      "claims": [
+        {
+          "checked": false,
+          "claimKind": "doc",
+          "line": 18,
+          "path": "plugin/skills/the-cartographer/references/fixtures/tiny/SKILL.md",
+          "text": "A dispatch table maps each mode to its function."
+        }
+      ],
+      "evidence": [],
+      "id": "component.dispatch_table",
+      "inferred": true,
+      "kind": "component",
+      "label": "dispatch table",
+      "lane": "core",
+      "summary": "Inferred: the case statement read as a mode dispatch table. Not directly citable, so inferred."
+    },
+    {
+      "claims": [
+        {
+          "checked": true,
+          "claimKind": "doc",
+          "line": 16,
+          "path": "plugin/skills/the-cartographer/references/fixtures/tiny/SKILL.md",
+          "text": "`tiny_core` is the shared routine every mode calls."
+        }
+      ],
+      "evidence": [
+        {
+          "line": 6,
+          "note": "tiny_core() {",
+          "path": "plugin/skills/the-cartographer/references/fixtures/tiny/run.sh"
+        }
+      ],
+      "id": "component.tiny_core",
+      "inferred": false,
+      "kind": "component",
+      "label": "tiny_core",
+      "lane": "core",
+      "summary": "The shared routine every mode calls. Documented and implemented in agreement."
+    },
+    {
+      "claims": [
+        {
+          "checked": true,
+          "claimKind": "code-comment",
+          "line": 5,
+          "path": "plugin/skills/the-cartographer/references/fixtures/tiny/run.sh",
+          "text": "# TINY_DEBUG=1 prints each mode as it starts."
+        }
+      ],
+      "docHarvest": {
+        "candidates": [],
+        "searched": [
+          "plugin/skills/the-cartographer/references/fixtures/tiny/SKILL.md"
+        ]
+      },
+      "evidence": [
+        {
+          "line": 7,
+          "note": "[ \"${TINY_DEBUG:-0}\" = \"1\" ] && printf ... >&2",
+          "path": "plugin/skills/the-cartographer/references/fixtures/tiny/run.sh"
+        }
+      ],
+      "id": "env.tiny_debug",
+      "inferred": false,
+      "kind": "env",
+      "label": "TINY_DEBUG",
+      "lane": "external",
+      "summary": "Verbosity switch read by the core routine. Asserted only in a code comment."
+    },
+    {
+      "claims": [
+        {
+          "checked": true,
+          "claimKind": "doc",
+          "line": 7,
+          "path": "plugin/skills/the-cartographer/references/fixtures/tiny/SKILL.md",
+          "text": "- `build` — compiles the project before running."
+        }
+      ],
+      "evidence": [],
+      "id": "mode.build",
+      "inferred": false,
+      "kind": "mode",
+      "label": "build",
+      "lane": "entry",
+      "summary": "Documented build mode. The script has no such mode."
+    },
+    {
+      "claims": [
+        {
+          "checked": true,
+          "claimKind": "doc",
+          "line": 8,
+          "path": "plugin/skills/the-cartographer/references/fixtures/tiny/SKILL.md",
+          "text": "- `check` — runs the core routine and prints `check ran`."
+        }
+      ],
+      "contradictions": [
+        {
+          "claim": {
+            "line": 8,
+            "path": "plugin/skills/the-cartographer/references/fixtures/tiny/SKILL.md",
+            "text": "- `check` — runs the core routine and prints `check ran`."
+          },
+          "evidence": {
+            "line": 8,
+            "note": "printf 'core ran for %s\\n' \"$1\"",
+            "path": "plugin/skills/the-cartographer/references/fixtures/tiny/run.sh"
+          },
+          "refutedQuote": "prints `check ran`",
+          "statement": "The doc says check prints \"check ran\"; the code prints \"core ran for check\"."
+        }
+      ],
+      "evidence": [
+        {
+          "line": 8,
+          "note": "printf 'core ran for %s\\n' \"$1\"",
+          "path": "plugin/skills/the-cartographer/references/fixtures/tiny/run.sh"
+        },
+        {
+          "line": 11,
+          "note": "mode_check() {",
+          "path": "plugin/skills/the-cartographer/references/fixtures/tiny/run.sh"
+        }
+      ],
+      "id": "mode.check",
+      "inferred": false,
+      "kind": "mode",
+      "label": "check",
+      "lane": "entry",
+      "summary": "The only real mode: calls the shared core routine, then emits the outcome."
+    },
+    {
+      "claims": [
+        {
+          "checked": true,
+          "claimKind": "doc",
+          "line": 12,
+          "path": "plugin/skills/the-cartographer/references/fixtures/tiny/SKILL.md",
+          "text": "`PASS` is emitted when the core routine succeeds."
+        },
+        {
+          "checked": true,
+          "claimKind": "code-comment",
+          "line": 16,
+          "path": "plugin/skills/the-cartographer/references/fixtures/tiny/run.sh",
+          "text": "# emits PASS on stdout"
+        }
+      ],
+      "contradictions": [
+        {
+          "claim": {
+            "line": 16,
+            "path": "plugin/skills/the-cartographer/references/fixtures/tiny/run.sh",
+            "text": "# emits PASS on stdout"
+          },
+          "evidence": {
+            "line": 18,
+            "note": "printf 'PASS\\n' >&2",
+            "path": "plugin/skills/the-cartographer/references/fixtures/tiny/run.sh"
+          },
+          "refutedQuote": "on stdout",
+          "statement": "The comment says PASS goes to stdout; the code redirects it to stderr."
+        }
+      ],
+      "evidence": [
+        {
+          "line": 18,
+          "note": "printf 'PASS\\n' >&2",
+          "path": "plugin/skills/the-cartographer/references/fixtures/tiny/run.sh"
+        }
+      ],
+      "id": "outcome.pass",
+      "inferred": false,
+      "kind": "outcome",
+      "label": "PASS",
+      "lane": "output",
+      "summary": "Success outcome emitted by the check mode."
+    }
+  ],
+  "schemaVersion": "1",
+  "sources": [
+    {
+      "lines": 18,
+      "path": "plugin/skills/the-cartographer/references/fixtures/tiny/SKILL.md",
+      "role": "doc",
+      "sha256": "d5286c885592c751e46e8024d10afd7ebc4ce85869c9cec7ed25a0ccdeff0f5c"
+    },
+    {
+      "lines": 24,
+      "path": "plugin/skills/the-cartographer/references/fixtures/tiny/run.sh",
+      "role": "code",
+      "sha256": "df7197a02d7d1b88ca3cf36de52d054ae38cc91fc7fad4bc0fd5a3bd50287185"
+    }
+  ],
+  "subject": {
+    "kind": "skill",
+    "root": "plugin/skills/the-cartographer/references/fixtures/tiny",
+    "slug": "tiny",
+    "summary": "A two-file fixture subject: one shell script and its SKILL.md, carrying four planted drift cases.",
+    "title": "tiny"
+  },
+  "views": [
+    {
+      "columns": [
+        "Capability",
+        "Kind",
+        "Evidence",
+        "Documented"
+      ],
+      "form": "table",
+      "id": "capabilities",
+      "nodes": [
+        "env.tiny_debug",
+        "mode.build",
+        "mode.check"
+      ],
+      "title": "tiny — capabilities"
+    },
+    {
+      "edges": [
+        "e.control.mode.check>component.tiny_core",
+        "e.control.mode.check>outcome.pass"
+      ],
+      "form": "mermaid",
+      "id": "control-flow",
+      "mermaidType": "flowchart",
+      "nodes": [
+        "component.tiny_core",
+        "mode.check",
+        "outcome.pass"
+      ],
+      "title": "tiny — control flow"
+    },
+    {
+      "edges": [
+        "e.control.mode.check>component.tiny_core",
+        "e.control.mode.check>outcome.pass",
+        "e.data.component.tiny_core>env.tiny_debug",
+        "e.data.mode.check>component.tiny_core"
+      ],
+      "form": "svg-hero",
+      "id": "overview",
+      "nodes": [
+        "component.dispatch_table",
+        "component.tiny_core",
+        "env.tiny_debug",
+        "mode.build",
+        "mode.check",
+        "outcome.pass"
+      ],
+      "title": "tiny — overview"
+    }
+  ]
+}
