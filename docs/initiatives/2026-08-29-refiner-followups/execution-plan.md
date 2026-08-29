@@ -261,7 +261,7 @@ npm ci --prefer-offline
 
 #### Upgrade Notes
 
-This release adds a new resolver to improve dependency handling. Take these steps:
+This release uses a new resolver to improve dependency handling. Take these steps:
 
 - Update the lockfile.
 - Clear the local cache.
@@ -318,8 +318,20 @@ print('FIDELITY OK: edited file == snapshot + 4 enumerated corrections')
 PY
 ```
 
-The proof reads the pair 9 text from `pair-9.fragment.md`, written in Step 5, so the plan carries
-one copy of it rather than two that can drift apart.
+The proof reads the pair 9 text from `pair-9.fragment.md`, written in Step 5. That fragment is the
+CANONICAL source: the fidelity proof compares against it, and `before-after.md` must match it byte
+for byte.
+
+The block printed above in Step 5 is a REPRODUCTION of those canonical bytes, present so an
+implementer can see what to write without opening another file. It is a second copy and it can drift,
+which is not hypothetical: it did. Task 1's code review found that pair 9's After asserted "adds a
+new resolver" where its Before said "leverages a robust new resolver", while every sibling pair maps
+leverage to USES. The fix was applied to `before-after.md` and to the fragment, and this Step 5 block
+was left saying "adds" until the pre-PR gate caught the disagreement. All three now read "uses".
+
+If you edit pair 9, edit the fragment first, then propagate to `before-after.md` and to this block,
+then re-run the fidelity proof. The proof will catch a fragment-versus-shipped mismatch on its own;
+nothing automated catches a stale copy in this document, so it is on you.
 
 - [ ] **Step 8: Re-run all four baselines plus the em-dash sweep**
 
