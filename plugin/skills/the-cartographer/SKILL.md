@@ -1,12 +1,13 @@
 ---
 name: the-cartographer
-description: Use when someone needs to SEE what a system actually does — map a skill, feature, or codebase subtree from its own source into an at-a-glance visual page plus a doc-vs-code audit that names where the docs and the code disagree. Trigger on "map this", "what does X do under the hood", "I've lost track of this feature", "diagram this system", "show me the flow", "audit the docs against the code", or before changing code whose real behaviour is no longer obvious.
+description: Use when someone needs to SEE what a system actually does — map a skill, feature, or codebase subtree from its own source into an at-a-glance visual page plus a doc-vs-code audit that names where the docs and the code disagree. Trigger on "map this", "what does X do under the hood", "I've lost track of this feature", "diagram this system", "show me the flow", "audit the docs against the code", or before changing code whose real behaviour is no longer obvious. On a repo too large for one pass it asks which modules to map (§0) and can fan the work out across parallel extractors (§2.1).
 allowed-tools: Bash, Read, Grep, Glob, Write, Artifact
 ---
 
 # the-cartographer — derive the picture from the source
 
-You are mapping a **subject**: one skill, one feature, or one codebase subtree. You read its
+You are mapping a **subject**: one skill, one feature, or one codebase subtree — **chosen, never
+assumed (§0)**. You read its
 source, emit a citation-backed intermediate representation (`map.json`), and a renderer turns that
 into a visual page and a set of drift findings.
 
@@ -22,6 +23,35 @@ cannot open at its own citation is a false accusation. When in doubt, tag it unv
 out; never guess to fill a lane.
 
 **You never modify the subject.** This skill reads. The only files it writes are its own outputs.
+
+---
+
+## 0 · Choose the subject — never self-select
+
+**A subject is chosen, not assumed.** The first failure mode of this skill is not a wrong finding;
+it is mapping the wrong thing confidently. Pointed at a repository, an extractor that picks a
+promising-looking subtree and starts reading has already made the decision that mattered, silently,
+and every citation below it will resolve perfectly while answering a question nobody asked.
+
+**Enumerate the separations mechanically, then ASK.** Before any extraction, when the root you were
+given is a whole repository, or holds more than one obvious module boundary, or is larger than one
+pass can honestly cover:
+
+1. List the candidate modules from the tree itself — top-level source directories, workspace
+   members, package roots — with a **tracked-file count** for each. Counts come from the VCS, not
+   from an impression.
+2. **Put the list to the human and let them choose.** Offer the counts, and say plainly which
+   choices a single pass cannot cover.
+3. Map only what was chosen. **One subject, one `.maps/<slug>/`** (ADR C-009) — two modules chosen
+   is two subjects and two directories, not one map with a wider root.
+
+**Self-selection is refused, not merely discouraged.** If you cannot ask — no human in the loop, no
+question channel — then **state the enumeration and stop**. An unasked question is not a licence to
+pick; recording "I chose X of these twelve" after the fact is the same defect with a receipt.
+
+**The bounded case still needs no ask.** One skill, one feature, one small subtree named explicitly
+by the requester is already a subject. This section is about the moment the root is bigger than the
+question, which is the moment the choice stops being yours.
 
 ---
 
@@ -95,6 +125,72 @@ For each enumerated item, collect two things separately and never merge them:
 **Only then** add the semantic layer — "this component orchestrates those", "this is the ingest
 boundary". That layer is useful for readability and is allowed, but it is inference: tag it
 (§5) and understand that it is excluded from the audit.
+
+---
+
+## 2.1 · Mapping at scale — the swarm protocol
+
+A subject too large for one pass is mapped by **several extractors and one conductor**. The fan-out
+is the easy half. What follows is the half that goes wrong, and every rule here exists because a
+merged map has to satisfy contracts that a single-agent map satisfies for free.
+
+**The order is not negotiable, because the documentation harvest comes LAST.**
+
+1. **The conductor freezes the source manifest first.** Every `role: "code"` path to be read and
+   every `role: "doc"` surface that will be declared, fixed *before* any extractor runs. The doc
+   union is a decision, not a discovery — if it is assembled by merging whatever the shards happened
+   to open, it is different for every run.
+2. **Shards partition the CODE surface by path, disjointly.** Each path belongs to exactly one
+   shard, so `coverage.read` / `partial` / `skipped` union without collision, and one shard's
+   budget exhaustion cannot be papered over by another's success. `validate.mjs` refuses coverage
+   buckets that are not disjoint; a partition makes that impossible rather than merely unlikely.
+3. **Extractors return nodes, edges and evidence — and NO `docHarvest`.** They read code. They may
+   record `code-comment` claims, which live in the file they are already reading.
+4. **The conductor reconciles identity GLOBALLY.** Two shards that both find the same shared helper
+   found **one node**, not two. Dedupe by `id` and union the evidence; never namespace ids per
+   shard, which would draw one helper as N boxes and quietly inflate the picture. `validate.mjs`
+   refuses duplicate node, edge and view ids, so a naive concatenation is rejected outright.
+5. **THEN one dedicated harvest actor runs, once, over the final node inventory.** It searches
+   **every** declared doc surface for **every** final node — by name and by synonym (§3) — and
+   authors the node-keyed `docHarvest` records directly.
+6. **The conductor computes digests and runs `render.mjs` once**, on the merged map. Shards never
+   write into `.maps/`: all four writes sit behind one fail-closed secret/PII scan (§1), and a shard
+   writing its own fragment is a path around that gate.
+
+**WHY THE HARVEST IS CENTRAL AND LAST, which is the load-bearing part.** Completeness is *derived*,
+never declared: `diff.mjs` compares each node's `searched` against **every `role: "doc"` source the
+map declares**, and a node whose search covered less is state 3 — its verdict is withheld, not
+accused. In a merged map the declared doc set is the **union across all shards**. So a shard that
+searched only its own slice of the docs produces, after merge, a node whose `searched` is a strict
+subset of that union — and **every such node is withheld**. Shard the docs and the audit's one
+absence-derived class stops firing across the whole map.
+
+**That degradation is loud, not silent, and you may not rely on the loudness.** The page and the
+Markdown twin both report each withheld verdict with its node, its searched set and what it missed,
+and neither will print a clean bill of health while anything is withheld. That is a guardrail
+against a *false* clean bill. It is not a substitute for running the harvest correctly.
+
+**And the harvest cannot be faked by distribution.** `docHarvest` is an extractor **ATTESTATION**
+(ADR C-018 amendment): the pipeline compares `searched` against `sources[]` and nothing anywhere
+observes whether a search actually happened. So copying one central record into every shard's
+output, or having each extractor repeat the same global search, adds **no mechanical assurance** —
+only more places to drift. One actor, searching once, signing once, after the node inventory is
+final, is the honest shape of that attestation.
+
+**The harvest actor also owns doc-only capabilities.** A capability the docs describe and the code
+does not have is a PHANTOM, and no code shard can find one by construction — it is looking at code.
+The actor that reads every doc surface is the only participant positioned to notice.
+
+**THE FINALIZATION GUARD.** A swarm run may be declared **complete** only if every node awaiting a
+documentation verdict has a harvest covering the full declared doc union. If any node is withheld,
+the run is **PARTIAL**: say so, name the withheld nodes, and do not describe the audit as finished.
+This is a stricter contract that swarm runs accept on top of the schema — it is *not* a new
+validator rule, and an ordinary single-agent partial map remains entirely legal as state 3.
+
+**Coverage honesty is per-shard and survives the merge.** A shard that ran out of budget records its
+remainder in `partial` / `skipped` and says so; the conductor carries those buckets through
+untouched. Never let a merge turn one shard's unread file into the union's silence — §8 applies to
+the assembled map exactly as it applies to a single-agent one.
 
 ---
 
@@ -636,7 +732,8 @@ reason, so the exclusion is visible rather than assumed.
 node <skill-dir>/references/render.mjs <map.json> <outDir> [--repo-root <path>]
 ```
 
-`<map.json>` is your drafted map; `<outDir>` is where the four artifacts go — normally
+For a swarm run this is the CONDUCTOR's single call on the merged map (§2.1); shards never invoke
+it. `<map.json>` is your drafted map; `<outDir>` is where the four artifacts go — normally
 `<subject-repo>/.maps/<slug>/`. Pass `--repo-root` whenever the subject's repo root is not the
 directory the map sits in; the repo-relative paths in the map resolve against it, and there is no
 `cwd` fallback, because resolving against an arbitrary cwd would check the wrong files and report
