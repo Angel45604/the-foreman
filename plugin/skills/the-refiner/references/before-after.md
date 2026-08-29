@@ -1,12 +1,12 @@
 # Before/after pairs
 
-Worked examples of de-AI-ifying real prose shapes. Facts, numbers, and hedges are preserved exactly between Before and After; only the AI tells (jargon filler, hedge padding, intensifiers, recap endings, dangling participles) are removed.
+Worked examples of de-AI-ifying real prose shapes. Facts, numbers, and hedges are preserved exactly between Before and After; only the AI tells (jargon filler, hedge padding, intensifiers, recap endings, dangling participles) are removed. Dangling participial tails split by what they carry: a tail whose content is a checkable claim or an actionable statement is restated as a direct sentence, and a tail that only inflates significance is dropped.
 
 ### 1. Technical explanation
 
-**Before:** This function leverages a robust caching layer to seamlessly optimize database queries. It's worth noting that the implementation utilizes an efficient algorithm to reduce latency. The caching layer handles invalidation automatically, ensuring data consistency across requests, highlighting the importance of proper cache design.
+**Before:** This function leverages a robust caching layer to seamlessly optimize database queries. It's worth noting that the implementation utilizes an efficient algorithm to reduce median latency from 420ms to 90ms. The caching layer handles invalidation automatically, ensuring data consistency across requests, highlighting the importance of proper cache design.
 
-**After:** This function uses a caching layer to speed up database queries. The implementation uses an efficient algorithm to reduce latency. The caching layer handles invalidation automatically, so data stays consistent across requests.
+**After:** This function uses a caching layer to speed up database queries. The implementation uses an efficient algorithm to reduce median latency from 420ms to 90ms. The caching layer handles invalidation automatically, so data stays consistent across requests.
 
 ### 2. Commit message
 
@@ -51,3 +51,37 @@ Note: the qualifying clause stays intact because trimming it would drop the scop
 **Before:** Using a robust and seamless migration strategy, the database schema was updated to support multi-tenancy. Leveraging a background job, existing records were migrated without downtime. It's worth noting that the process utilizes checksums to verify data integrity, highlighting the success of the migration.
 
 **After:** The migration strategy updated the database schema to support multi-tenancy. A background job moved existing records without downtime. The process uses checksums to verify data integrity. The migration succeeded.
+
+### 9. Structured release note
+
+**Before:**
+
+#### Upgrade Notes
+
+This release leverages a robust new resolver to seamlessly improve dependency handling. It's worth noting that the following steps are crucial:
+
+- Firstly, update the lockfile.
+- Secondly, clear the local cache.
+- Thirdly, re-run the install, ensuring a clean tree and highlighting the value of reproducible builds.
+
+Run the upgrade with:
+
+```bash
+npm ci --prefer-offline
+```
+
+**After:**
+
+#### Upgrade Notes
+
+This release uses a new resolver to improve dependency handling. Take these steps:
+
+- Update the lockfile.
+- Clear the local cache.
+- Re-run the install. This leaves a clean tree.
+
+Run the upgrade with:
+
+```bash
+npm ci --prefer-offline
+```
