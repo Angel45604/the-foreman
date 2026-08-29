@@ -45,9 +45,16 @@ install in sync.
 - Drift guard, repo idiom: `plugin/skills/the-refiner/references/core-contract.test.mjs`
   (node:test) asserts the output style contains the core-contract body verbatim, so the
   two shipped copies cannot drift.
-- Conductor wiring: the-foreman SKILL.md delegate list + one sentence at the §4 authoring
-  contract + one sentence in §5; lifecycle.md delegate list; README family list (four →
-  five, claims kept truthful per the repo's claim rules).
+- Conductor wiring (as built; the plan's As-built notes record the review-driven
+  evolution): the-refiner is deliberately NOT in the-foreman's Delegate list, whose verb
+  the Non-negotiables define as invoke-inline-this-turn. The orchestration sentence
+  instead carries a routing clause (route the-refiner through a fresh subagent, never
+  inline); §4 gains a labeled "Prose refinement (never inline)" sub-block naming the
+  routable slots (meta.lede, a slide's lead or statement, win.landed, win.next, an
+  overriding meta.ask) and keeping drawer evidence and win.evidence verbatim; §5 gains a
+  one-subagent-per-file Review seam before handoff's final hand-to-user step; lifecycle
+  mirrors the routing in its narrative and Stages 4 and 7; README's family list grows to
+  five with claims kept truthful per the repo's claim rules.
 - Personal sync: `~/.claude/skills/plain-writing/` becomes `~/.claude/skills/the-refiner/`
   with the same packaged-contract delta; the personal output style's Scope pointer line
   names the-refiner; the auto-memory entry updates.
@@ -58,10 +65,14 @@ Recorded baseline on 7d9e882 before planning: node suite fail 0; codex-gate shel
 Free checks throughout the port (the contract itself is unchanged and was live-verified
 on 2026-08-28): full repo test suite green including the new drift test, the fail-closed
 port-fidelity byte derivation, structural sweeps, and the personal skill listing showing
-the-refiner. PLUS exactly one separately gated paid check: the seam-isolation behavioral
-eval (two calls, executor plus judge), which runs ONLY behind a live-run gate with fresh
-authorization; a failure stops, is diagnosed free, and any retry needs a new
-authorization stating the exact call count.
+the-refiner. PLUS the seam-isolation behavioral eval behind its live-run gate. As built, that became
+SIX separately authorized runs (each at a structured gate with an exact two-call scope;
+the full chronological audit lives in execution-plan.md's Task 6 sections): the seams
+never failed a criterion, two runs stored zero-failure verdicts under their then-current
+specs, and the gate tightened the spec three times post-hoc. The latest-spec evidence gap
+was accepted by structured OWNER OVERRIDE (2026-08-29), codex objection preserved in the
+phase run dir; the tracked full-execution-harness follow-up is the path to a lettered
+close.
 
 ## Non-goals
 
