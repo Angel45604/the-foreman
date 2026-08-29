@@ -9,6 +9,31 @@
  * bytes would break the one property the page is built for. (The tests assert that literally, which
  * is why the forbidden spellings do not appear even inside this comment.)
  *
+ * ─── THE SYSTEM: neumorphic (angelm.dev), adopted 2026-08-29 ───────────────────────────────────
+ *
+ * ONE RULE: every surface is the same fill. `--bg` is the page AND every card, panel, table well and
+ * chip. There are no background colours, no borders and no colored dividers in this system.
+ * Hierarchy comes only from shadow — a surface is either raised out of the page or carved into it.
+ * Reaching for a background colour or a border means leaving the system.
+ *
+ * THE FOUR ELEVATIONS, and nothing else casts a shadow:
+ *   --out  raised primary surfaces — the hero frame, the meta card
+ *   --osm  lightly raised nested items — badges, chips, the kicker dot
+ *   --ins  carved panels — a panel INSIDE a card, the table well, mermaid, buckets
+ *   --inm  small carved or pressed — citation wells, inline code
+ * ALTERNATE WHEN NESTING: a carved panel inside a raised card. Two raised surfaces stacked read
+ * flat, and so do two carved ones.
+ *
+ * ACCENT PAIRING: `--ac` is decoration and text large enough to pass at 3:1 (section dots, markers).
+ * `--acq` carries ALL small accent text — eyebrows, table headers, citations, code. `--ac` at 11–14px
+ * is about 3.2:1 on the page fill and fails the 4.5:1 minimum. The two are paired per theme; never
+ * hand-darken or hand-lighten one.
+ *
+ * COLOUR IS NEVER THE ONLY CARRIER (PDR §8.1 guardrail 3). The old badges leaned on `border-style`
+ * dashed/dotted for that, and this system has no borders — so each drift class carries a distinct
+ * leading GLYPH instead. UNVERIFIED still reads as an ABSENCE (hollow marker, muted) rather than as a
+ * confirmed defect, which is what that guardrail requires.
+ *
  * ─── the two theme carriers, and why BOTH are needed ───────────────────────────────────────────
  *
  * (1) AUTO — `prefers-color-scheme`, the viewer's OS setting.
@@ -21,6 +46,11 @@
  * wins, so "force light" would silently do nothing. The auto block is therefore scoped
  * `:root:not([data-theme="light"])`: once a theme is forced, the OS stops being consulted for it.
  *
+ * Dark is the Blue Graphite palette and swaps SEVEN tokens (`--bg --tx --sb --sd --sl --ac --acq`) —
+ * both accents get dark-specific values rather than shades of their light counterparts. Every shadow
+ * is DERIVED from `--sd`/`--sl` through `--depth`, so the four elevations follow automatically and no
+ * elevation is restated per theme.
+ *
  * The drift palette is derived from the tokens rather than hard-coded per class, so a re-theme moves
  * all four classes at once. `--carto-warn` and `--carto-info` are the two names `svg.mjs` reads
  * directly (it emits `var(--carto-warn, …)` with a literal fallback, so the hero still renders in a
@@ -29,18 +59,35 @@
 
 :root {
   color-scheme: light;
-  --carto-paper: #ffffff;
-  --carto-soft: #f6f7f9;
-  --carto-ink: #1a1d21;
-  --carto-muted: #5b6573;
-  --carto-faint: #8a94a3;
-  --carto-line: #e2e6ea;
-  --carto-accent: #0f6fa8;
-  --carto-tint: #e8f2f8;
-  --carto-warn: #b45309;
-  --carto-warn-tint: #fdf1e3;
-  --carto-info: #2563eb;
+
+  --depth: 1;
+
+  --bg: #eef0f5;
+  --tx: #262b3a;
+  --sb: #5f6579;
+  --sd: #c9cdd8;
+  --sl: #ffffff;
+  --ac: #5b7cfa;
+  --acq: #3a5fc4;
+
+  --o:   calc(3px + var(--depth) * 1px);
+  --ob:  round(calc(var(--o) * 1.9), 1px);
+  --os:  max(2px, round(calc(var(--o) * 0.5), 1px));
+  --osb: calc(var(--os) * 2 + 2px);
+  --i:   max(2px, round(calc(var(--o) * 0.55), 1px));
+  --ib:  calc(var(--i) * 2 + 2px);
+
+  --out: var(--o) var(--o) var(--ob) var(--sd), calc(-1 * var(--o)) calc(-1 * var(--o)) var(--ob) var(--sl);
+  --osm: var(--os) var(--os) var(--osb) var(--sd), calc(-1 * var(--os)) calc(-1 * var(--os)) var(--osb) var(--sl);
+  --ins: inset var(--i) var(--i) var(--ib) var(--sd), inset calc(-1 * var(--i)) calc(-1 * var(--i)) var(--ib) var(--sl);
+  --inm: inset 2px 2px 4px var(--sd), inset -2px -2px 4px var(--sl);
+
+  --lineH: linear-gradient(180deg, var(--sd) 0 50%, var(--sl) 50% 100%);
+
+  --carto-warn: #a8541b;
+  --carto-info: #3a5fc4;
   --carto-ok: #1a7f5a;
+
   --carto-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --carto-sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
@@ -48,50 +95,44 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --carto-paper: #0f1419;
-    --carto-soft: #161b22;
-    --carto-ink: #e6edf3;
-    --carto-muted: #9ba8b7;
-    --carto-faint: #6b7684;
-    --carto-line: #2a313a;
-    --carto-accent: #56b6e6;
-    --carto-tint: #102a38;
+    --bg: #282e39;
+    --tx: #eef2f9;
+    --sb: #9eabba;
+    --sd: #171b24;
+    --sl: #384250;
+    --ac: #6687ff;
+    --acq: #9cb2ff;
     --carto-warn: #f0a34a;
-    --carto-warn-tint: #33230f;
-    --carto-info: #7aa7ff;
-    --carto-ok: #4cc38a;
+    --carto-info: #9cb2ff;
+    --carto-ok: #5cc79a;
   }
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --carto-paper: #0f1419;
-  --carto-soft: #161b22;
-  --carto-ink: #e6edf3;
-  --carto-muted: #9ba8b7;
-  --carto-faint: #6b7684;
-  --carto-line: #2a313a;
-  --carto-accent: #56b6e6;
-  --carto-tint: #102a38;
+  --bg: #282e39;
+  --tx: #eef2f9;
+  --sb: #9eabba;
+  --sd: #171b24;
+  --sl: #384250;
+  --ac: #6687ff;
+  --acq: #9cb2ff;
   --carto-warn: #f0a34a;
-  --carto-warn-tint: #33230f;
-  --carto-info: #7aa7ff;
-  --carto-ok: #4cc38a;
+  --carto-info: #9cb2ff;
+  --carto-ok: #5cc79a;
 }
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --carto-paper: #ffffff;
-  --carto-soft: #f6f7f9;
-  --carto-ink: #1a1d21;
-  --carto-muted: #5b6573;
-  --carto-faint: #8a94a3;
-  --carto-line: #e2e6ea;
-  --carto-accent: #0f6fa8;
-  --carto-tint: #e8f2f8;
-  --carto-warn: #b45309;
-  --carto-warn-tint: #fdf1e3;
-  --carto-info: #2563eb;
+  --bg: #eef0f5;
+  --tx: #262b3a;
+  --sb: #5f6579;
+  --sd: #c9cdd8;
+  --sl: #ffffff;
+  --ac: #5b7cfa;
+  --acq: #3a5fc4;
+  --carto-warn: #a8541b;
+  --carto-info: #3a5fc4;
   --carto-ok: #1a7f5a;
 }
 
@@ -100,58 +141,96 @@
 html, body {
   margin: 0;
   padding: 0;
-  background: var(--carto-paper);
-  color: var(--carto-ink);
+  background: var(--bg);
+  color: var(--tx);
   font-family: var(--carto-sans);
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
 }
 
-.carto { max-width: 1040px; margin: 0 auto; padding: 32px 20px 72px; }
+.carto { max-width: 1080px; margin: 0 auto; padding: 40px 20px 88px; }
 
+.carto h1 { font-size: clamp(27px, 4.6vw, 42px); line-height: 1.1; margin: 0 0 12px; letter-spacing: -0.016em; font-weight: 700; }
+.carto h2 { font-size: clamp(19px, 2.7vw, 25px); margin: 0 0 8px; letter-spacing: -0.01em; font-weight: 650; }
+.carto h3 { font-size: clamp(15px, 2vw, 18px); margin: 0 0 8px; font-weight: 650; }
+.carto p { margin: 0 0 12px; color: var(--sb); }
+.carto-lead { color: var(--tx); font-size: 17px; }
+.carto-note { font-size: 13.5px; color: var(--sb); }
+
+/* eyebrow — small accent text, so the QUIET accent. Its dot is decoration, so full accent. */
 .carto-kicker {
-  margin: 0 0 10px;
+  margin: 0 0 12px;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--carto-accent);
+  color: var(--acq);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.carto-kicker::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--ac);
+  box-shadow: var(--osm);
+  flex: none;
 }
 
-.carto h1 { font-size: clamp(26px, 4.4vw, 40px); line-height: 1.12; margin: 0 0 12px; letter-spacing: -0.015em; }
-.carto h2 { font-size: clamp(18px, 2.6vw, 24px); margin: 0 0 6px; letter-spacing: -0.01em; }
-.carto h3 { font-size: clamp(15px, 2vw, 18px); margin: 0 0 6px; }
-.carto p { margin: 0 0 12px; color: var(--carto-muted); }
-.carto-lead { color: var(--carto-ink); font-size: 17px; }
-.carto-note { font-size: 13.5px; color: var(--carto-faint); }
+/* the run's facts — a RAISED card, so panels inside it are carved */
+.carto-meta {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px 18px;
+  margin: 0 0 22px;
+  font-size: 14px;
+  background: var(--bg);
+  border-radius: 18px;
+  box-shadow: var(--out);
+  padding: 18px 20px;
+}
+.carto-meta dt { color: var(--acq); font-weight: 700; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; }
+.carto-meta dd { margin: 0; color: var(--tx); font-family: var(--carto-mono); font-size: 13px; overflow-wrap: anywhere; }
 
-.carto-meta { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0 0 8px; font-size: 14px; }
-.carto-meta dt { color: var(--carto-faint); font-weight: 600; }
-.carto-meta dd { margin: 0; color: var(--carto-ink); font-family: var(--carto-mono); font-size: 13px; overflow-wrap: anywhere; }
-
-.carto-section { margin-top: 40px; padding-top: 24px; border-top: 1px solid var(--carto-line); }
-.carto-section > h2 { color: var(--carto-ink); }
+/* sections are separated by space and an engraved hairline — never by a border colour */
+.carto-section { margin-top: 40px; padding-top: 26px; background-image: var(--lineH); background-repeat: no-repeat; background-size: 100% 2px; background-position: 0 0; }
+.carto-section > h2 { color: var(--tx); }
 
 code, .carto-mono { font-family: var(--carto-mono); font-size: 0.88em; overflow-wrap: anywhere; }
-code { background: var(--carto-tint); color: var(--carto-ink); border-radius: 5px; padding: 0.1em 0.36em; }
+code {
+  background: var(--bg);
+  color: var(--acq);
+  border-radius: 6px;
+  box-shadow: var(--inm);
+  padding: 0.12em 0.42em;
+}
 
 /* ─── the one scroll container ───────────────────────────────────────────────────────────────────
  * Wide content — a capability table, a mermaid diagram, a long citation row — scrolls INSIDE its own
  * box. Without this the page body itself scrolls sideways and every other section's text goes with
  * it, which on a phone makes the whole report unreadable rather than one table inconvenient. */
-.carto-scroll { overflow-x: auto; max-width: 100%; }
+.carto-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+  background: var(--bg);
+  border-radius: 16px;
+  box-shadow: var(--ins);
+  padding: 14px;
+}
 
-table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
-th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--carto-line); vertical-align: top; }
-th { color: var(--carto-faint); font-size: 11.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; }
-tbody tr:last-child td { border-bottom: none; }
+table { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 13.5px; }
+th, td { text-align: left; padding: 10px 12px; vertical-align: top; color: var(--tx); }
+th { color: var(--acq); font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; white-space: nowrap; }
+tbody tr + tr td { background-image: var(--lineH); background-repeat: no-repeat; background-size: 100% 2px; background-position: 0 0; }
 
 pre.mermaid {
   margin: 0;
-  padding: 16px;
-  background: var(--carto-soft);
-  border: 1px solid var(--carto-line);
-  border-radius: 10px;
+  padding: 18px;
+  background: var(--bg);
+  border-radius: 16px;
+  box-shadow: var(--ins);
   font-family: var(--carto-mono);
   font-size: 12.5px;
   line-height: 1.5;
@@ -159,28 +238,44 @@ pre.mermaid {
 }
 
 /* ─── drift ─────────────────────────────────────────────────────────────────────────────────────
- * Every class is legible from the badge alone — colour is never the only carrier. UNVERIFIED reads
- * as an ABSENCE of information (muted, dotted) rather than as a confirmed defect: PDR §8.1 guardrail
- * 3 requires it to be visually distinct from one. */
+ * Every class is legible from the badge alone — colour is never the only carrier. This system has no
+ * borders, so the old dashed/dotted rims are replaced by a distinct leading GLYPH per class.
+ * UNVERIFIED reads as an ABSENCE of information (hollow marker, muted) rather than as a confirmed
+ * defect: PDR §8.1 guardrail 3 requires it to be visually distinct from one. */
 .carto-badge {
   display: inline-block;
   font-family: var(--carto-mono);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.06em;
-  padding: 2px 7px;
+  padding: 4px 11px;
   border-radius: 999px;
-  border: 1px solid currentColor;
   white-space: nowrap;
+  background: var(--bg);
+  box-shadow: var(--osm);
+  color: var(--sb);
 }
-.carto-badge--stale { color: var(--carto-warn); background: var(--carto-warn-tint); }
-.carto-badge--phantom { color: var(--carto-muted); border-style: dashed; }
-.carto-badge--undocumented { color: var(--carto-info); background: var(--carto-tint); }
-.carto-badge--unverified { color: var(--carto-faint); border-style: dotted; }
+.carto-badge::before { margin-right: 6px; }
+.carto-badge--stale { color: var(--carto-warn); }
+.carto-badge--stale::before { content: "\25B2"; }
+.carto-badge--phantom { color: var(--sb); }
+.carto-badge--phantom::before { content: "\25C7"; }
+.carto-badge--undocumented { color: var(--carto-info); }
+.carto-badge--undocumented::before { content: "\25CF"; }
+.carto-badge--unverified { color: var(--sb); }
+.carto-badge--unverified::before { content: "\25CC"; }
 
-.carto-clean { color: var(--carto-ok); font-weight: 600; }
-.carto-cite { font-family: var(--carto-mono); font-size: 12.5px; color: var(--carto-muted); }
-.carto-quote { display: block; margin-top: 4px; color: var(--carto-ink); }
+.carto-clean { color: var(--carto-ok); font-weight: 650; }
+.carto-cite {
+  font-family: var(--carto-mono);
+  font-size: 12.5px;
+  color: var(--acq);
+  background: var(--bg);
+  border-radius: 8px;
+  box-shadow: var(--inm);
+  padding: 2px 8px;
+}
+.carto-quote { display: block; margin-top: 6px; color: var(--tx); }
 
 /* ─── attention buckets (ADR C-017) ──────────────────────────────────────────────────────────────
  * Presentation only. The two prioritised groups are ordinary blocks; the third is a NATIVE
@@ -192,29 +287,43 @@ pre.mermaid {
  * so a literal tag in a comment would be indistinguishable from a real one to anything counting
  * disclosures in the rendered bytes.) */
 .carto-bucket { margin: 0 0 20px; }
-.carto-bucket > h3 { color: var(--carto-ink); }
+.carto-bucket > h3 { color: var(--tx); }
 details.carto-bucket {
-  border: 1px dashed var(--carto-line);
-  border-radius: 10px;
-  padding: 12px 14px;
-  background: var(--carto-soft);
+  border-radius: 16px;
+  padding: 16px 18px;
+  background: var(--bg);
+  box-shadow: var(--ins);
 }
 details.carto-bucket > summary {
   cursor: pointer;
-  font-weight: 600;
-  color: var(--carto-muted);
+  font-weight: 650;
+  color: var(--sb);
   font-size: clamp(15px, 2vw, 18px);
 }
-details.carto-bucket[open] > summary { margin-bottom: 8px; color: var(--carto-ink); }
+details.carto-bucket[open] > summary { margin-bottom: 10px; color: var(--tx); }
 
-/* ─── the SVG hero (classes emitted by svg.mjs) ─────────────────────────────────────────────── */
-.carto-figure { margin: 0; }
-.carto-hero__svg { display: block; width: 100%; height: auto; color: var(--carto-ink); }
-.carto-figure figcaption { margin-top: 10px; font-size: 13px; color: var(--carto-muted); }
+/* ─── the SVG hero (classes emitted by svg.mjs) ───────────────────────────────────────────────────
+ * These style SVG content, NOT HTML boxes: they may set `color` and nothing that assumes a block box.
+ * The frame around the picture is the carved well; the picture itself stays flat. */
+.carto-figure {
+  margin: 0;
+  background: var(--bg);
+  border-radius: 18px;
+  box-shadow: var(--ins);
+  padding: 20px;
+}
+.carto-hero__svg { display: block; width: 100%; height: auto; color: var(--tx); }
+.carto-figure figcaption { margin-top: 12px; font-size: 13px; color: var(--sb); }
 .carto-lane { text-transform: uppercase; letter-spacing: 0.1em; }
-.carto-edge { color: var(--carto-muted); }
-.carto-node { color: var(--carto-ink); }
-.carto-node--phantom { color: var(--carto-muted); }
+.carto-edge { color: var(--sb); }
+.carto-node { color: var(--tx); }
+.carto-node--phantom { color: var(--sb); }
 .carto-node--stale { color: var(--carto-warn); }
 .carto-node--undocumented { color: var(--carto-info); }
-.carto-node--unverified { color: var(--carto-faint); }
+.carto-node--unverified { color: var(--sb); }
+
+@media (max-width: 640px) {
+  .carto { padding: 26px 14px 64px; }
+  .carto-meta { grid-template-columns: 1fr; gap: 4px 0; border-radius: 16px; padding: 16px; }
+  .carto-figure { padding: 14px; }
+}
