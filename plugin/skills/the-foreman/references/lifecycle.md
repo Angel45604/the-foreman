@@ -17,8 +17,9 @@ node <skill-dir>/references/gate-contract.mjs --print
 **Orchestrate, don't duplicate.** The conductor never re-encodes what another skill already does —
 it sequences them and wires the Artifact moments in. Delegate `brainstorming`, `writing-plans`,
 `codex-gate`, `subagent-driven-development`, `requesting-code-review`, `commit-push-pr`, and wrap
-`handoff`; reference `test-driven-development`, `systematic-debugging`,
-`verification-before-completion`, `keep-it-simple`, `using-git-worktrees` by name.
+`handoff`; route `the-refiner` through a subagent (SKILL.md §4/§5); reference
+`test-driven-development`, `systematic-debugging`, `verification-before-completion`,
+`keep-it-simple`, `using-git-worktrees` by name.
 
 ## The 7 stages
 
@@ -64,7 +65,7 @@ right-sized per **SKILL.md §8** (the conductor never implements a phase inline)
 code-quality review (`requesting-code-review`; reviewer tier ≥ the implementer's) → write
 `context.md` → `codex-gate phase-review` (driven to converge) → `verification-before-completion`.
 Commit only if the plan gate authorized scoped per-phase LOCAL commits (explicit paths, never
-`git add -A`).
+`git add -A`); ledger-prose refinement routes through a refiner subagent (SKILL.md §4).
 **Gate / artifact:** at the end of each phase, the **`phase-boundary`** hard gate (§7) — render its
 Artifact and ask whether to continue to the next phase (or stop / redirect). An approved boundary
 either **loops back to the next phase** or — when all planned phases are complete — **proceeds to
@@ -94,7 +95,8 @@ gate (§7).
 
 ### Stage 7 — Handoff / pause 🚦
 **Purpose:** checkpoint state at low context or a natural pause so the next agent resumes cleanly.
-**Delegates to:** `handoff` (wrapped — SKILL.md §5).
+**Delegates to:** `handoff` (wrapped — SKILL.md §5); the handoff doc and kickoff prompt each get
+their own the-refiner Review subagent before the final hand-to-user step (SKILL.md §5).
 **Gate / artifact:** `handoff` is a **checkpoint** — wrap `handoff` and render its companion Artifact
 (§7); nothing to approve. Then loop back to Stage 0 for the next agent.
 

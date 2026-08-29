@@ -2,9 +2,11 @@
 
 A Claude Code plugin that turns Claude into a **gated development conductor**: it drives a
 feature from idea → shipped through an explicit, fail-closed state machine instead of
-free-running. The plugin bundles four skills: **the-foreman** (the conductor),
+free-running. The plugin bundles five skills: **the-foreman** (the conductor),
 **codex-gate** (the independent Codex second-reviewer gate), **handoff** (cold-start handoff
-docs + kickoff prompts), and **keep-it-simple** (the complexity killer).
+docs + kickoff prompts), **keep-it-simple** (the complexity killer), and **the-refiner**
+(rewrites and reviews existing prose against a plain, direct, non-AI voice contract; preserves
+every fact, hedge, and identifier).
 
 What the skill owns:
 
@@ -36,6 +38,7 @@ LICENSE                           # MIT
 plugin/
   .claude-plugin/plugin.json      # the plugin manifest
   LICENSE                         # MIT (the ./plugin dir is what the marketplace distributes)
+  output-styles/                  # optional Plain Voice output style
   skills/
     the-foreman/
       SKILL.md                    # the conductor skill
@@ -44,6 +47,7 @@ plugin/
     codex-gate/                   # independent Codex second-reviewer gate (CLI + test suite)
     handoff/                      # cold-start handoff doc + kickoff prompt templates
     keep-it-simple/               # ruthless complexity killer
+    the-refiner/                  # plain-voice prose rewriter/reviewer
 ```
 
 ## Install
@@ -55,9 +59,9 @@ plugin/
 /plugin install the-foreman@angelm
 ```
 
-All four skills then load automatically (each description triggers it at the right moment) and
+All five skills then load automatically (each description triggers it at the right moment) and
 can be invoked explicitly as `/the-foreman:the-foreman`, `/the-foreman:codex-gate`,
-`/the-foreman:handoff`, and `/the-foreman:keep-it-simple`.
+`/the-foreman:handoff`, `/the-foreman:keep-it-simple`, and `/the-foreman:the-refiner`.
 
 To try it locally before pushing anywhere:
 
@@ -73,7 +77,7 @@ Symlink each skill directory you want into your personal skills folder — then 
 
 ```bash
 git clone https://github.com/Angel45604/the-foreman ~/personal/the-foreman
-for s in the-foreman codex-gate handoff keep-it-simple; do
+for s in the-foreman codex-gate handoff keep-it-simple the-refiner; do
   ln -s ~/personal/the-foreman/plugin/skills/$s ~/.claude/skills/$s
 done
 ```
@@ -95,6 +99,12 @@ runtime endpoint against the versioned source and enumerates no other installs.
 - **`handoff`** — produces the cold-start handoff doc + paste-ready kickoff prompt a fresh
   agent resumes from.
 - **`keep-it-simple`** — ruthless complexity killer; challenge every layer before it ships.
+- **`the-refiner`**: rewrites and reviews existing prose against a plain, direct, non-AI voice
+  contract; preserves every fact, hedge, and identifier.
+
+The plugin also ships an optional **Plain Voice** output style
+(`plugin/output-styles/plain-voice.md`); it is not forced on users, and it activates via
+`/config` or the `outputStyle` setting.
 
 ## External prerequisites (not bundled)
 
@@ -122,12 +132,16 @@ node --test plugin/skills/the-foreman/references/*.test.mjs plugin/skills/the-fo
 (Node 22+: explicit globs are required — a bare directory no longer auto-discovers.)
 
 ```bash
+node --test plugin/skills/the-refiner/references/*.test.mjs
+```
+
+```bash
 bash plugin/skills/codex-gate/codex-gate.test.sh
 ```
 
 (Green run ends with `PASS=<n> FAIL=0`; the printed count is the authoritative assert total.)
 
-Both suites use no npm packages — Node stdlib + bash only. The runtime prerequisites (Codex CLI +
+All three suites use no npm packages — Node stdlib + bash only. The runtime prerequisites (Codex CLI +
 ChatGPT seat, superpowers skills, Claude Code host) are listed under
 [External prerequisites](#external-prerequisites-not-bundled).
 

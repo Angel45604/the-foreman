@@ -14,7 +14,8 @@ engine** (render a durable ledger → publish, §4), the **lifecycle conductor**
 This skill **orchestrates** — it never re-encodes what another skill already does. Delegate
 `codex-gate`, `subagent-driven-development`, `brainstorming`, `requesting-code-review`,
 `commit-push-pr`; reference `test-driven-development`, `systematic-debugging`,
-`verification-before-completion`, `keep-it-simple` by name; wrap `handoff` (§5).
+`verification-before-completion`, `keep-it-simple` by name; wrap `handoff` (§5); route
+`the-refiner` through a fresh subagent, never inline (§4, §5).
 
 > **`<skill-dir>` in the commands below** = the directory containing THIS SKILL.md (you know it —
 > it's the path this skill was loaded from). Installed as a plugin that is
@@ -181,6 +182,17 @@ large/sensitive raw diffs, or end-user entity IDs.** (A small, curated, non-sens
 the sanitized `code`/`diff` content block — it is escaped/fenced, and the fail-closed secret-scan
 still covers it.)
 
+**Prose refinement (never inline):** when meta.lede, a slide's lead or statement, win.landed,
+win.next, or the prose of an overriding meta.ask needs a voice rewrite (never drawer evidence or
+win.evidence, which stay verbatim in a gate artifact), paste those spans into a fresh subagent that
+invokes the-refiner and returns the rewrite; never hand the subagent the ledger path. Apply the
+returned text to the ledger BEFORE rendering; the generated Markdown twin is never edited by hand.
+The refiner fixes voice, not authoring-contract violations: strip code tokens from statements
+yourself before dispatching. Never invoke the-refiner inline in the conductor's own turn: its
+modes emit ONLY the rewritten text or a findings table, which collides with the conductor's own
+output. Dispatch synchronously and block on the return; this never defers a §7 gate render past
+the current turn.
+
 **2. Render** (pick the type for the moment):
 
 ```
@@ -264,13 +276,18 @@ are private-by-default; treat the URL as shareable-on-purpose only.
 **Selective cadence:** render a `brief` only at genuine stop-the-loop moments with *material* new
 progress — a plan gate, a phase boundary, a decision fork, the live-run gate. Not every stop;
 noise and cost defeat the point. This cadence governs *unsolicited* progress notes only — it NEVER
-adds a materiality test to a §7 hard gate. `handoff` docs stay plain markdown (§5) — don't restyle them.
+adds a materiality test to a §7 hard gate. `handoff` docs stay plain markdown (§5) — don't render
+them as Gate Boards (the §5 refiner Review pass still applies).
 
 ## §5 — Wrap handoff
 
 **REQUIRED SUB-SKILL:** use `handoff` to checkpoint state at phase boundaries and when low on
 context. It produces the cold-start doc + paste-ready kickoff prompt the next agent resumes from
-(§2 RESUME). Do not re-encode its templates here — call it by name so its structure stays single-sourced.
+(§2 RESUME). After handoff writes the handoff doc and the kickoff prompt, and before handoff's
+final hand-to-user step, dispatch one fresh subagent per file that invokes the-refiner in Review
+mode and returns that file's findings table; apply the findings to each file first (same isolation
+rule as §4: never inline). Do not re-encode its templates here — call it by name so its structure
+stays single-sourced.
 
 ## §6 — The lifecycle conductor (idea → shipped, gated)
 
@@ -448,6 +465,7 @@ If any thought below is in your head, you are about to skip a gate. Stop and run
 | Treat the kickoff "drive it idea→shipped" as the ship authorization | Ship needs a FRESH ask after the final boundary that names the act (§6·6). Stop at "ready to ship — awaiting your instruction". |
 | Dispatch everything deep-tier out of habit — or downgrade judgment-heavy work to save tokens | §8: task shape picks the tier. Floors are floors, ceilings are ceilings. Name model + effort per dispatch. |
 | Implement a phase inline "because I have the most context" | The conductor never implements (§8, §6·4). Even a one-line phase gets a fresh implementer. |
+| Invoke `the-refiner` yourself "since it's just a paragraph" | Its modes emit only the rewritten text or a findings table, which overwrites your gate output. Fresh subagent, always (§4, §5). |
 | Treat a chat "don't stop at the rest" as a granted batch-run | That is the TRIGGER to offer the structured batch-run option at the boundary (§7, ADR-008). Only the structured answer grants it. |
 | Ride a granted batch-run past a non-convergence / RED / fork / scope drift | Batch-run is VOID on the first non-green signal — STOP + surface at a normal boundary stop. It never waives per-phase codex calls, reviews, verification, other gates, or ship's fresh ask. |
 | Quietly lower `CODEX_GATE_MODEL`/`CODEX_GATE_EFFORT` (or flip the gate's knobs off) to save allowance | The gate's strength dials belong to the OWNER, not you — self-downgrading the independent gate is weakening a governance gate → `governance-pushback`. Cost concerns go TO the owner, never into env vars. |
