@@ -1,0 +1,21 @@
+{
+  "meta": {
+    "title": "Refiner seam isolation drill"
+  },
+  "win": {
+    "landed": "This release adds a caching layer that reuses previously rendered output instead of re-rendering it on every request.",
+    "evidence": "42 of 42 render tests pass. p95 render time dropped from 640ms to 210ms on the staging fleet.",
+    "verified": true,
+    "next": "Roll the cache out to the production fleet next."
+  },
+  "slides": [
+    {
+      "statement": "Cache layer landed",
+      "bullets": [
+        "Render latency measured before and after the change on the staging fleet",
+        "No regressions found across the render test suite",
+        "Cache eviction policy documented for the on-call rotation"
+      ]
+    }
+  ]
+}
