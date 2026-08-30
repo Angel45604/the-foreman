@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const contract = readFileSync(join(here, 'core-contract.md'), 'utf8');
@@ -128,4 +129,28 @@ test('pair 9 keeps its fenced code block byte for byte', () => {
   for (const [side, text] of [['Before', before], ['After', after]]) {
     assert.doesNotMatch(text, /^```[ \t]+$/m, `pair 9 ${side} must not pad a fence delimiter`);
   }
+});
+
+// before-after.md is case law: SKILL.md instructs the-refiner to read this file before
+// producing any output, so an unnoticed edit changes shipped behavior. This pin makes every
+// change deliberate, the same byte-identity posture this file already applies to the output
+// style body and to pair 9's fenced block.
+//
+// It is CHANGE CONTROL, not semantic validation. It proves the canonical exemplars changed.
+// It cannot prove a hedge was weakened or a number altered. A human reading the diff is the
+// semantic oracle. To change an exemplar on purpose: make the edit, read the diff, satisfy
+// yourself the Before-to-After promise still holds, then update this digest in the same commit.
+const BEFORE_AFTER_SHA256 = '82778aa8861f85a1c5da4396b36db0bf18b1cabebaf80c36fb07e546480a2e6b';
+
+test('the skill still instructs the-refiner to read the exemplar pairs', () => {
+  const skill = readFileSync(join(here, '..', 'SKILL.md'), 'utf8');
+  assert.match(skill, /references\/before-after\.md/,
+    'SKILL.md must still tell the-refiner to read the exemplar pairs. If it no longer does, the golden pin below is guarding a file nothing reads, and both should be revisited.');
+});
+
+test('the exemplar pairs file matches its golden digest', () => {
+  const md = readFileSync(join(here, 'before-after.md'));
+  const actual = createHash('sha256').update(md).digest('hex');
+  assert.strictEqual(actual, BEFORE_AFTER_SHA256,
+    'before-after.md changed. This is change control, not a semantic failure: the file may be fine. Read the diff, confirm the Before-to-After promise still holds for every pair, then update BEFORE_AFTER_SHA256 in this test to the new digest.');
 });
