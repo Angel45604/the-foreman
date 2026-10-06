@@ -9,10 +9,10 @@
 // --permission-mode acceptEdits) is the upgrade path if described-vs-actual ever diverges.
 //
 // Requires a logged-in `claude` CLI. COSTS REAL TOKENS: 2 calls per eval per run
-// (executor + judge). Default: executor=sonnet (well-scoped, the prompt is the gate),
-// judge=opus (adversarial verification at a gate runs deep — §8).
+// (executor + judge). Default: executor=opus (the probe executor plays the conductor,
+// which runs deep per §8), judge=opus (adversarial verification at a gate runs deep — §8).
 //
-// usage: node run-evals.mjs [--ids 0,3,10] [--model sonnet] [--judge-model opus]
+// usage: node run-evals.mjs [--ids 0,3,10] [--model opus] [--judge-model opus]
 //                           [--runs 1] [--baseline] [--dry-run]
 import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { isMain } from '../references/is-main.mjs';
@@ -384,7 +384,7 @@ export function runAll(evals, opts, deps = {}) {
 // read as a pass (see exitCode above), so a bad --runs value must fail closed here, before any
 // paid call, the same way an unrecognized flag already does.
 export function parseArgs(argv) {
-  const opts = { ids: null, model: 'sonnet', judgeModel: 'opus', runs: 1, baseline: false, dryRun: false };
+  const opts = { ids: null, model: 'opus', judgeModel: 'opus', runs: 1, baseline: false, dryRun: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--ids') opts.ids = argv[++i].split(',').map(Number);

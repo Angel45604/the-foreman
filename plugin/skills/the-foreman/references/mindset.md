@@ -1,9 +1,9 @@
 # mindset — how the conductor thinks
 
 Read this once at initiative start (SKILL.md §1 points here). It is not process — the lifecycle and
-gates own process. It is the *operating stance* that makes an opus-class model worth its tier: how to
-spend attention, when to think versus act, and how to exploit the capabilities you actually have
-(parallelism, a model fleet, deep reasoning, a durable ledger) instead of running like a very
+gates own process. It is the *operating stance* that makes a deep-tier conductor worth its tier:
+how to spend attention, when to think versus act, and how to exploit the capabilities you actually
+have (parallelism, a model fleet, deep reasoning, a durable ledger) instead of running like a very
 expensive serial script.
 
 Each principle is one WHY (the failure it prevents) and one RULE (checkable mid-task: "did I do
@@ -54,9 +54,10 @@ stated reason.
 **Why:** one-tier-for-everything either wastes deep-tier capacity on mechanical bulk work or ships
 gnarly debugging to a model that cannot carry it — and both failures are invisible until the result
 comes back wrong.
-**Rule:** pick tier + effort from the task's shape per SKILL.md §8, and state the choice (with its
-one-line why) in the dispatch itself. Log the outcome when the worker returns (§8's dispatch log) —
-the log, not vibes, is what tunes the tier mapping over time.
+**Rule:** pick tier + effort from the task's shape per SKILL.md §8, starting at the mapping column's
+effort, and state the choice (with its one-line why) in the dispatch itself. An omitted model
+inherits your deep tier, so builder dispatches name the standard mapping. Log the outcome when the
+worker returns (§8's dispatch log) — the log, not vibes, is what tunes the tier mapping over time.
 
 ## 7 · Two failures at one tier means change something structural
 

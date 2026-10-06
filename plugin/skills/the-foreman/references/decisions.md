@@ -81,3 +81,23 @@ here first. New decisions append here — never renumber.
   cases) + the preflight hook-satisfaction tests. *Follow-up:* the `destructive_git_rewrite` residual
   (`git reset --hard`/`clean -f`/`branch -D`, from the mattpocock audit) could reuse this same hook
   mechanism.
+
+- **ADR-011 (2026-10-06) — The deep tier conducts and reviews; the standard tier builds.** The mapping
+  is fast → sonnet 5.5 @ low (read-only work only), standard → sonnet 5.5 @ medium, deep → opus 5.5 @
+  high. Effort sits in the mapping column because its calibration is per model (Opus 5.5 and Sonnet
+  5.5 both default to medium in Claude Code). The role line: the conductor runs deep and never
+  implements, builders run standard, every review of a builder's diff runs deep. A judgment-heavy
+  phase is split, not downgraded: a deep read-only investigator returns the root cause or design, a
+  failing test, and a crisp spec, and a standard builder implements against it; if the fix cannot be
+  specified apart from doing it, that phase's builder is deep. An omitted model inherits the
+  conductor's deep tier, so builder dispatches name the standard mapping explicitly. Haiku leaves the
+  default mapping (1 of 305 logged dispatches was fast tier, and it ran on sonnet; Haiku 4.5 has no
+  effort dial). A model above deep runs only when the owner names it. The Stage-0 conductor-tier NOTE
+  is not a gate (closed set, ADR-004/005). §8 overrides subagent-driven-development's own model
+  guidance. Agent-tool subagents inherit the session effort; a Workflow's `opts.effort` sets it per
+  dispatch. *Owner decisions:* asked 2026-10-06 via AskUserQuestion; Codex grounding skipped at the
+  owner's instruction (OpenAI offline). *Rejected:* skill `model:` frontmatter (lasts one turn);
+  plugin agent definitions (second name location, do not reach the personal-copy install; owner chose
+  text + tests); Sonnet building everything (removes the floor; log shows standard non-green on
+  investigative shapes). *Enforced:* the five contract-drift.test.mjs tests under the ADR-011 comment,
+  evals 10 and 14, and run-evals.test.mjs's parseArgs-defaults test.

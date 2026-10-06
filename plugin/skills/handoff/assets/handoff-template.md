@@ -29,9 +29,10 @@
   - `[build / catalog / other]` → **[result]**
 
 ## 2. Mandated process (the workflow to INHERIT — the user requires ALL of these)
-- **`/superpowers:subagent-driven-development`** — a fresh implementer subagent per task (model **opus**); after
-  each: **spec-compliance review THEN code-quality review**. Give it the full task text + exact file
-  anchors (it has zero context). Re-verify yourself — do NOT trust subagent reports.
+- **`/superpowers:subagent-driven-development`** — a fresh implementer subagent per task (model + effort per
+  the-foreman SKILL.md §8: the standard tier builds, the deep tier reviews); after each: **spec-compliance
+  review THEN code-quality review**. Give it the full task text + exact file anchors (it has zero context).
+  Re-verify yourself — do NOT trust subagent reports.
 - **`/superpowers:test-driven-development`** — RED first (failing test, watch it fail), then implement.
 - **`/superpowers:systematic-debugging`** — root-cause before patching any failure.
 - **`/superpowers:verification-before-completion`** — re-run the suites + read the diff yourself before claiming done.

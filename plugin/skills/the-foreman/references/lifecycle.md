@@ -60,9 +60,10 @@ approves the plan **and** records whether scoped per-phase LOCAL commits are aut
 ### Stage 4 — Per-phase execution ⚙️→🚦
 **Purpose:** implement each plan phase to a verified, reviewed boundary.
 **Delegates to:** per phase — `codex-gate phase-start` → a fresh implementer subagent, model + effort
-right-sized per **SKILL.md §8** (the conductor never implements a phase inline), via
+right-sized per **SKILL.md §8** (standard tier by default; a judgment-heavy phase is split: deep
+investigator, then builder; the conductor never implements a phase inline), via
 `subagent-driven-development` (TDD RED-first, `systematic-debugging`) → spec-compliance review →
-code-quality review (`requesting-code-review`; reviewer tier ≥ the implementer's) → write
+code-quality review (`requesting-code-review`; both reviews run deep, ≥ the implementer's tier) → write
 `context.md` → `codex-gate phase-review` (driven to converge) → `verification-before-completion`.
 Commit only if the plan gate authorized scoped per-phase LOCAL commits (explicit paths, never
 `git add -A`); ledger-prose refinement routes through a refiner subagent (SKILL.md §4).

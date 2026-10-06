@@ -73,10 +73,10 @@ Adopt this posture before any work so it never has to be re-explained:
 - **ULTRACODE.** Optimize for the exhaustively-correct outcome. Depth of reasoning, verification,
   and gate rigor are never traded for cost — but spend is *directed*, not indiscriminate: right-size
   every dispatch (§8) and exploit dynamic Workflows. Reason at depth before acting.
-- **Conduct; don't do the workforce's job.** Delegate by task shape per the dispatch policy (§8) —
-  every dispatch names model + effort. Keep your own context for decisions, contracts, and gate
-  state. Read `references/mindset.md` once at initiative start — it is how this skill expects an
-  opus-class conductor to think.
+- **Conduct; don't do the workforce's job.** You conduct on the deep tier; the standard tier builds
+  (§8). Delegate by task shape per the dispatch policy (§8) — every dispatch names model + effort.
+  Keep your own context for decisions, contracts, and gate state. Read `references/mindset.md` once
+  at initiative start — it is how this skill expects a deep-tier conductor to think.
 - **Simpler is ALWAYS better.** Challenge every layer, abstraction, and added dependency — "can
   this be done with 1/10th the complexity?" Reuse where the data already lives; don't bolt on
   fetches/helpers/plumbing the caller already has.
@@ -149,6 +149,12 @@ explicit deny rules for your own deploy commands or a `PreToolUse` hook; and a B
 fully stop network exfil, so pair it with `WebFetch(domain:…)` allow-rules.
 **Auto-mode is detected and reported as a NOTE (`autoMode`), never a blocker** — the operator runs
 auto intentionally; the rails, not the mode, are the protection.
+
+**The conductor tier is also a NOTE, never a blocker.** Your system prompt names the model you run
+on. If it is not the §8 deep-tier mapping, say so in one line at Stage 0 — the owner can restart with
+`/model` set to that mapping, or proceed knowingly. Either way, note once that the conductor's effort
+— which every Agent-tool subagent inherits — is the owner's `/effort` dial, and that the deep mapping
+expects at least `high`. No new gate; the hard-gate set stays closed.
 
 **If `ok` is false: STOP. Show the `setupBlock` verbatim** (a ready-to-paste, MERGE-don't-replace
 `permissions.deny` fragment) and let the owner install the rails. The CLI exits non-zero on failure.
@@ -313,9 +319,10 @@ The 7 stages (🚦 = a human stop; ⚙️ = auto-advance with verification):
    model/effort is deliberately quality-first and heavy [fast mode on; effort tiers may auto-delegate
    subtasks], so `--multi` multiplies an already-expensive run — opt in deliberately, never casually.)*
 4. **Per-phase exec** ⚙️→🚦 — per phase: `codex-gate phase-start` → dispatch a fresh implementer
-   subagent, model + effort right-sized per **§8** — never implement a phase inline yourself
-   (`subagent-driven-development`, TDD RED-first, `systematic-debugging`) → spec-compliance review →
-   code-quality review (`requesting-code-review`; reviewer tier ≥ the implementer's, §8) → write
+   subagent, model + effort right-sized per **§8** (standard tier by default; a judgment-heavy phase
+   is split per §8) — never implement a phase inline yourself (`subagent-driven-development`, TDD
+   RED-first, `systematic-debugging`) → spec-compliance review → code-quality review
+   (`requesting-code-review`; both reviews run deep, ≥ the implementer's tier, §8) → write
    `context.md` → `codex-gate phase-review` (drive to converge) → `verification-before-completion` →
    commit ONLY if the plan gate authorized scoped per-phase LOCAL commits (explicit paths, never
    `git add -A`) → the **`phase-boundary`** gate (§7). The phase set is FROZEN at plan-approval —
@@ -412,24 +419,45 @@ You are the conductor; workers are disposable and parallel. **The task's SHAPE �
 pressure — picks the worker's tier.** Choose the cheapest tier that won't need a redo: a redo (or a
 blind-trusted wrong answer) costs more than dispatching right the first time.
 
-| Task shape | Tier → current mapping | Typical work |
+| Task shape | Tier → current mapping (ADR-011) | Typical work |
 |---|---|---|
-| Mechanical, fully-specified, crisp done-condition | **fast** → `haiku` | bulk renames, inventories, log scans, format sweeps |
-| Well-scoped, crisp spec, a gate catches drift (tests / lint / review) | **standard** → `sonnet` (Sonnet 5 ≈ deep-tier on scoped work) | plan-phase implementation with tests already written, exploration/research fan-outs, spec-compliance review, docs |
-| Judgment-heavy, under-specified, or high blast-radius | **deep** → `opus` (or the strongest tier available) | unknown-root-cause debugging, design & cross-cutting refactors, security surfaces, adversarial verification at a gate |
+| Read-only (changes no files), fully specified, mechanical done-condition | **fast** → `sonnet` (5.5) @ `low` | inventories, log scans, format and link checks — never a code change |
+| Well-scoped, crisp spec, a gate catches drift (tests / lint / review) | **standard** → `sonnet` (5.5) @ `medium` | the default builder: plan-phase implementation with failing tests written, bulk mechanical edits, exploration/research fan-outs, docs, the-refiner passes (§4, §5) |
+| Judgment-heavy, under-specified, high blast-radius, or any review of code or a gate crossing | **deep** → `opus` (5.5) @ `high` | the conductor (the session model), root-cause diagnosis, design / refactor / security specs, spec-compliance and code-quality review, adversarial verification at a gate |
 
 The *shapes* are durable; the *names* are not — update the mapping column when models ship. (A
-hardcoded model name is exactly what rotted here before this table existed.)
+hardcoded model name is exactly what rotted here before this table existed.) Effort sits in the
+mapping column because its calibration is per model.
 
+- **Who does what.** The conductor is the session and runs deep: it plans, decides, gates, owns the
+  ledger, and never implements. Builders run standard tier. Every review of a builder's diff and
+  every adversarial verification runs deep. **A judgment-heavy phase is split, not downgraded:** a
+  deep, read-only investigator returns the root cause or design, a failing test, and a crisp spec; a
+  standard builder implements against it. If the investigator reports the fix cannot be specified
+  apart from doing it, that phase's builder is deep. The floor binds the judgment, not the typing.
 - **Name model + effort on every dispatch**, with a one-line why. In dynamic Workflows the dials are
   `opts.model` / `opts.effort` (`low` · `medium` · `high` · `xhigh` · `max`); the Agent tool has no
-  effort param — effort travels in the prompt (open with an explicit reasoning-depth instruction).
-  When genuinely unsure, omit the model (inherit) rather than guess down.
-- **Floors and ceilings.** Judgment-heavy / gate-bound work never drops below deep tier — cost
-  pressure changes *what* you dispatch, never the floor. Mechanical work never "earns" deep tier by
-  feeling important.
-- **Reviewer ≥ implementer.** Quality reviews run at or above the implementer's tier; adversarial
-  verification of anything crossing a gate runs deep.
+  effort param — a subagent inherits the session's effort. When a dispatch's effort must differ from
+  the session's (fast @ `low`, standard @ `medium` under a `high` conductor), dispatch it through a
+  Workflow with `opts.effort`; for an Agent-tool dispatch, state the intended depth in the prompt and
+  log the effective (session) effort.
+  **An omitted model inherits the conductor's deep tier:** safe for judgment, wasteful for building.
+  Builder dispatches always name the standard mapping explicitly. This policy overrides
+  `subagent-driven-development`'s own model guidance in every version: fill its model slot (or add one
+  where its template has none) with the standard mapping for builders and the deep mapping for every
+  reviewer, its final whole-branch review included — never a cheaper model for a code change, never
+  above deep unless the owner names one.
+- **Effort.** Start at the mapping column's effort. Never dispatch a code change at `low`. Use `xhigh`
+  or `max` only as the structural rung after two failures, or when the owner asks. The conductor's own
+  effort is the owner's `/effort` dial.
+- **Above the mapping.** A model above the deep mapping runs only when the owner names it for this
+  initiative — never because a phase "looks hard".
+- **Floors and ceilings.** Judgment (diagnosis, design, review of code or a gate crossing) and
+  gate-crossing verification never drop below deep tier — cost pressure changes *what* you dispatch,
+  never the floor; a split phase's builder runs standard (above). Mechanical work never "earns" deep
+  tier by feeling important.
+- **Reviewer ≥ implementer.** Every review of a builder's diff runs deep — at or above any builder's
+  tier; adversarial verification of anything crossing a gate runs deep.
 - **Cheap findings are leads, not conclusions.** Re-verify fast/standard-tier findings — yourself at
   file:line, or via a deep worker — before they cross a gate or enter the ledger as fact.
 - **Two failures at one tier = change something structural.** Escalate tier/effort, re-scope,
@@ -439,6 +467,8 @@ hardcoded model name is exactly what rotted here before this table existed.)
   (plan position, gate state, contracts) is the one thing a redo can't rebuild.
 - **Log every dispatch outcome (ADR-007).** When a worker returns, append one JSONL line:
   `node <skill-dir>/references/dispatch-log.mjs append '{"session":"…","phase":"…","shape":"…","tier":"…","model":"…","effort":"…","why":"…","outcome":"ok|redo|escalated|failed"}'`.
+  Log `model` as `<alias>-<version>` from the mapping column, not the bare alias, so the log keeps
+  model eras apart (`stats` aggregates tier × shape; filter the JSONL by `model` to compare eras).
   At initiative wrap-up, `dispatch-log.mjs stats` shows non-green rates per tier × shape — that
   data, not vibes, is what tunes this table's mapping over time.
 
@@ -464,6 +494,8 @@ If any thought below is in your head, you are about to skip a gate. Stop and run
 | Skip a boundary stop because the phase was "too small to be material" | Selectivity never applies to hard gates (§7) — every trigger renders and blocks, however small the phase. |
 | Treat the kickoff "drive it idea→shipped" as the ship authorization | Ship needs a FRESH ask after the final boundary that names the act (§6·6). Stop at "ready to ship — awaiting your instruction". |
 | Dispatch everything deep-tier out of habit — or downgrade judgment-heavy work to save tokens | §8: task shape picks the tier. Floors are floors, ceilings are ceilings. Name model + effort per dispatch. |
+| Send a judgment-heavy phase straight to a standard-tier builder — or a review to the builder's tier — "because the standard tier implements now" | §8: split the judgment out to a deep investigator first; every review of a builder's diff runs deep. |
+| Run the lifecycle on a non-deep session without saying so, or let a builder dispatch inherit the model | §3 NOTE once at Stage 0; §8: builders name the standard mapping explicitly. |
 | Implement a phase inline "because I have the most context" | The conductor never implements (§8, §6·4). Even a one-line phase gets a fresh implementer. |
 | Invoke `the-refiner` yourself "since it's just a paragraph" | Its modes emit only the rewritten text or a findings table, which overwrites your gate output. Fresh subagent, always (§4, §5). |
 | Treat a chat "don't stop at the rest" as a granted batch-run | That is the TRIGGER to offer the structured batch-run option at the boundary (§7, ADR-008). Only the structured answer grants it. |

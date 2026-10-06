@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { HARD_GATE_IDS, ARTIFACT_TYPES, gateById } from './gate-contract.mjs';
@@ -114,4 +114,94 @@ test('the dedicated "AskUserQuestion unavailable" eval requires the escalation f
   assert.match(e.prompt, /askuserquestion/i, 'the eval prompt must set up the AskUserQuestion-unavailable trigger');
   assert.match(e.expected_output, /escalation\.mjs/, 'it must require the escalation.mjs fallback');
   assert.match(e.expected_output, /read-once|answered|valid.*response|never advance/i, 'it must require a validated read-once answer / never-advance');
+});
+
+// ---- ADR-011: Opus conducts / Sonnet builds ----
+const MINDSET = readFileSync(join(HERE, 'mindset.md'), 'utf8');
+const flat = (s) => s.replace(/\s+/g, ' ');
+function skillSection8() {
+  const s = SKILL.indexOf('## §8');
+  const e = SKILL.indexOf('## Red Flags', s);
+  assert.ok(s !== -1 && e !== -1, 'SKILL.md must have §8 and Red Flags headers');
+  return SKILL.slice(s, e);
+}
+function skillSection3() {
+  const s = SKILL.indexOf('## §3');
+  const e = SKILL.indexOf('## §4', s);
+  assert.ok(s !== -1 && e !== -1, 'SKILL.md must have §3 and §4 headers');
+  return SKILL.slice(s, e);
+}
+
+test('§8 encodes the conductor/builder split', () => {
+  const s8 = flat(skillSection8());
+  assert.match(s8, /\*\*standard\*\* → `sonnet`/);
+  assert.match(s8, /\*\*deep\*\* → `opus`/);
+  assert.match(s8, /conductor[^.]*runs deep/i);
+  assert.match(s8, /builders run standard tier/i);
+  assert.match(s8, /every review of a builder's diff/i);
+  assert.match(s8, /split, not downgraded/i);
+  assert.match(s8, /omitted model inherits the conductor's deep tier/i);
+  assert.match(s8, /name the standard mapping explicitly/i);
+  assert.doesNotMatch(s8, /strongest tier available/);
+  assert.doesNotMatch(s8, /Sonnet 5 ≈/);
+  const lc = flat(LIFECYCLE);
+  assert.match(lc, /standard tier by default/);
+  assert.match(lc, /both reviews run deep/);
+  const rows = skillSection8().split('\n').filter((l) => l.startsWith('|'));
+  const rowOf = (k) => rows.find((l) => l.includes(`**${k}**`));
+  const fast = rowOf('fast'), standard = rowOf('standard'), deep = rowOf('deep');
+  assert.ok(fast && standard && deep, '§8 table must carry fast, standard and deep rows');
+  assert.doesNotMatch(standard, /spec-compliance|code-quality/i);
+  assert.match(deep, /spec-compliance/);
+  assert.match(fast, /never a code change/);
+  assert.match(fast, /changes no files/);
+  assert.match(s8, /never dispatch a code change at `low`/i);
+  assert.match(s8, /overrides `subagent-driven-development`/);
+  assert.match(s8, /opts\.effort/);
+  assert.doesNotMatch(s8, /omit the model/i);
+});
+
+test('model names live only in the §8 mapping column', () => {
+  const i = SKILL.indexOf('## §8'), j = SKILL.indexOf('## Red Flags', i);
+  const skillMinusTable = SKILL.slice(0, i) + SKILL.slice(i, j).split('\n').filter((l) => !l.startsWith('|')).join('\n') + SKILL.slice(j);
+  const re = /\b(opus|sonnet|haiku|fable)\b/i;
+  const offending = (text) => text.split('\n').find((l) => re.test(l));
+  assert.doesNotMatch(skillMinusTable, re, `SKILL.md outside the §8 table names a model: ${offending(skillMinusTable)}`);
+  assert.doesNotMatch(LIFECYCLE, re, `lifecycle.md names a model: ${offending(LIFECYCLE)}`);
+  assert.doesNotMatch(MINDSET, re, `mindset.md names a model: ${offending(MINDSET)}`);
+});
+
+test('§3 carries the conductor-tier NOTE, never a blocker', () => {
+  const s3 = flat(skillSection3());
+  assert.match(s3, /conductor tier is also a NOTE, never a blocker/i);
+  assert.match(s3, /deep-tier mapping/i);
+  assert.match(s3, /\/effort/);
+});
+
+test('handoff never hardcodes an implementer model', (t) => {
+  const handoffDir = join(HERE, '..', '..', 'handoff');
+  if (!existsSync(handoffDir)) { t.skip('handoff skill not installed alongside the-foreman'); return; }
+  for (const f of ['SKILL.md', 'assets/handoff-template.md', 'assets/kickoff-prompt-template.md']) {
+    const p = join(handoffDir, f);
+    assert.ok(existsSync(p), `handoff/${f} missing`);
+    const text = readFileSync(p, 'utf8');
+    assert.doesNotMatch(text, /\b(opus|sonnet|haiku|fable)\b/i, `${f} names a model`);
+  }
+});
+
+test('a conductor-builder-split eval exists and eval 10 reflects the split', () => {
+  const split = EVALS.evals.find((e) => e.name === 'conductor-builder-split');
+  assert.ok(split, 'evals.json must carry an eval named conductor-builder-split');
+  const out = flat(split.expected_output);
+  assert.match(out, /deep/);
+  assert.match(out, /standard/);
+  assert.match(out, /investigat/i);
+  assert.match(out, /never implements|inline/i);
+  const ids = split.criteria.map((c) => c.id);
+  for (const id of ['builder-named-standard', 'judgment-split', 'no-downgrade-under-cost', 'reviews-deep', 'never-inline', 'no-top-tier-unasked']) {
+    assert.ok(ids.includes(id), `conductor-builder-split is missing criterion ${id}`);
+  }
+  const e10 = EVALS.evals.find((e) => e.id === 10);
+  assert.ok(e10, 'eval 10 must exist');
+  assert.doesNotMatch(e10.expected_output, /haiku-class/i);
 });

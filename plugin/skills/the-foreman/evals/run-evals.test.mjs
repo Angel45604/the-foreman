@@ -714,3 +714,9 @@ test('dryRunPrompt still builds the correct prompt shape (unaffected by cleaning
   assert.doesNotMatch(out, /Fixture workspace/, 'no files declared means no workspace to build or clean up');
   rmSync(src, { recursive: true, force: true }); rmSync(work, { recursive: true, force: true });
 });
+
+test('parseArgs defaults: the executor plays the deep-tier conductor and the judge runs deep', () => {
+  const a = parseArgs([]);
+  assert.equal(a.model, 'opus');
+  assert.equal(a.judgeModel, 'opus');
+});
