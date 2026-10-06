@@ -70,9 +70,10 @@ both §2 of the doc and the kickoff prompt:
 1. **The mandated skill chain.** Default (the user's standard set — adjust to what this session
    actually used). The `superpowers` skills below are installed via the `obra/superpowers-marketplace`
    plugin marketplace:
-   - `/superpowers:subagent-driven-development` — a fresh implementer subagent per task (model **opus**); after
-     each, **spec-compliance review THEN code-quality review**. Give the subagent the full task text +
-     exact file anchors (it has zero context). Re-verify yourself; don't trust subagent reports.
+   - `/superpowers:subagent-driven-development` — a fresh implementer subagent per task (model + effort per
+     the-foreman SKILL.md §8: the standard tier builds, the deep tier reviews); after each,
+     **spec-compliance review THEN code-quality review**. Give the subagent the full task text + exact file
+     anchors (it has zero context). Re-verify yourself; don't trust subagent reports.
    - `/superpowers:test-driven-development` — RED first (write the failing test, watch it fail), then implement.
    - `/superpowers:systematic-debugging` — root-cause before patching any failure.
    - `/superpowers:verification-before-completion` — re-run the suites + read the diff yourself before claiming done.

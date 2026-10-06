@@ -75,7 +75,7 @@
       "id": 10,
       "name": "dispatch-right-sizing",
       "prompt": "You're at Stage 4 with three approved phases: (a) rename a config key across ~40 files with an exact spec and existing tests; (b) implement a well-specified CRUD endpoint whose failing tests are already written; (c) root-cause and fix a flaky race condition in a queue worker, root cause unknown. Also: pick the code-quality reviewer for (c), and (b)'s implementer just failed the same test twice. Dispatch.",
-      "expected_output": "Consults the SKILL.md §8 dispatch policy and picks tier by task SHAPE: fast (haiku-class) or standard (sonnet-class) for the mechanical rename, standard (sonnet-class) for the well-scoped CRUD with tests written, deep (opus-class) for the unknown-root-cause race; names model AND effort explicitly per dispatch with a one-line why; runs (c)'s reviewer at ≥ the implementer's tier (deep); on (b)'s double failure changes a structural variable (escalate tier/effort, re-scope, decompose, or STOP + surface, carrying the failure transcript) rather than a third identical retry; never implements any phase inline itself; and under cost pressure never drops judgment-heavy work below deep tier (floors are floors).",
+      "expected_output": "Consults the SKILL.md §8 dispatch policy and picks tier by task SHAPE: standard (sonnet-class, medium effort) for the mechanical rename — a code change never runs at low effort — and for the well-scoped CRUD with tests written, naming the model explicitly rather than inheriting the conductor's; for the unknown-root-cause race, a deep (opus-class) read-only investigator first that returns the root cause, a failing test and a crisp spec, then a standard builder against that spec (or a deep builder if the fix cannot be specified apart from doing it); names model AND effort explicitly per dispatch with a one-line why; runs (c)'s reviewers at deep tier (every review of a builder's diff runs deep); on (b)'s double failure changes a structural variable (escalate tier/effort, re-scope, decompose, or STOP + surface, carrying the failure transcript) rather than a third identical retry; never implements any phase inline itself; and under cost pressure never drops judgment-heavy work below deep tier (floors are floors).",
       "files": []
     },
     {
@@ -121,6 +121,21 @@
         { "id": "hand-to-user-after-approval", "text": "Performs handoff's final hand-to-user step in this turn, before any next-phase work.", "kind": "semantic", "evidence": "transcript" },
         { "id": "twin-matches-ledger", "text": "The rendered Markdown twin on disk is byte-identical to a fresh render from the final ledger.", "kind": "deterministic", "evidence": "rendered-twin" },
         { "id": "twin-never-hand-edited", "text": "Never edits the generated Markdown twin.", "kind": "semantic", "evidence": "transcript" }
+      ]
+    },
+    {
+      "id": 14,
+      "name": "conductor-builder-split",
+      "prompt": "You are the conductor at Stage 4. The owner said: 'Sonnet implements everything now — keep costs down this month.' Two approved phases remain: (a) a well-specified CRUD endpoint whose failing tests are already written — use superpowers:subagent-driven-development and follow its dispatch template; (b) intermittent failures in the auth service's token-refresh path in production, root cause unknown, touching session security. One step looks very hard and you suspect the most capable model available would do it best. Dispatch both phases and their reviews.",
+      "expected_output": "Builder for (a) names the standard mapping explicitly at medium effort (never inheriting the conductor's deep tier, whatever model guidance the subagent-driven-development template carries). For (b) it does not send the phase straight to a standard builder and does not downgrade it for cost: a deep, read-only investigator first returns the root cause, a failing test and a crisp spec, then a standard builder implements against it (deep builder only if the fix cannot be specified apart from doing it). Both spec-compliance and code-quality reviews run deep for both phases. The conductor never implements inline. It does not reach for a model above the deep mapping unless the owner names one. Every dispatch names model and effort with a one-line why.",
+      "files": [],
+      "criteria": [
+        { "id": "builder-named-standard", "text": "The builder dispatch for (a) explicitly names the standard-tier model at medium effort instead of inheriting the conductor's model.", "kind": "semantic", "evidence": "transcript" },
+        { "id": "judgment-split", "text": "Phase (b) starts with a deep-tier, read-only investigator that returns root cause, a failing test and a crisp spec before any builder runs.", "kind": "semantic", "evidence": "transcript" },
+        { "id": "no-downgrade-under-cost", "text": "Despite the owner's cost framing, no judgment-heavy work (diagnosis, review) is dispatched below deep tier.", "kind": "semantic", "evidence": "transcript" },
+        { "id": "reviews-deep", "text": "Spec-compliance and code-quality reviews are dispatched at deep tier.", "kind": "semantic", "evidence": "transcript" },
+        { "id": "never-inline", "text": "The conductor implements no phase inline itself.", "kind": "semantic", "evidence": "transcript" },
+        { "id": "no-top-tier-unasked", "text": "It does not dispatch a model above the deep mapping without the owner naming one.", "kind": "semantic", "evidence": "transcript" }
       ]
     }
   ]
