@@ -63,6 +63,7 @@ mkdir -p "$STUB_DIR"
 STUB_ARGV_LOG="$SANDBOX/stub-argv.log"
 STUB_STDIN_DUMP="$SANDBOX/stub-stdin.dump"
 STUB_CWD_LOG="$SANDBOX/stub-cwd.log"
+PICK_LOG="$SANDBOX/pick.log"
 
 cleanup() { rm -rf "$SANDBOX"; }
 trap cleanup EXIT
@@ -344,6 +345,62 @@ copy_real_skill() { # <dir>
   chmod +x "$d/codex-gate.sh"
 }
 
+# Helper: a REAL, RUNNABLE copy of this skill whose Codex candidate list is <candidates>
+# (colon-separated, the exact shape of the shipped constant). It rewrites the ONE line that
+# begins `CODEX_BIN_CANDIDATES=` in the COPY's codex-gate.sh — never the checkout's — through
+# the same rewrite-to-temp-then-mv seam `retune_gate_dials` uses, so production gains no
+# test-only knob (ADR-003). LOUD by construction: when the seam line is missing (production
+# not implemented yet, or the constant was renamed) the helper records a FAIL and returns 1,
+# and a rewrite that did not land fails the same way (whole-line read-back). A silent no-op
+# would leave an unmodified copy that resolves the REAL ChatGPT.app and make every resolution
+# test pass or fail for the wrong reason. It also proves the rewritten copy names `/Applications/`
+# nowhere outside a comment, so a second hard-coded path (or a default inside the CODEX_BIN
+# expansion) left behind in the wrapper cannot let a run reach the real app: that FAILs here,
+# before any wrapper runs. Callers MUST `|| return` on a nonzero status.
+# Call it directly (never inside `$(...)`): the FAIL has to land in this shell's counters.
+bin_fixture() { # <dir> <candidates>
+  local d="$1" cands="$2" f tmp n
+  copy_real_skill "$d"
+  f="$d/codex-gate.sh"
+  tmp="$f.tmpbin"
+  n="$(grep -c '^CODEX_BIN_CANDIDATES=' "$f" 2>/dev/null)"; [ -n "$n" ] || n=0
+  if [ "$n" -lt 1 ]; then
+    fail "bin_fixture: no line beginning CODEX_BIN_CANDIDATES= in the copy ($f) — the candidate-list seam is missing, so no resolution test can run"
+    return 1
+  fi
+  # ENVIRON (not awk -v) so the paths reach awk with no backslash-escape processing.
+  CG_BIN_CANDS="$cands" awk '
+    index($0, "CODEX_BIN_CANDIDATES=")==1 { print "CODEX_BIN_CANDIDATES=\"" ENVIRON["CG_BIN_CANDS"] "\""; next }
+    { print }
+  ' "$f" > "$tmp" && mv "$tmp" "$f"
+  chmod +x "$f"
+  if [ "$(grep -cFx -- "CODEX_BIN_CANDIDATES=\"$cands\"" "$f" 2>/dev/null)" != "$n" ]; then
+    fail "bin_fixture: rewriting CODEX_BIN_CANDIDATES in $f did not take effect (expected $n line(s) equal to the new value)"
+    return 1
+  fi
+  if grep -n '/Applications/' "$f" | grep -qv '^[0-9]*:[[:space:]]*#'; then
+    fail "bin_fixture: $f still names /Applications/ outside a comment after the rewrite, so a run could reach the real app :: $(grep -n '/Applications/' "$f" | grep -v '^[0-9]*:[[:space:]]*#' | head -3)"
+    return 1
+  fi
+  return 0
+}
+
+# Helper: a marker stub for the resolution tests. Each run appends <tag> as one line to
+# $PICK_LOG — so the log says WHICH candidate the wrapper chose and how many times —
+# then hands over to the suite's real stub, so a correct pick yields a normal round.
+# `#!/bin/sh` on purpose: it mirrors the shipped ChatGPT.app launcher. The heredoc is
+# UNQUOTED so $PICK_LOG / $STUB_DIR / $2 expand at write time (the stub carries the literal
+# sandbox paths, single-quoted); the `\$@` and the `\n` stay for the stub's own shell.
+mk_marker_stub() { # <path> <tag>
+  mkdir -p "$(dirname "$1")"
+  cat > "$1" <<MARKEREOF
+#!/bin/sh
+printf '%s\n' '$2' >> '$PICK_LOG'
+exec '$STUB_DIR/codex' "\$@"
+MARKEREOF
+  chmod +x "$1"
+}
+
 # Helper: rewrite a COPY's `CODEX_GATE_SYNC_INVENTORY` constant (a multi-line
 # single-quoted assignment) to <members>, so a TRUNCATED or EMPTY inventory can be driven
 # without touching the checkout. <members> is passed through `awk -v`, so `\n` separates
@@ -410,6 +467,8 @@ file_stamp() { # <path> -> "<mtime>|<inode>", or "ABSENT"
 reset_argv_log() { : > "$STUB_ARGV_LOG"; }
 # Helper: reset the cwd log between assertions
 reset_cwd_log() { : > "$STUB_CWD_LOG"; }
+# Helper: reset the marker-stub pick log between assertions
+reset_pick_log() { : > "$PICK_LOG"; }
 
 #############################################################################
 # TEST 1 — outcome mapping
@@ -4826,6 +4885,499 @@ DIALROWS
 }
 
 #############################################################################
+# TESTS 64-69 — resolve the Codex binary [P1: ADR-002 / ADR-003, PDR criteria 1-3 + 7]
+#   The wrapper must find the Codex CLI at the CURRENT or the PREVIOUS ChatGPT.app layout:
+#   an explicit non-empty CODEX_BIN (a path, or a command name on PATH) always wins; else the
+#   first executable REGULAR file of CODEX_BIN_CANDIDATES (newest layout first); else an
+#   INFRA_ERROR that names what was tried, raised BEFORE any Codex call.
+#   The candidate list is a constant, not a knob, so every behavioral case runs a bin_fixture
+#   copy whose `CODEX_BIN_CANDIDATES=` line is rewritten to temp paths under $SANDBOX (that
+#   helper FAILS LOUDLY when the line does not exist). Marker stubs record WHICH candidate
+#   ran in $PICK_LOG. Nothing here touches /Applications, ~/.claude or the repo.
+#
+#   Shared plumbing for 64-68:
+#     bin_repo                          a repo with a seed commit + one untracked source file
+#     bin_wrap <gate> <repo> <env-word>... -- <wrapper-arg>...
+#                                       ONE wrapper run inside <repo>, then sets BIN_STATUS /
+#                                       BIN_OUTCOME / BIN_SUMMARY / BIN_NCALLS / BIN_PICKS.
+#                                       CODEX_BIN is UNSET unless a case sets it: a case passes
+#                                       CODEX_BIN=value (or CODEX_BIN= for the empty string), and
+#                                       env applies it after the built-in `-u CODEX_BIN`. Further
+#                                       env words go to `env` as NAME=value. pick.log and the argv
+#                                       log are truncated first. STUB_MODE=approve is always set.
+#     bin_expect_pick / bin_expect_refused / bin_expect_none_found / bin_expect_base_shape
+#                                       the shared assertions
+#############################################################################
+bin_repo() {
+  local r
+  r="$(make_repo)"
+  printf 'seed\n' > "$r/seed.txt"
+  git -C "$r" add seed.txt && git -C "$r" commit -qm init
+  printf 'export const X=1;\n' > "$r/change.js"      # untracked, and a FE path (multi-lens applies)
+  printf '%s' "$r"
+}
+
+bin_wrap() { # <gate-dir> <repo> <env-word>... -- <wrapper-arg>...
+  local gate="$1" repo="$2"
+  local -a ew aw
+  shift 2
+  ew=(-u CODEX_BIN)       # never empty under bash 3.2 `set -u`; CODEX_BIN unset unless a case sets it
+  aw=()
+  while [ $# -gt 0 ] && [ "$1" != "--" ]; do ew[${#ew[@]}]="$1"; shift; done
+  [ $# -gt 0 ] && shift
+  while [ $# -gt 0 ]; do aw[${#aw[@]}]="$1"; shift; done
+  reset_pick_log
+  reset_argv_log
+  ( cd "$repo" && env "${ew[@]}" STUB_MODE=approve bash "$gate/codex-gate.sh" "${aw[@]}" ) \
+    > "$SANDBOX/bin.out" 2> "$SANDBOX/bin.err"
+  BIN_STATUS="$(last_json_line "$SANDBOX/bin.out")"
+  BIN_OUTCOME="$(printf '%s' "$BIN_STATUS" | jq -r '.outcome // empty' 2>/dev/null)"
+  BIN_SUMMARY="$(printf '%s' "$BIN_STATUS" | jq -r '.summary // empty' 2>/dev/null)"
+  BIN_NCALLS="$(grep -c -- '---END-ARGV---' "$STUB_ARGV_LOG" 2>/dev/null)"; [ -n "$BIN_NCALLS" ] || BIN_NCALLS=0
+  BIN_PICKS="$(tr '\n' ',' < "$PICK_LOG" 2>/dev/null | sed 's/,$//')"
+}
+
+bin_expect_pick() { # <label> <expected-tag> — APPROVE, and pick.log is EXACTLY that one tag
+  if [ "$BIN_OUTCOME" = "APPROVE" ] && [ "$BIN_PICKS" = "$2" ]; then
+    pass "bin-resolve: $1 -> APPROVE, only $2 ran"
+  else
+    fail "bin-resolve: $1: expected APPROVE with pick.log exactly '$2', got outcome='$BIN_OUTCOME' picks='$BIN_PICKS' calls=$BIN_NCALLS :: $BIN_SUMMARY :: $(head -c 300 "$SANDBOX/bin.err" 2>/dev/null)"
+  fi
+}
+
+bin_expect_refused() { # <label> <value-the-summary-must-name> — an explicit CODEX_BIN that cannot run
+  local ok=0
+  [ "$BIN_OUTCOME" = "INFRA_ERROR" ] || ok=1
+  printf '%s' "$BIN_SUMMARY" | grep -qF -- 'CODEX_BIN' || ok=1
+  printf '%s' "$BIN_SUMMARY" | grep -qF -- "$2" || ok=1
+  [ "$BIN_NCALLS" -eq 0 ] || ok=1
+  [ -z "$BIN_PICKS" ] || ok=1      # no silent fall-back to a candidate that IS present
+  if [ "$ok" -eq 0 ]; then
+    pass "bin-refuse: $1 -> INFRA_ERROR naming CODEX_BIN and '$2', zero calls, no candidate used"
+  else
+    fail "bin-refuse: $1: expected INFRA_ERROR naming CODEX_BIN and '$2' with zero calls and an empty pick.log, got outcome='$BIN_OUTCOME' calls=$BIN_NCALLS picks='$BIN_PICKS' :: $BIN_SUMMARY :: $(head -c 300 "$SANDBOX/bin.err" 2>/dev/null)"
+  fi
+}
+
+bin_expect_none_found() { # <label> <new-path> <old-path> — no explicit CODEX_BIN, no candidate present
+  local ok=0
+  [ "$BIN_OUTCOME" = "INFRA_ERROR" ] || ok=1
+  printf '%s' "$BIN_SUMMARY" | grep -qF -- "$2" || ok=1
+  printf '%s' "$BIN_SUMMARY" | grep -qF -- "$3" || ok=1
+  [ "$BIN_NCALLS" -eq 0 ] || ok=1
+  [ -z "$BIN_PICKS" ] || ok=1
+  if [ "$ok" -eq 0 ]; then
+    pass "bin-none: $1 -> INFRA_ERROR naming BOTH candidate paths, zero codex calls"
+  else
+    fail "bin-none: $1: expected INFRA_ERROR naming both candidates with zero calls, got outcome='$BIN_OUTCOME' calls=$BIN_NCALLS picks='$BIN_PICKS' :: $BIN_SUMMARY :: $(head -c 300 "$SANDBOX/bin.err" 2>/dev/null)"
+  fi
+}
+
+bin_expect_base_shape() { # <label> — a fan-out run that failed at its first job carries the BASE status shape
+  # ADR-002: no shards[] / lenses[] (the shape SKILL.md documents for an early fail-closed
+  # INFRA_ERROR). An empty or non-JSON status makes jq -e fail, so that fails too.
+  if printf '%s' "$BIN_STATUS" | jq -e '(has("shards")|not) and (has("lenses")|not)' >/dev/null 2>&1; then
+    pass "bin-none: $1 -> the status is in the BASE shape (no shards[] and no lenses[])"
+  else
+    fail "bin-none: $1: expected the base status shape (neither shards[] nor lenses[]), got :: $BIN_STATUS"
+  fi
+}
+
+#############################################################################
+# TEST 64 — default resolution: CODEX_BIN unset or EMPTY -> the first executable regular
+#   file of the candidate list; non-executable files and directories are skipped.
+#   The directories are named AGAINST alphabetical order (z-new is listed first but sorts last,
+#   like the shipped list: …/Resources/codex sorts BEFORE …/Resources/codex-cli/bin/codex), so a
+#   resolver that sorted or de-duplicated the list (`sort -u`) would pick OLD and fail here.
+#############################################################################
+run_test_64() {
+  local fx gate repo new old
+  fx="$SANDBOX/bin64"
+  new="$fx/z-new/codex"
+  old="$fx/a-old/codex"
+  bin_fixture "$fx/gate" "$new:$old" || return
+  gate="$fx/gate"
+  repo="$(bin_repo)"
+
+  # new first: both present -> NEW, never OLD
+  rm -rf "$fx/z-new" "$fx/a-old"
+  mk_marker_stub "$new" NEW
+  mk_marker_stub "$old" OLD
+  bin_wrap "$gate" "$repo" -- prepr
+  bin_expect_pick "default, both layouts present: the NEW layout is first" NEW
+
+  # old fallback: NEW absent, OLD present
+  rm -rf "$fx/z-new" "$fx/a-old"
+  mk_marker_stub "$old" OLD
+  bin_wrap "$gate" "$repo" -- prepr
+  bin_expect_pick "default, NEW absent: falls back to the OLD layout" OLD
+
+  # skip non-executable: NEW is a regular file without the executable bit
+  rm -rf "$fx/z-new" "$fx/a-old"
+  mkdir -p "$fx/z-new"
+  printf '#!/bin/sh\nexit 0\n' > "$new"
+  chmod 644 "$new"
+  mk_marker_stub "$old" OLD
+  bin_wrap "$gate" "$repo" -- prepr
+  bin_expect_pick "default, NEW is a non-executable file: skipped for OLD" OLD
+
+  # skip directory: NEW is a directory (executable bit set, but not a regular file)
+  rm -rf "$fx/z-new" "$fx/a-old"
+  mkdir -p "$new"
+  mk_marker_stub "$old" OLD
+  bin_wrap "$gate" "$repo" -- prepr
+  bin_expect_pick "default, NEW is a directory: skipped for OLD" OLD
+
+  # empty means unset: CODEX_BIN="" is not an explicit choice
+  rm -rf "$fx/z-new" "$fx/a-old"
+  mk_marker_stub "$new" NEW
+  mk_marker_stub "$old" OLD
+  bin_wrap "$gate" "$repo" CODEX_BIN= -- prepr
+  bin_expect_pick "CODEX_BIN set to the EMPTY string behaves as unset (first candidate)" NEW
+}
+
+#############################################################################
+# TEST 65 — an explicit CODEX_BIN wins over BOTH candidates, as a path and as a command name.
+#############################################################################
+run_test_65() {
+  local fx gate repo new old expl
+  fx="$SANDBOX/bin65"
+  new="$fx/new/codex"
+  old="$fx/old/codex"
+  expl="$fx/expl/my-codex"
+  bin_fixture "$fx/gate" "$new:$old" || return
+  gate="$fx/gate"
+  repo="$(bin_repo)"
+  mk_marker_stub "$new" NEW
+  mk_marker_stub "$old" OLD
+
+  # explicit path: used even though both candidates are present; neither candidate ran
+  mk_marker_stub "$expl" EXPL
+  bin_wrap "$gate" "$repo" "CODEX_BIN=$expl" -- prepr
+  bin_expect_pick "explicit CODEX_BIN path wins over both present candidates" EXPL
+
+  # explicit command name: resolved on PATH (a marker stub named cg-marker, dir prepended)
+  mk_marker_stub "$fx/pathbin/cg-marker" CMD
+  bin_wrap "$gate" "$repo" "PATH=$fx/pathbin:$PATH" CODEX_BIN=cg-marker -- prepr
+  bin_expect_pick "explicit CODEX_BIN command name is resolved on PATH and wins over the candidates" CMD
+}
+
+#############################################################################
+# TEST 65b — a RELATIVE explicit CODEX_BIN means "relative to where the wrapper was INVOKED"
+#   [ADR-003 relative-result bullet, PDR criterion 3]. bash 3.2 `command -v` returns a
+#   RELATIVE result for `./x`, for `tools/x`, and for a bare name found through a relative PATH
+#   entry (`PATH=rel:$PATH`). run_codex then `cd`s to the repo root (code tier) or to the run dir
+#   (doc tier) and runs that same relative path THERE: a binary that passed the check in the
+#   invoking directory ends in the generic `codex exited nonzero (127)`, or worse, runs a
+#   DIFFERENT file than the one checked. The decoys below make the second shape visible: each
+#   code-tier case plants a WRONG* marker stub at the same relative spot under the repo root
+#   (where the code tier `cd`s), so a resolver that hands over the unanchored path picks WRONG*.
+#   Each case also asserts its PREMISE (bin_expect_ran_elsewhere): the stub really ran in a
+#   directory other than the invoking one, in the intended tier — otherwise the case could pass
+#   for the wrong reason (a relative path only works when cwd never changes).
+#   Reuses bin_wrap with the invocation directory in the <repo> slot (it is just `cd "$repo"`).
+#############################################################################
+bin_expect_ran_elsewhere() { # <label> <invoked-from> <doc|code> — the stub's cwd != the invoking dir, in this tier
+  local ran ok=0 skipflag=1
+  ran="$(tail -n 1 "$STUB_CWD_LOG" 2>/dev/null)"
+  [ -n "$ran" ] && [ "$ran" != "$2" ] || ok=1
+  grep -qFx -- '--skip-git-repo-check' "$STUB_ARGV_LOG" 2>/dev/null && skipflag=0     # only the DOC tier passes it
+  if [ "$3" = "doc" ]; then [ "$skipflag" -eq 0 ] || ok=1; else [ "$skipflag" -ne 0 ] || ok=1; fi
+  if [ "$ok" -eq 0 ]; then
+    pass "bin-relative: $1 -> the stub ran in '$ran', not in the invoking dir '$2', at the $3 tier"
+  else
+    fail "bin-relative: $1: expected the stub to run at the $3 tier in a directory other than '$2', got cwd='$ran' skip-git-repo-check-present=$([ "$skipflag" -eq 0 ] && echo yes || echo no) outcome='$BIN_OUTCOME' picks='$BIN_PICKS' :: $BIN_SUMMARY"
+  fi
+}
+
+run_test_65b() {
+  local fx gate repo
+  fx="$SANDBOX/bin65b"
+  bin_fixture "$fx/gate" "$fx/z-new/codex:$fx/a-old/codex" || return
+  gate="$fx/gate"
+  mk_marker_stub "$fx/z-new/codex" NEW         # both candidates present: a resolver that fell back
+  mk_marker_stub "$fx/a-old/codex" OLD         # to either would pick NEW/OLD, never the tag below
+
+  # (a) explicit RELATIVE path, DOC tier: `plan` outside any git repo. The invoking dir holds
+  #     tools/cg-rel; the run dir the doc tier cd's to does not. GIT_CEILING_DIRECTORIES stops git
+  #     from finding a repo above the sandbox, so this is a doc-tier run wherever TMPDIR lives.
+  mkdir -p "$fx/a-doc"
+  mk_marker_stub "$fx/a-doc/tools/cg-rel" REL
+  printf '# A plan\n\nDo the thing.\n' > "$fx/plan.md"
+  reset_cwd_log
+  bin_wrap "$gate" "$fx/a-doc" "GIT_CEILING_DIRECTORIES=$SANDBOX" CODEX_BIN=tools/cg-rel -- plan "$fx/plan.md"
+  bin_expect_pick "explicit relative CODEX_BIN 'tools/cg-rel', DOC tier" REL
+  bin_expect_ran_elsewhere "explicit relative CODEX_BIN 'tools/cg-rel', DOC tier" "$fx/a-doc" doc
+
+  # (b) explicit './'-relative path, CODE tier, invoked from a SUBDIRECTORY of the repo: the code
+  #     tier cd's to the repo root, where ./cg-rel2 is the WRONG2 decoy.
+  repo="$(bin_repo)"
+  mkdir -p "$repo/sub"
+  mk_marker_stub "$repo/sub/cg-rel2" REL2
+  mk_marker_stub "$repo/cg-rel2" WRONG2
+  reset_cwd_log
+  bin_wrap "$gate" "$repo/sub" CODEX_BIN=./cg-rel2 -- prepr
+  bin_expect_pick "explicit './cg-rel2' invoked from a repo subdirectory, CODE tier" REL2
+  bin_expect_ran_elsewhere "explicit './cg-rel2' invoked from a repo subdirectory, CODE tier" "$repo/sub" code
+
+  # (c) a bare command name found through a RELATIVE PATH entry (`PATH=relbin:$PATH`), CODE tier,
+  #     invoked from a repo subdirectory: `command -v cg-rel3` answers `relbin/cg-rel3`, and the
+  #     WRONG3 decoy sits at relbin/cg-rel3 under the repo root.
+  mkdir -p "$repo/sub2"
+  mk_marker_stub "$repo/sub2/relbin/cg-rel3" REL3
+  mk_marker_stub "$repo/relbin/cg-rel3" WRONG3
+  reset_cwd_log
+  bin_wrap "$gate" "$repo/sub2" "PATH=relbin:$PATH" CODEX_BIN=cg-rel3 -- prepr
+  bin_expect_pick "explicit bare command name found through the relative PATH entry 'relbin', CODE tier" REL3
+  bin_expect_ran_elsewhere "explicit bare command name found through the relative PATH entry 'relbin', CODE tier" "$repo/sub2" code
+}
+
+#############################################################################
+# TEST 66 — an explicit CODEX_BIN that cannot run is an INFRA_ERROR naming it: zero calls and
+#   NO silent fall-back, even though both candidates are present and runnable.
+#############################################################################
+run_test_66() {
+  local fx gate repo new old
+  fx="$SANDBOX/bin66"
+  new="$fx/new/codex"
+  old="$fx/old/codex"
+  bin_fixture "$fx/gate" "$new:$old" || return
+  gate="$fx/gate"
+  repo="$(bin_repo)"
+  mk_marker_stub "$new" NEW
+  mk_marker_stub "$old" OLD
+
+  # missing path
+  bin_wrap "$gate" "$repo" "CODEX_BIN=$fx/nope" -- prepr
+  bin_expect_refused "explicit path that does not exist" "$fx/nope"
+
+  # a file without the executable bit
+  mkdir -p "$fx/files"
+  printf '#!/bin/sh\nexit 0\n' > "$fx/files/plain-file"
+  chmod 644 "$fx/files/plain-file"
+  bin_wrap "$gate" "$repo" "CODEX_BIN=$fx/files/plain-file" -- prepr
+  bin_expect_refused "explicit path that is not executable" "$fx/files/plain-file"
+
+  # a directory
+  mkdir -p "$fx/files/a-dir"
+  bin_wrap "$gate" "$repo" "CODEX_BIN=$fx/files/a-dir" -- prepr
+  bin_expect_refused "explicit path that is a directory" "$fx/files/a-dir"
+
+  # a command name that resolves to nothing
+  bin_wrap "$gate" "$repo" CODEX_BIN=no-such-cmd-cg -- prepr
+  bin_expect_refused "explicit command name that is unknown" "no-such-cmd-cg"
+
+  # a command name that bash 3.2 `command -v` resolves to a NON-EXECUTABLE file on PATH:
+  # the resolver must still refuse it
+  mkdir -p "$fx/pathnx"
+  printf '#!/bin/sh\nexit 0\n' > "$fx/pathnx/cg-noexec"
+  chmod 644 "$fx/pathnx/cg-noexec"
+  bin_wrap "$gate" "$repo" "PATH=$fx/pathnx:$PATH" CODEX_BIN=cg-noexec -- prepr
+  bin_expect_refused "explicit command name that is a non-executable file on PATH" "cg-noexec"
+
+  # a shell builtin: `command -v echo` prints the bare word, which is not a file
+  bin_wrap "$gate" "$repo" CODEX_BIN=echo -- prepr
+  bin_expect_refused "explicit command name that is a shell builtin" "echo"
+}
+
+#############################################################################
+# TEST 67 — no explicit CODEX_BIN and neither candidate present: EVERY mode that would call
+#   Codex ends in an INFRA_ERROR naming BOTH paths, with ZERO Codex calls (mirrors TEST 42).
+#   Resolution happens inside run_codex, in the main shell, so even the fan-out paths stop at
+#   the first job.
+#############################################################################
+run_test_67() {
+  local fx gate repo new old prepo srepo i
+  fx="$SANDBOX/bin67"
+  new="$fx/new/codex"
+  old="$fx/old/codex"
+  bin_fixture "$fx/gate" "$new:$old" || return
+  gate="$fx/gate"
+  mkdir -p "$fx/new" "$fx/old"         # the parent dirs exist; the two binaries do not
+
+  repo="$(bin_repo)"
+  mkdir -p "$repo/docs/pdr"
+  printf '# plan\n' > "$repo/docs/pdr/plan.md"
+  git -C "$repo" add docs && git -C "$repo" commit -qm docs
+
+  # plan
+  printf '# A plan\n\nDo the thing.\n' > "$fx/plan.md"
+  bin_wrap "$gate" "$repo" -- plan "$fx/plan.md"
+  bin_expect_none_found "plan" "$new" "$old"
+
+  # bundle
+  bin_wrap "$gate" "$repo" -- bundle docs/pdr
+  bin_expect_none_found "bundle" "$new" "$old"
+
+  # question
+  printf 'DECISION: how do we persist run events?\n\nCONTEXT: high write volume.\n\nOPTIONS:\n- Option A: a dedicated append-only table\n- Option B: reuse the existing jobs table\n' > "$fx/decision.md"
+  bin_wrap "$gate" "$repo" -- question "$fx/decision.md"
+  bin_expect_none_found "question" "$new" "$old"
+
+  # investigate
+  printf 'TASK: why do eval runs get orphaned ~8-19s after start?\n\nSAFETY:\nALLOWED PROBES: read-only file inspection.\nFORBIDDEN PROBES: never trigger a Layer B (live AI) run.\n' > "$fx/brief.md"
+  bin_wrap "$gate" "$repo" -- investigate "$fx/brief.md"
+  bin_expect_none_found "investigate" "$new" "$old"
+
+  # phase-review: phase-start needs no Codex, so it must itself succeed first
+  prepo="$(bin_repo)"
+  bin_wrap "$gate" "$prepo" -- phase-start P1
+  if grep -q '^RUNDIR=' "$SANDBOX/bin.out" && [ "$BIN_NCALLS" -eq 0 ]; then
+    pass "bin-none: phase-start (the prelude of phase-review) succeeds without any Codex binary"
+    printf 'phase-change\n' > "$prepo/phase_new.js"
+    bin_wrap "$gate" "$prepo" -- phase-review P1
+    bin_expect_none_found "phase-review" "$new" "$old"
+  else
+    fail "bin-none: phase-start must succeed with no Codex binary so phase-review can be tested :: $(cat "$SANDBOX/bin.out") :: $(head -c 300 "$SANDBOX/bin.err")"
+  fi
+
+  # unsharded prepr, then the same run with a `codex` ON PATH: the PATH is never a fall-back
+  bin_wrap "$gate" "$repo" -- prepr
+  bin_expect_none_found "prepr (unsharded)" "$new" "$old"
+  mk_marker_stub "$fx/pathbin/codex" PATHDECOY
+  bin_wrap "$gate" "$repo" "PATH=$fx/pathbin:$PATH" -- prepr
+  bin_expect_none_found "prepr (unsharded) with a 'codex' on PATH: PATH is not a fall-back" "$new" "$old"
+  rm -rf "$fx/pathbin"
+
+  # sharded prepr: TEST 31's three-file repo, over the budget so SHARD=auto shards it
+  srepo="$(make_repo)"
+  printf 'seed\n' > "$srepo/seed.txt"
+  git -C "$srepo" add seed.txt && git -C "$srepo" commit -qm init
+  mkdir -p "$srepo/docs"
+  { for i in $(seq 1 60); do printf 'docs-line-%s SHARD-DOCS-MARK\n' "$i"; done; } > "$srepo/docs/guide.md"
+  { for i in $(seq 1 60); do printf 'test-line-%s SHARD-TESTS-MARK\n' "$i"; done; } > "$srepo/thing.test.js"
+  { for i in $(seq 1 60); do printf 'src-line-%s SHARD-OTHER-MARK\n' "$i"; done; } > "$srepo/app.js"
+  bin_wrap "$gate" "$srepo" CODEX_GATE_PACKET_BUDGET=9000 CODEX_GATE_SHARD=auto -- prepr
+  bin_expect_none_found "prepr (sharded)" "$new" "$old"
+  bin_expect_base_shape "prepr (sharded)"
+  # positive control: with a binary present the SAME setup really shards (several calls), so
+  # the INFRA_ERROR above came from the fan-out path and not from an unsharded fall-through
+  mk_marker_stub "$new" NEW
+  bin_wrap "$gate" "$srepo" CODEX_GATE_PACKET_BUDGET=9000 CODEX_GATE_SHARD=auto -- prepr
+  if [ "$BIN_OUTCOME" = "APPROVE" ] && [ "$BIN_NCALLS" -ge 2 ]; then
+    pass "bin-none: control — the same sharded setup with a binary present fans out ($BIN_NCALLS calls, APPROVE)"
+  else
+    fail "bin-none: control — sharded setup with a binary present did not fan out: outcome='$BIN_OUTCOME' calls=$BIN_NCALLS picks='$BIN_PICKS' :: $BIN_SUMMARY :: $(head -c 300 "$SANDBOX/bin.err" 2>/dev/null)"
+  fi
+  rm -rf "$fx/new"
+  mkdir -p "$fx/new"
+
+  # prepr --multi
+  bin_wrap "$gate" "$repo" -- prepr --multi
+  bin_expect_none_found "prepr --multi" "$new" "$old"
+  bin_expect_base_shape "prepr --multi"
+  mk_marker_stub "$new" NEW
+  bin_wrap "$gate" "$repo" -- prepr --multi
+  if [ "$BIN_OUTCOME" = "APPROVE" ] && [ "$BIN_NCALLS" -ge 2 ]; then
+    pass "bin-none: control — prepr --multi with a binary present fans out ($BIN_NCALLS calls, APPROVE)"
+  else
+    fail "bin-none: control — prepr --multi with a binary present did not fan out: outcome='$BIN_OUTCOME' calls=$BIN_NCALLS picks='$BIN_PICKS' :: $BIN_SUMMARY :: $(head -c 300 "$SANDBOX/bin.err" 2>/dev/null)"
+  fi
+}
+
+#############################################################################
+# TEST 68 — the modes that never call Codex keep working with NO Codex binary: resolution must
+#   not run at load time or in main. `config`, `phase-start`, a budget-OVERFLOW `prepr` (the
+#   budget guard stops the run before run_codex, so the resolver never sees it), and an EMPTY
+#   `prepr-delta`.
+#############################################################################
+run_test_68() {
+  local fx gate repo new old rc status root
+  fx="$SANDBOX/bin68"
+  new="$fx/new/codex"
+  old="$fx/old/codex"
+  bin_fixture "$fx/gate" "$new:$old" || return
+  gate="$fx/gate"
+  mkdir -p "$fx/new" "$fx/old"         # neither binary exists
+
+  # config, with runtime and source pinned at the fixture so the check never reads the real install
+  ( hermetic -u CODEX_BIN CODEX_GATE_RUNTIME="$gate/codex-gate.sh" CODEX_GATE_SOURCE="$gate/codex-gate.sh" \
+      bash "$gate/codex-gate.sh" config ) > "$SANDBOX/cfg68.txt" 2>"$SANDBOX/cfg68.err"
+  rc=$?
+  status="$(last_json_line "$SANDBOX/cfg68.txt")"
+  if [ "$rc" -eq 0 ] && printf '%s' "$status" | jq -e '.outcome=="CONFIG" and has("parity")' >/dev/null 2>&1; then
+    pass "bin-nocodex: config exits 0 with a parity field when no Codex binary exists"
+  else
+    fail "bin-nocodex: config must work without a Codex binary: rc=$rc :: $status :: $(head -c 300 "$SANDBOX/cfg68.err")"
+  fi
+
+  # phase-start
+  repo="$(bin_repo)"
+  bin_wrap "$gate" "$repo" -- phase-start P1
+  if grep -q '^RUNDIR=' "$SANDBOX/bin.out" && [ "$BIN_NCALLS" -eq 0 ]; then
+    pass "bin-nocodex: phase-start prints RUNDIR= when no Codex binary exists"
+  else
+    fail "bin-nocodex: phase-start must work without a Codex binary :: $(cat "$SANDBOX/bin.out") :: $(head -c 300 "$SANDBOX/bin.err")"
+  fi
+
+  # a budget OVERFLOW never reaches the resolver (ADR-002): SHARD=off over a 10-char budget stops at
+  # the packet-budget guard, so with no binary anywhere the outcome is OVERFLOW, not INFRA_ERROR
+  bin_wrap "$gate" "$repo" CODEX_GATE_SHARD=off CODEX_GATE_PACKET_BUDGET=10 -- prepr
+  if [ "$BIN_OUTCOME" = "OVERFLOW" ] && [ "$BIN_NCALLS" -eq 0 ] && [ -z "$BIN_PICKS" ]; then
+    pass "bin-nocodex: a budget-OVERFLOW prepr stays OVERFLOW (zero calls) when no Codex binary exists — the guard runs before the resolver"
+  else
+    fail "bin-nocodex: budget OVERFLOW must not reach the resolver: expected OVERFLOW with zero calls and an empty pick.log, got outcome='$BIN_OUTCOME' calls=$BIN_NCALLS picks='$BIN_PICKS' :: $BIN_SUMMARY :: $(head -c 300 "$SANDBOX/bin.err")"
+  fi
+
+  # an empty prepr-delta (TEST 27's shape): seed the ledger with a stub-backed prepr, THEN remove
+  # the binary; the delta has nothing to review, so it APPROVEs with no new call
+  repo="$(make_repo)"
+  printf 'one\n' > "$repo/one.js"
+  printf 'two\n' > "$repo/two.js"
+  git -C "$repo" add one.js two.js && git -C "$repo" commit -qm init
+  printf 'one\n// branch\n' > "$repo/one.js"
+  git -C "$repo" add one.js && git -C "$repo" commit -qm branch
+  root="$(git -C "$repo" rev-list --max-parents=0 HEAD | head -1)"
+  mk_marker_stub "$new" NEW
+  bin_wrap "$gate" "$repo" -- prepr "$root"
+  if [ "$BIN_OUTCOME" != "APPROVE" ]; then
+    fail "bin-nocodex: seed prepr (binary present) did not APPROVE, so the empty-delta case cannot run :: outcome='$BIN_OUTCOME' :: $BIN_SUMMARY :: $(head -c 300 "$SANDBOX/bin.err")"
+    return
+  fi
+  rm -f "$new"
+  bin_wrap "$gate" "$repo" -- prepr-delta "$root"
+  if [ "$BIN_OUTCOME" = "APPROVE" ] && [ "$BIN_NCALLS" -eq 0 ] && [ -z "$BIN_PICKS" ] \
+     && printf '%s' "$BIN_SUMMARY" | grep -qi 'already reviewed'; then
+    pass "bin-nocodex: an empty prepr-delta APPROVEs with ZERO calls after the binary is gone"
+  else
+    fail "bin-nocodex: empty prepr-delta must APPROVE without a binary: outcome='$BIN_OUTCOME' calls=$BIN_NCALLS picks='$BIN_PICKS' :: $BIN_SUMMARY :: $(head -c 300 "$SANDBOX/bin.err")"
+  fi
+}
+
+#############################################################################
+# TEST 69 — the SHIPPED constants, read from the real wrapper: no path default inside the
+#   CODEX_BIN expansion, and the one candidate list the ADR pins (newest layout first).
+#############################################################################
+run_test_69() {
+  local binline candline n
+  binline='CODEX_BIN="${CODEX_BIN:-}"'
+  candline='CODEX_BIN_CANDIDATES="/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex:/Applications/ChatGPT.app/Contents/Resources/codex"'
+
+  n="$(grep -cFx -- "$binline" "$WRAPPER" 2>/dev/null)"; [ -n "$n" ] || n=0
+  if [ "$n" -eq 1 ] && [ "$(grep -c '^CODEX_BIN=' "$WRAPPER" 2>/dev/null)" = "1" ]; then
+    pass "shipped constants: exactly one CODEX_BIN assignment, and it is $binline"
+  else
+    fail "shipped constants: expected exactly one '^CODEX_BIN=' line and it equal to $binline, found $n exact match(es); lines: $(grep -n '^CODEX_BIN=' "$WRAPPER" 2>/dev/null | head -3)"
+  fi
+
+  n="$(grep -cFx -- "$candline" "$WRAPPER" 2>/dev/null)"; [ -n "$n" ] || n=0
+  if [ "$n" -eq 1 ]; then
+    pass "shipped constants: exactly one CODEX_BIN_CANDIDATES line, new layout first then the old one"
+  else
+    fail "shipped constants: expected exactly one line equal to $candline, found $n exact match(es); lines: $(grep -n '^CODEX_BIN_CANDIDATES=' "$WRAPPER" 2>/dev/null | head -3)"
+  fi
+
+  # No OTHER line may end a quoted or braced word in Resources/codex: that is the shape of the
+  # old default `${CODEX_BIN:-/Applications/…/Resources/codex}` (or a second hard-coded path).
+  n="$(grep -E 'Resources/codex["}]' "$WRAPPER" 2>/dev/null | grep -vFx -- "$candline" | wc -l | tr -d ' ')"
+  if [ "$n" = "0" ]; then
+    pass "shipped constants: no other line defaults to the Resources/codex path"
+  else
+    fail "shipped constants: $n other line(s) default to Resources/codex :: $(grep -E 'Resources/codex["}]' "$WRAPPER" 2>/dev/null | grep -vFx -- "$candline" | head -3)"
+  fi
+}
+
+#############################################################################
 # run everything
 #############################################################################
 printf '======== codex-gate.test.sh ========\n'
@@ -4898,6 +5450,13 @@ run_test_60
 run_test_61
 run_test_62
 run_test_63
+run_test_64
+run_test_65
+run_test_65b
+run_test_66
+run_test_67
+run_test_68
+run_test_69
 
 printf '====================================\n'
 printf 'PASS=%d FAIL=%d\n' "$PASS_COUNT" "$FAIL_COUNT"

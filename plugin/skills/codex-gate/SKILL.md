@@ -58,7 +58,9 @@ Run the matching mode and drive the loop below. Modes:
 2. Branch on `outcome`:
    - **APPROVE** → report Codex approved (quote `summary`); proceed (e.g. next phase / ExitPlanMode / `/commit-push-pr`).
    - **INFRA_ERROR** → **STOP and surface to the user.** Read `runDir/round-<N>.stderr` for the reason
-     (auth/quota/schema). Do one bounded retry only if it's clearly transient. Never treat as approve; never advance the phase.
+     (auth/quota/schema). An `INFRA_ERROR` raised before Codex runs (binary not found, malformed knob, refusal) writes
+     no `round-<N>.stderr` (any file there is from an earlier attempt); its reason is in `summary`.
+     Do one bounded retry only if it's clearly transient. Never treat as approve; never advance the phase.
      If auth-related, tell the user: `CODEX_HOME=~/.claude/codex-gate/home <codex> login`.
    - **OVERFLOW** → **STOP and surface to the user** with the `summary` message + the `runDir`. The diff is
      too large for one review (predicted pre-flight by the packet budget, or observed at runtime via Codex's
@@ -113,7 +115,7 @@ Flow:
 2. `bash <skill-dir>/codex-gate.sh question <file>` (run from the repo root so Codex grounds
    in real code/canon at code tier). Capture the status JSON.
 3. Branch on `outcome`:
-   - **INFRA_ERROR** → STOP and surface (read `runDir/round-1.stderr`); ask the user directly without the grounding.
+   - **INFRA_ERROR** → STOP and surface (read `runDir/round-1.stderr`, or `summary` when Codex never ran); ask the user directly without the grounding.
    - **GROUNDED** → read the grounding file (`jq . <verdictPath>`). It has `optionAssessments[]`
      (`option`/`pros`/`cons`/`risk`), `missingOptions[]` (`option`/`why`), `recommendation` + `rationale`,
      `considerations[]`, and `settledByCanon`/`canonAnswer`.
@@ -392,7 +394,8 @@ applies to `prepr`/`prepr-delta` ONLY (`phase-review`/`plan`/`bundle`/`question`
 - **Status.** The sharded run emits ONE status line (`APPROVE`/`BLOCK`/`OVERFLOW`) with the usual fields plus
   the additive `coverage` object **and** a `shards` summary array `[{group, files, outcome, verdictPath}]`.
   Existing consumers (which read `outcome`/`blockers`) are unaffected; `shards` is additive and only present on
-  a sharded run. Set `CODEX_GATE_SHARD=off` to disable sharding and keep the plain Tier-1 OVERFLOW.
+  a sharded run. A missing Codex binary fails at the first shard with a base-shape `INFRA_ERROR` (no `shards[]`).
+  Set `CODEX_GATE_SHARD=off` to disable sharding and keep the plain Tier-1 OVERFLOW.
 
 ### Opt-in multi-LENS review (`prepr`/`prepr-delta` — `--multi` / `CODEX_GATE_FANOUT=1`)
 Opt-in (**off by default**). Instead of one reviewer, review the SAME reviewed-now diff through N specialized
@@ -413,7 +416,8 @@ high-impact feature the multi-lens pass is the pre-PR `prepr --multi`.) NOT defa
   array (mirrors `shards[]`). A multi-lens run carries **no** `shards[]`; existing single-thread + sharded
   consumers are unaffected (purely additive). `lenses[]` (and `coverage`) are present on the **aggregate**
   BLOCK / OVERFLOW / APPROVE statuses **and** the over-budget OVERFLOW; an **early fail-closed `INFRA_ERROR`**
-  (malformed knob, `MAX_LENSES` exceeded, or a missing persona — raised *before* lens jobs run, via
+  (malformed knob, `MAX_LENSES` exceeded, or a missing persona — raised *before* lens jobs run — or the Codex
+  binary not found (raised at the first lens, before any Codex call); all via
   `die_infra`) uses the base status shape and does **not** include `lenses[]`.
 - **Non-composable with Tier-3 sharding:** when multi-lens is active the sharding branch is **bypassed** — every
   lens reviews the FULL diff (multi-lens is NOT a context-overflow mitigation). If any lens packet exceeds
@@ -475,6 +479,10 @@ override meaning "omit `-m`, use Codex's own default"), `CODEX_GATE_FAST` (**def
 value, including `2`, leaves it OFF** — it does NOT change model/effort, fast≠dumb), `CODEX_GATE_MAX_ROUNDS`
 (default 8), `CODEX_GATE_EXCLUDES` (extra scratch globs; `.docker/` is NOT excluded by default),
 `CODEX_GATE_SESSION` (namespacing).
+**Codex binary:** `CODEX_BIN` (optional; a path or a command name on `PATH`; an empty value counts as unset). Unset,
+the wrapper takes the first executable of ChatGPT.app's new CLI path (`…/Resources/codex-cli/bin/codex`), then the
+old one (`…/Resources/codex`). A `CODEX_BIN` that is not an executable file or command, or neither default present,
+fails closed with `INFRA_ERROR` and zero Codex calls. `config` and `phase-start` never need the binary.
 **Config report:** `CODEX_GATE_RUNTIME` (the gate that actually runs; default
 `$HOME/.claude/skills/codex-gate/codex-gate.sh`) and `CODEX_GATE_SOURCE` (the versioned copy; default
 auto-discovered — the running script **when git tracks it at** `plugin/skills/codex-gate/codex-gate.sh`, else

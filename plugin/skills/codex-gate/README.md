@@ -18,12 +18,17 @@ the suite if you want the number. The per-tier Status lines below list what each
 Verified live against `codex-cli 0.144.0-alpha.4` at
 `/Applications/ChatGPT.app/Contents/Resources/codex` (call by absolute path; `CODEX_BIN` can override it).
 
+Since ChatGPT.app 26.1016.62342 (2026-10-22) the CLI lives at
+`/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex` (`codex-cli 0.163.0-alpha.11.2` on 2026-10-26).
+The wrapper uses `CODEX_BIN` when set and non-empty (a path, or a command on `PATH`); otherwise it uses the first executable of
+the new path, then the old one. With neither it emits `INFRA_ERROR` naming both and calls Codex zero times.
+
 **Dedicated, config-isolated home** — `CODEX_HOME=~/.claude/codex-gate/home`
 - `auth.json` symlinked → `~/.codex/auth.json`. Headless auth **works** (no login prompt).
 - Holds our reviewer `AGENTS.md` (invariants). `--ignore-user-config` skips a home `config.toml`
   but **not** `AGENTS.md` — the dedicated home is what excludes the user's personal `~/.codex/AGENTS.md`.
 - OPEN RISK: a token refresh may *replace* `auth.json` (breaking the symlink). Not force-testable on
-  demand. Mitigation: auth failure → `INFRA_ERROR` (halt+surface) → run `CODEX_HOME=~/.claude/codex-gate/home codex login`.
+  demand. Mitigation: auth failure → `INFRA_ERROR` (halt+surface) → run `CODEX_HOME=~/.claude/codex-gate/home <codex> login` (`<codex>` = `$CODEX_BIN`, or the app's `…/Resources/codex-cli/bin/codex`).
 
 **Verdict capture** — read the verdict from the `-o` file, never the JSONL.
 - `--output-schema <ABS> -o <ABS> --json` → `-o` file holds the single schema-conforming object.
@@ -145,6 +150,7 @@ Applies to **`prepr` / `prepr-delta` ONLY** (`phase-review`/`plan`/`bundle`/`que
 - **Status** — the sharded run emits ONE status line (`APPROVE`/`BLOCK`/`OVERFLOW`) with the usual review fields
   **plus** the additive Tier-2 `coverage` object **and** a `shards` summary `[{group, files, outcome, verdictPath}]`.
   Additive only — existing consumers read `outcome`/`blockers` unchanged; `shards` is present only on a sharded run.
+  A missing Codex binary fails at the first shard with a base-shape `INFRA_ERROR` (no `shards[]`).
 
 Status: **Tier 3 contracts GREEN** — exercised by `codex-gate.test.sh` (adds
 shard-partition complete/disjoint, auto-shard trigger + per-shard verdicts + once-per-shard invocation + shards[]
@@ -187,7 +193,8 @@ the packet's persona and the status's provenance array differ.
   (mirrors `shards[]`). A multi-lens run carries **no** `shards[]`; existing consumers read `outcome`/`blockers`
   unchanged. `coverage`/`lenses[]` ride on the **aggregate** BLOCK/OVERFLOW/APPROVE statuses **and** the
   over-budget OVERFLOW; an **early fail-closed `INFRA_ERROR`** (malformed knob / `MAX_LENSES` exceeded / missing
-  persona — raised *before* lens jobs run, via `die_infra`) uses the base status shape **without** `lenses[]`.
+  persona — raised *before* lens jobs run — or the Codex binary not found (raised at the first lens, before any
+  Codex call); all via `die_infra`) uses the base status shape **without** `lenses[]`.
   **No ledger append on a multi-lens APPROVE** (a lens APPROVE is a dimensional whole-diff certification,
   NOT a per-file-surface approval — a later `prepr-delta` must still review those files).
 

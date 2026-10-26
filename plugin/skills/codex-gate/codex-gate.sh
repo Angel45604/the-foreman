@@ -68,7 +68,14 @@ set -u
 # Config / env knobs (all overridable; defaults per plan + README)
 # ----------------------------------------------------------------------------
 SKILL_DIR="$(cd "$(dirname "$0")" && pwd)"
-CODEX_BIN="${CODEX_BIN:-/Applications/ChatGPT.app/Contents/Resources/codex}"
+# The Codex CLI. An explicit CODEX_BIN (an executable path, or a command name on PATH) always wins.
+# Unset or empty: resolve_codex_bin takes the first executable of CODEX_BIN_CANDIDATES at the first
+# real codex call (never at load time, so config / phase-start work without the app).
+CODEX_BIN="${CODEX_BIN:-}"
+# Where ChatGPT.app ships the Codex CLI, newest layout first, colon-separated. ChatGPT.app 26.1016.62342
+# (2026-10-22) moved it from Resources/codex to Resources/codex-cli/bin/codex. Deliberately not an env
+# knob — CODEX_BIN is the override; the test suite rewrites this line in a copy.
+CODEX_BIN_CANDIDATES="/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex:/Applications/ChatGPT.app/Contents/Resources/codex"
 CODEX_HOME_DIR="${CODEX_HOME_DIR:-$HOME/.claude/codex-gate/home}"
 CODEX_GATE_RUNS="${CODEX_GATE_RUNS:-$HOME/.claude/codex-gate/runs}"
 SCHEMA_FILE="$SKILL_DIR/verdict.schema.json"
@@ -573,12 +580,59 @@ enforce_packet_budget() { # <packet-file>
 }
 
 # ----------------------------------------------------------------------------
+# Resolve the Codex executable: print it and return 0, or return 1 when there is none.
+# An explicit CODEX_BIN is looked up with `command -v` (a path, or a command on PATH) and
+# the RESOLVED path must be an executable regular file: on bash 3.2 `command -v` also
+# resolves a non-executable file found on PATH, and returns a builtin's bare name. A
+# relative result is anchored to the invoking directory.
+# Otherwise the first executable regular file in CODEX_BIN_CANDIDATES wins. Never exits,
+# so it is safe inside $(...); the caller turns a 1 into an INFRA_ERROR.
+# ----------------------------------------------------------------------------
+resolve_codex_bin() {
+  if [ -n "$CODEX_BIN" ]; then
+    local p
+    p="$(command -v -- "$CODEX_BIN" 2>/dev/null)" || return 1
+    case "$p" in
+      /*) ;;
+      */*) p="$PWD/$p" ;;   # relative (./x, tools/x, or found via a relative PATH entry): anchor it
+                            # to the invoking cwd now, because run_codex later cd's elsewhere
+      *) return 1 ;;        # a builtin, function or keyword: never a file
+    esac
+    [ -f "$p" ] && [ -x "$p" ] || return 1
+    printf '%s\n' "$p"
+    return 0
+  fi
+  local c
+  while IFS= read -r c; do
+    if [ -n "$c" ] && [ -f "$c" ] && [ -x "$c" ]; then
+      printf '%s\n' "$c"
+      return 0
+    fi
+  done <<EOF
+$(printf '%s\n' "$CODEX_BIN_CANDIDATES" | tr ':' '\n')
+EOF
+  return 1
+}
+
+# ----------------------------------------------------------------------------
 # Codex invocation. Tier governs cwd + flag set. Reads packet from $1, writes
 # verdict to $VERDICT_FILE, jsonl to $JSONL_FILE, stderr to $STDERR_FILE.
 # Sets CODEX_EXIT. tier ∈ doc | code. If $THREAD_ID_IN is set + round>1 -> resume.
+# May EXIT the run through die_infra before any Codex call (binary not found). Call it only as
+# a plain main-shell statement — never in $(…), a pipeline, or with & — and a future parallel
+# fan-out must resolve the binary once, before it backgrounds any job.
 # ----------------------------------------------------------------------------
 run_codex() { # <tier> <packet-file> <cwd>
   local tier="$1" packet="$2" cwd="$3"
+  # Find the binary BEFORE anything else, in this (main) shell: die_infra exits the run here,
+  # with zero codex calls. Inside the subshell below it would only leave the subshell.
+  local codex_exe
+  if ! codex_exe="$(resolve_codex_bin)"; then
+    if [ -n "$CODEX_BIN" ]; then
+      die_infra "CODEX_BIN is set to '$CODEX_BIN' but is not an executable file or command — fix or unset it (no codex invoked)"
+    fi
+    die_infra "Codex CLI not found: none of $(printf '%s' "$CODEX_BIN_CANDIDATES" | sed 's/:/, /g') is an executable file — install or update the ChatGPT app, or set CODEX_BIN (no codex invoked)"
+  fi
   mkdir -p "$RUN_DIR"
 
   # Common, ALWAYS-absolute, ALWAYS-quoted path args. The output schema defaults
@@ -644,7 +698,7 @@ run_codex() { # <tier> <packet-file> <cwd>
     # so unset it rather than blanking it. Subshell-scoped.
     unset CODEX_API_KEY
     export CODEX_HOME="$CODEX_HOME_DIR"
-    "$CODEX_BIN" "${argv[@]}" < "$packet" \
+    "$codex_exe" "${argv[@]}" < "$packet" \
         > "$JSONL_FILE" 2> "$STDERR_FILE"
   )
   CODEX_EXIT=$?

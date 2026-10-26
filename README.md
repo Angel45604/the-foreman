@@ -109,7 +109,7 @@ The plugin also ships an optional **Plain Voice** output style
 ## External prerequisites (not bundled)
 
 - **Codex CLI + OpenAI/ChatGPT login** — required by `codex-gate` (it drives the `codex`
-  binary; set `CODEX_BIN` if it's not on PATH).
+  binary; it finds the CLI inside ChatGPT.app; set `CODEX_BIN` to use another one).
 - **superpowers plugin** — `brainstorming`, `writing-plans`, `subagent-driven-development`,
   `requesting-code-review`, `test-driven-development`, `systematic-debugging`,
   `verification-before-completion`, `using-git-worktrees`. Install via
