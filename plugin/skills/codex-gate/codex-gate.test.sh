@@ -1181,12 +1181,12 @@ run_test_19() {
 
 #############################################################################
 # TEST 20 — model/effort defaults + fast-mode dial [FAST/EFFORT]
-#   Default (no env set): -m gpt-5.6-sol + model_reasoning_effort="xhigh", and
+#   Default (no env set): -m gpt-6-astra + model_reasoning_effort="xhigh", and
 #   fast mode OFF (fast flags absent — fast is now opt-in, not enforced).
 #   Negative invariant: the default argv must NEVER carry the OLD
 #   model_reasoning_effort="ultra" value — this protects against silently
 #   reverting to a natively-delegating tier, independent of which non-delegating
-#   tier ends up chosen. CODEX_GATE_FAST=1: fast flags appear AND gpt-5.6-sol/
+#   tier ends up chosen. CODEX_GATE_FAST=1: fast flags appear AND gpt-6-astra/
 #   xhigh survive (fast is a speed knob, not a quality knob).
 #############################################################################
 run_test_20() {
@@ -1197,15 +1197,15 @@ run_test_20() {
   qfile="$SANDBOX/decision_fast.md"
   printf 'DECISION: x?\n\nOPTIONS:\n- Option A\n- Option B\n' > "$qfile"
 
-  # default (no env set): -m gpt-5.6-sol + model_reasoning_effort="xhigh"
+  # default (no env set): -m gpt-6-astra + model_reasoning_effort="xhigh"
   reset_argv_log
   ( cd "$repo" && hermetic STUB_MODE=grounded bash "$WRAPPER" question "$qfile" ) > "$SANDBOX/f_def.txt" 2>"$SANDBOX/f_def.err"
   argv_default="$(cat "$STUB_ARGV_LOG")"
   model_val="$(awk 'prev=="-m"{print; exit} {prev=$0}' "$STUB_ARGV_LOG")"
-  if [ "$model_val" = "gpt-5.6-sol" ] && printf '%s' "$argv_default" | grep -q 'model_reasoning_effort="xhigh"'; then
-    pass 'defaults: no-env argv carries -m gpt-5.6-sol + model_reasoning_effort="xhigh"'
+  if [ "$model_val" = "gpt-6-astra" ] && printf '%s' "$argv_default" | grep -q 'model_reasoning_effort="xhigh"'; then
+    pass 'defaults: no-env argv carries -m gpt-6-astra + model_reasoning_effort="xhigh"'
   else
-    fail "defaults: no-env argv expected -m gpt-5.6-sol + model_reasoning_effort=\"xhigh\", got -m '$model_val' :: $argv_default"
+    fail "defaults: no-env argv expected -m gpt-6-astra + model_reasoning_effort=\"xhigh\", got -m '$model_val' :: $argv_default"
   fi
 
   # negative invariant: default argv must NOT carry the OLD ultra effort value
@@ -1232,8 +1232,8 @@ run_test_20() {
   else
     fail "fast-mode: CODEX_GATE_FAST=1 did NOT pass fast flags :: $argv_fast1"
   fi
-  if printf '%s' "$argv_fast1" | grep -q 'gpt-5.6-sol' && printf '%s' "$argv_fast1" | grep -q 'model_reasoning_effort="xhigh"'; then
-    pass "fast-mode: gpt-5.6-sol model + xhigh reasoning effort preserved under fast mode (fast is not a quality knob)"
+  if printf '%s' "$argv_fast1" | grep -q 'gpt-6-astra' && printf '%s' "$argv_fast1" | grep -q 'model_reasoning_effort="xhigh"'; then
+    pass "fast-mode: gpt-6-astra model + xhigh reasoning effort preserved under fast mode (fast is not a quality knob)"
   else
     fail "fast-mode: model/reasoning defaults NOT preserved under fast mode :: $argv_fast1"
   fi
@@ -1244,11 +1244,11 @@ run_test_20() {
 #   The production declaration is "${VAR-default}" -- WITHOUT the colon. That
 #   operator is the whole point: ":-" treats empty like unset, "-" does not, so
 #   only "-" lets an explicitly empty value stand as a real override.
-#   CODEX_GATE_MODEL unset -> "${VAR-default}" resolves to gpt-5.6-sol -> -m
+#   CODEX_GATE_MODEL unset -> "${VAR-default}" resolves to gpt-6-astra -> -m
 #   IS present. CODEX_GATE_MODEL="" (explicitly empty) -> the wrapper's
 #   `[ -n "$CODEX_GATE_MODEL" ]` guard must treat empty as "no override" and
 #   omit -m entirely (falls through to Codex's own default). The two states
-#   must be distinguishable, not both silently resolving to gpt-5.6-sol.
+#   must be distinguishable, not both silently resolving to gpt-6-astra.
 #############################################################################
 run_test_20b() {
   local repo qfile argv_empty model_val
@@ -1258,14 +1258,14 @@ run_test_20b() {
   qfile="$SANDBOX/decision_model.md"
   printf 'DECISION: y?\n\nOPTIONS:\n- Option A\n- Option B\n' > "$qfile"
 
-  # unset -> -m gpt-5.6-sol
+  # unset -> -m gpt-6-astra
   reset_argv_log
   ( cd "$repo" && hermetic STUB_MODE=grounded bash "$WRAPPER" question "$qfile" ) > "$SANDBOX/m_unset.txt" 2>"$SANDBOX/m_unset.err"
   model_val="$(awk 'prev=="-m"{print; exit} {prev=$0}' "$STUB_ARGV_LOG")"
-  if [ "$model_val" = "gpt-5.6-sol" ]; then
-    pass "model-contract: CODEX_GATE_MODEL unset -> -m gpt-5.6-sol"
+  if [ "$model_val" = "gpt-6-astra" ]; then
+    pass "model-contract: CODEX_GATE_MODEL unset -> -m gpt-6-astra"
   else
-    fail "model-contract: CODEX_GATE_MODEL unset -> expected -m gpt-5.6-sol, got -m '$model_val' :: $(cat "$STUB_ARGV_LOG")"
+    fail "model-contract: CODEX_GATE_MODEL unset -> expected -m gpt-6-astra, got -m '$model_val' :: $(cat "$STUB_ARGV_LOG")"
   fi
 
   # explicitly empty -> NO -m flag at all (distinct from unset)
@@ -3262,8 +3262,8 @@ run_test_49() {
   fi
 
   # all three dials, as the LITERAL fallbacks in the running script (the pinned pair)
-  if printf '%s' "$status" | jq -e '.defaults.model=="gpt-5.6-sol" and .defaults.effort=="xhigh" and .defaults.fast=="0"' >/dev/null 2>&1; then
-    pass "config: defaults report all three dials as the running script's literal fallbacks (sol/xhigh/0)"
+  if printf '%s' "$status" | jq -e '.defaults.model=="gpt-6-astra" and .defaults.effort=="xhigh" and .defaults.fast=="0"' >/dev/null 2>&1; then
+    pass "config: defaults report all three dials as the running script's literal fallbacks (astra/xhigh/0)"
   else
     fail "config: defaults do not match the script's literal fallbacks :: $status"
   fi
@@ -3277,10 +3277,10 @@ run_test_49() {
   # only `has("model")` was a proven false-green: reporting effective.model as
   # "bogus-model" left the whole suite at PASS=322 FAIL=0. `effective` is the field an
   # operator actually reads to answer "what is this gate running?", so it is pinned exactly.
-  if printf '%s' "$status" | jq -e '.effective.model=="gpt-5.6-sol"' >/dev/null 2>&1; then
-    pass "config: effective.model is EXACTLY gpt-5.6-sol with no override in play"
+  if printf '%s' "$status" | jq -e '.effective.model=="gpt-6-astra"' >/dev/null 2>&1; then
+    pass "config: effective.model is EXACTLY gpt-6-astra with no override in play"
   else
-    fail "config: effective.model is not exactly gpt-5.6-sol :: $status"
+    fail "config: effective.model is not exactly gpt-6-astra :: $status"
   fi
   if printf '%s' "$status" | jq -e '.effective.effort=="xhigh"' >/dev/null 2>&1; then
     pass "config: effective.effort is EXACTLY xhigh with no override in play"
@@ -4103,8 +4103,8 @@ run_test_57() {
 run_test_58() {
   local fx status syncText
   fx="$SANDBOX/remfx58"
-  make_skill_fixture "$fx/src"   gpt-5.6-sol   xhigh 0 same-docs
-  make_skill_fixture "$fx/rt"    gpt-5.6-sol   xhigh 0 same-docs
+  make_skill_fixture "$fx/src"   gpt-6-astra  xhigh 0 same-docs
+  make_skill_fixture "$fx/rt"    gpt-6-astra  xhigh 0 same-docs
   make_skill_fixture "$fx/drift" gpt-5.6-terra ultra 1 drifted-docs
   # Single-sourced: read the CANONICAL sync-file sentence out of the running script under
   # test rather than hard-coding a guess of it here — a legitimate reword in codex-gate.sh
@@ -4167,7 +4167,7 @@ run_test_58() {
   else
     fail "config-remedy: the file-only fixture is not the state under test :: $(printf '%s' "$status" | jq -c '{digestParity,effectiveParity,origin}')"
   fi
-  if printf '%s' "$status" | jq -e '.effectiveParity=="MISMATCH" and .effective.model=="gpt-5.6-terra" and .sourceDefaults.model=="gpt-5.6-sol"' >/dev/null 2>&1; then
+  if printf '%s' "$status" | jq -e '.effectiveParity=="MISMATCH" and .effective.model=="gpt-5.6-terra" and .sourceDefaults.model=="gpt-6-astra"' >/dev/null 2>&1; then
     pass "config-remedy (premise): the drifted runtime's OWN dials are what will be in force, so effectiveParity reports the divergence too"
   else
     fail "config-remedy: effectiveParity did not see the runtime's declared drift :: $(printf '%s' "$status" | jq -c '{effectiveParity,effective,sourceDefaults}')"
@@ -4237,8 +4237,8 @@ run_test_58() {
   else
     fail "config-remedy: the reporter-outlier fixture is not the state under test :: $(printf '%s' "$status" | jq -c '{digestParity,effectiveParity,parity,origin}')"
   fi
-  if printf '%s' "$status" | jq -e '.effective.model=="gpt-5.6-terra" and .reporter.dials.model=="gpt-5.6-sol" and (.effective.model != .reporter.dials.model)' >/dev/null 2>&1; then
-    pass "config-remedy (premise): the reporter really is the outlier — effective is the runtime's terra, reporter.dials is the checkout's sol"
+  if printf '%s' "$status" | jq -e '.effective.model=="gpt-5.6-terra" and .reporter.dials.model=="gpt-6-astra" and (.effective.model != .reporter.dials.model)' >/dev/null 2>&1; then
+    pass "config-remedy (premise): the reporter really is the outlier — effective is the runtime's terra, reporter.dials is the checkout's astra"
   else
     fail "config-remedy: the reporter is not distinguishable from the endpoints here :: $(printf '%s' "$status" | jq -c '{effective,reporter:.reporter.dials}')"
   fi
@@ -4444,7 +4444,7 @@ run_test_60() {
 run_test_61() {
   local fx a b
   fx="$SANDBOX/effinv61"
-  copy_real_skill "$fx/src"                                         # sol / xhigh / 0
+  copy_real_skill "$fx/src"                                         # astra / xhigh / 0
   copy_real_skill "$fx/rt"
   retune_gate_dials "$fx/rt/codex-gate.sh" gpt-5.6-terra ultra 1    # terra / ultra / 1
 
@@ -4456,8 +4456,8 @@ run_test_61() {
     bash "$fx/rt/codex-gate.sh" config ) > "$SANDBOX/eff61b.txt" 2>"$SANDBOX/eff61b.err"
   b="$(last_json_line "$SANDBOX/eff61b.txt")"
 
-  if printf '%s' "$a" | jq -e '.runtimeDefaults=={model:"gpt-5.6-terra",effort:"ultra",fast:"1"} and .sourceDefaults=={model:"gpt-5.6-sol",effort:"xhigh",fast:"0"}' >/dev/null 2>&1; then
-    pass "config-effective (premise): the runtime declares terra/ultra/1 and the source declares sol/xhigh/0"
+  if printf '%s' "$a" | jq -e '.runtimeDefaults=={model:"gpt-5.6-terra",effort:"ultra",fast:"1"} and .sourceDefaults=={model:"gpt-6-astra",effort:"xhigh",fast:"0"}' >/dev/null 2>&1; then
+    pass "config-effective (premise): the runtime declares terra/ultra/1 and the source declares astra/xhigh/0"
   else
     fail "config-effective: the drifted-runtime fixture is not the state under test :: $(printf '%s' "$a" | jq -c '{runtimeDefaults,sourceDefaults}') :: $(cat "$SANDBOX/eff61a.err")"
     return
@@ -4495,8 +4495,8 @@ run_test_61() {
   fi
 
   # ---- the reporter is NOT lost: it is reported separately, and it really differs ----
-  if printf '%s' "$a" | jq -e --arg p "$fx/src/codex-gate.sh" '.reporter.path==$p and (.reporter.digest|test("^[0-9a-f]{64}$")) and .reporter.dials.model=="gpt-5.6-sol" and .reporter.dials.effort=="xhigh" and .reporter.dials.fast==false' >/dev/null 2>&1; then
-    pass "config-effective: the SOURCE-copy run reports its own identity + dials under \`reporter\` (path, digest, sol/xhigh/off)"
+  if printf '%s' "$a" | jq -e --arg p "$fx/src/codex-gate.sh" '.reporter.path==$p and (.reporter.digest|test("^[0-9a-f]{64}$")) and .reporter.dials.model=="gpt-6-astra" and .reporter.dials.effort=="xhigh" and .reporter.dials.fast==false' >/dev/null 2>&1; then
+    pass "config-effective: the SOURCE-copy run reports its own identity + dials under \`reporter\` (path, digest, astra/xhigh/off)"
   else
     fail "config-effective: reporter block missing/wrong on the source-copy run :: $(printf '%s' "$a" | jq -c '.reporter')"
   fi

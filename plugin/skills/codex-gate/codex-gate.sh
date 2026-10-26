@@ -92,14 +92,14 @@ CODEX_GATE_EFFORT_NONEMPTY="${CODEX_GATE_EFFORT:+1}"
 CODEX_GATE_FAST_SET="${CODEX_GATE_FAST+1}"
 CODEX_GATE_FAST_NONEMPTY="${CODEX_GATE_FAST:+1}"
 
-# Model / reasoning-effort. Default tier is gpt-5.6-sol / xhigh — NOT ultra: ultra performs
+# Model / reasoning-effort. Default tier is gpt-6-astra / xhigh — NOT ultra: ultra performs
 # automatic task delegation (observed spawning ~3 sub-reviewers per round, wrapper-invisible
 # and unbounded by --multi/CODEX_GATE_FANOUT); it remains available via explicit env override.
 # (Model added to argv only when non-empty; set CODEX_GATE_MODEL="" to use Codex's own default.)
-CODEX_GATE_MODEL="${CODEX_GATE_MODEL-gpt-5.6-sol}"
+CODEX_GATE_MODEL="${CODEX_GATE_MODEL-gpt-6-astra}"
 CODEX_GATE_EFFORT="${CODEX_GATE_EFFORT:-xhigh}"
 
-# Fast mode (Codex "Speed"): keeps the SAME model (gpt-5.6-sol) but runs ~1.5x faster at ~2.5x credit
+# Fast mode (Codex "Speed"): keeps the SAME model (gpt-6-astra) but runs ~2x faster at ~2.5x credit
 # cost (per developers.openai.com/codex/speed). Default OFF (opt-in); set CODEX_GATE_FAST=1 to
 # spend the extra credits for speed. The gate inherits none of the app's config (--ignore-user-config),
 # so this is the only way fast mode reaches the gate's Codex calls. NOT a quality knob — reasoning effort is separate.
@@ -2407,7 +2407,7 @@ parse_dial() { # <file> <VAR> -> "<op>|<literal>", or EMPTY when absent/malforme
   prefix="$v=\"\${$v"
   line="$(awk -v p="$prefix" 'index($0,p)==1 {print; exit}' "$f" 2>/dev/null)"
   [ -n "$line" ] || return 0
-  rest="${line#"$prefix"}"                       # e.g.  -gpt-5.6-sol}"   or   :-xhigh}"
+  rest="${line#"$prefix"}"                       # e.g.  -gpt-6-astra}"   or   :-xhigh}"
   case "$rest" in
     :-*) op=":-"; rest="${rest#:-}" ;;
     -*)  op="-";  rest="${rest#-}"  ;;

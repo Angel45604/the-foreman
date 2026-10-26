@@ -466,12 +466,12 @@ bash <skill-dir>/codex-gate.sh phase-review P2
 > Don't trust this list over the gate itself — `codex-gate.sh config` reports the **effective** dials of the
 > copy that actually runs, and whether it still matches the versioned source.
 
-`CODEX_GATE_MODEL`, `CODEX_GATE_EFFORT` (defaults: `gpt-5.6-sol`/`xhigh` — **not** `ultra`, which performs
+`CODEX_GATE_MODEL`, `CODEX_GATE_EFFORT` (defaults: `gpt-6-astra`/`xhigh` — **not** `ultra`, which performs
 wrapper-invisible automatic task delegation; both remain env-overridable, and `CODEX_GATE_EFFORT=ultra` combined
 with multi-lens `--multi`/`CODEX_GATE_FANOUT=1` on `prepr`/`prepr-delta` is refused — see the multi-lens section
 above; `CODEX_GATE_MODEL=""` is a real
 override meaning "omit `-m`, use Codex's own default"), `CODEX_GATE_FAST` (**default 0 = OFF, opt-in**; Codex
-"fast mode" — same model, ~1.5× faster at **~2.5× credit cost**; set exactly `1` to enable — **any other
+"fast mode" — same model, ~2× faster at **~2.5× credit cost**; set exactly `1` to enable — **any other
 value, including `2`, leaves it OFF** — it does NOT change model/effort, fast≠dumb), `CODEX_GATE_MAX_ROUNDS`
 (default 8), `CODEX_GATE_EXCLUDES` (extra scratch globs; `.docker/` is NOT excluded by default),
 `CODEX_GATE_SESSION` (namespacing).
