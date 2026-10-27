@@ -64,6 +64,7 @@ STUB_ARGV_LOG="$SANDBOX/stub-argv.log"
 STUB_STDIN_DUMP="$SANDBOX/stub-stdin.dump"
 STUB_CWD_LOG="$SANDBOX/stub-cwd.log"
 PICK_LOG="$SANDBOX/pick.log"
+FIXTURE_DIR="$SANDBOX/fixtures"   # the failed-turn fixtures (write_failure_fixtures); the stub cats them
 
 cleanup() { rm -rf "$SANDBOX"; }
 trap cleanup EXIT
@@ -75,6 +76,100 @@ pass() { PASS_COUNT=$((PASS_COUNT + 1)); printf 'PASS: %s\n' "$1"; }
 fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); printf 'FAIL: %s\n' "$1"; }
 check() { # check <desc> <condition-already-evaluated:0/1>
   if [ "$2" -eq 0 ]; then pass "$1"; else fail "$1"; fi
+}
+
+# --- failed-turn FIXTURES (P2: failure classification) ------------------------
+# Written under $SANDBOX/fixtures/ with QUOTED heredocs, so the bytes are literal (the JSON
+# below carries backticks, backslashes and quotes that the shell must never touch). They must
+# exist BEFORE the stub's first run: the stub `cat`s them by the absolute path write_stub
+# expands into it. The same files feed the helper / classifier unit tests directly.
+write_failure_fixtures() {
+  local fx="$FIXTURE_DIR" lm filler
+  mkdir -p "$fx"
+
+  # api_400.jsonl — the INCIDENT's lines, verbatim and in order. Provenance: the run named in
+  # the PDR, ~/.claude/codex-gate/runs/scratchpad-64a781c3677b/norepo/s-7164f013f9f5/
+  # question-decision-icons.md/round-1.jsonl (a gpt-6-astra call refused with HTTP 400). Its
+  # thread.started line is left out: the stub already prints thread.started and turn.completed
+  # first. The warning (an item.completed whose item.type is "error") is NOT a failure; the
+  # error and the turn.failed carry the SAME JSON-encoded API error as their message.
+  cat > "$fx/api_400.jsonl" <<'JSONL'
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata for `gpt-6-astra` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}
+{"type":"turn.started"}
+{"type":"error","message":"{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account.\"}}"}
+{"type":"turn.failed","error":{"message":"{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account.\"}}"}}
+JSONL
+
+  # context_length.jsonl — OpenAI's documented shape for a context overflow: an
+  # invalid_request_error carrying code context_length_exceeded. The text says neither
+  # "context window" nor "ran out of room", so ONLY the code can identify it.
+  cat > "$fx/context_length.jsonl" <<'JSONL'
+{"type":"error","message":"{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"code\":\"context_length_exceeded\",\"message\":\"Input is too long for the requested model.\"}}"}
+{"type":"turn.failed","error":{"message":"{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"code\":\"context_length_exceeded\",\"message\":\"Input is too long for the requested model.\"}}"}}
+JSONL
+
+  # usage_limit.jsonl — a failure whose message is plain API text (not a JSON string).
+  cat > "$fx/usage_limit.jsonl" <<'JSONL'
+{"type":"error","message":"You've hit your usage limit. Upgrade to Pro or try again later."}
+{"type":"turn.failed","error":{"message":"You've hit your usage limit. Upgrade to Pro or try again later."}}
+JSONL
+
+  # chatter.jsonl — the agent TALKS about the context window, and a command it ran PRINTED it;
+  # there is NO failure event. Line 1 is an agent_message. Line 2 is a command_execution item
+  # (real shape: command, aggregated_output, exit_code, status) whose OUTPUT says the signature:
+  # command output must never make a run OVERFLOW (PDR 6).
+  cat > "$fx/chatter.jsonl" <<'JSONL'
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"The diff may not fit the context window; Codex ran out of room last time."}}
+{"type":"item.completed","item":{"id":"item_3","type":"command_execution","command":"cat notes.md","aggregated_output":"The review ran out of room in the model's context window; split the diff.\n","exit_code":0,"status":"completed"}}
+JSONL
+
+  # warning_context.jsonl — an item.completed of type "error" (a WARNING) whose text mentions the
+  # context window. Never a failure event. Read by the unit tests and by the stub's
+  # `warning_nonzero` arm (this line, then exit 1).
+  cat > "$fx/warning_context.jsonl" <<'JSONL'
+{"type":"item.completed","item":{"id":"item_2","type":"error","message":"Context window usage is high; Codex ran out of room for older turns and trimmed them."}}
+JSONL
+
+  # two_messages.jsonl — a top-level `error` and a `turn.failed` whose messages DIFFER (the real
+  # events repeat one message; this pins ADR-005's "the summary uses the LAST failure line").
+  # Both are plain text with no context signature, so the run is an INFRA_ERROR whose reason is
+  # the LAST line. Unit tests only (no stub mode uses it).
+  cat > "$fx/two_messages.jsonl" <<'JSONL'
+{"type":"error","message":"FIRST-MSG upstream hiccup"}
+{"type":"turn.failed","error":{"message":"LAST-MSG model not supported"}}
+JSONL
+
+  # long.jsonl — ONE turn.failed whose message is 1000+ characters and carries a newline, a tab,
+  # double quotes and a backslash. jq builds the JSON, so every one of them is escaped correctly.
+  lm="$(printf 'LONG-HEAD first line\nsecond line\ttabbed "double quotes" and back\\slash then filler '; printf 'filler-%04d ' $(seq 1 120))"
+  jq -nc --arg m "$lm" '{type:"turn.failed",error:{message:$m}}' > "$fx/long.jsonl"
+
+  # long_context.jsonl — ONE turn.failed whose message is 400 characters of filler, THEN the
+  # signature: it starts past character 300, so only an UNCAPPED classification can see it.
+  filler="$(printf 'f%.0s' $(seq 1 399)) "
+  jq -nc --arg m "${filler}Codex ran out of room in the model's context window." '{type:"turn.failed",error:{message:$m}}' > "$fx/long_context.jsonl"
+
+  # error_only.jsonl — a top-level `error` event with the context signature and NO turn.failed:
+  # the ".message of a top-level error" is a failure source on its own (unit tests only).
+  cat > "$fx/error_only.jsonl" <<'JSONL'
+{"type":"error","message":"Codex ran out of room in the model's context window while reading the diff."}
+JSONL
+
+  # overflow.jsonl — the stub's own `overflow` arm line, byte for byte, so a classifier unit test
+  # can feed the file the existing overflow tests exercise through the wrapper.
+  cat > "$fx/overflow.jsonl" <<'JSONL'
+{"type":"turn.failed","error":{"message":"Codex ran out of room in the model's context window while reading the diff."}}
+JSONL
+
+  # reconnect_ok.jsonl — what real Codex logs when the API hiccups mid-turn and recovers: top-level
+  # `error` events ("Reconnecting... N/5 (request timed out)", the exact line shapes seen in real
+  # logs), then a turn that COMPLETES normally. They are noise, not a failure: a zero exit with
+  # this log and an unusable verdict is "no usable verdict", never "codex turn failed" (ADR-005).
+  cat > "$fx/reconnect_ok.jsonl" <<'JSONL'
+{"type":"error","message":"Reconnecting... 2/5 (request timed out)"}
+{"type":"error","message":"Reconnecting... 5/5 (request timed out)"}
+{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}
+JSONL
 }
 
 # --- build the STUB codex ----------------------------------------------------
@@ -98,10 +193,37 @@ check() { # check <desc> <condition-already-evaluated:0/1>
 #   block_from_stdin-> request_changes w/ ONE agent_fixable blocker whose issue text is a
 #                      SHARDBLOCKER-<tag> marker grepped from THIS call's stdin packet (Tier-3
 #                      shard-union seam — selected via STUB_BLOCK_IF_STDIN, see below)
+# Failed-turn modes (P2: failure classification). Each one prints fixture lines from
+# $FIXTURE_DIR (written by write_failure_fixtures, BEFORE the stub's first run); all but
+# approve_with_warning and reconnect_degenerate exit 1 and write no -o file — the shape of a
+# real failed Codex turn:
+#   api_400         -> the INCIDENT's four JSONL lines: an item.completed warning, turn.started,
+#                      a top-level error and a turn.failed whose message is a JSON-encoded
+#                      HTTP 400 invalid_request_error ("model not supported ... ChatGPT account")
+#   context_length  -> error + turn.failed carrying the API's context_length_exceeded CODE (the
+#                      text deliberately lacks "context window": only the code can match)
+#   usage_limit     -> error + turn.failed with the plain message "You've hit your usage limit..."
+#   chatter         -> an agent_message that merely TALKS about the context window AND a
+#                      command_execution item whose output says it too; no failure event at all
+#                      (a nonzero exit with this log is a generic failure)
+#   long_message    -> a turn.failed whose message is 1000+ chars with a newline, a tab, double
+#                      quotes and a backslash (the one-line + cap contract)
+#   long_context    -> a turn.failed whose context-window signature sits PAST character 300
+#   approve_with_warning -> prints ONLY api_400's warning line (an item.completed of type
+#                      "error": a warning, not a failure), then behaves exactly like `approve`
+#   warning_nonzero -> prints ONLY warning_context.jsonl's line (a warning whose text mentions the
+#                      context window), then exits 1 and writes NO -o file: a nonzero exit whose
+#                      only "failure" is a warning
+#   reconnect_degenerate -> prints reconnect_ok.jsonl (real-shaped top-level "Reconnecting... N/5"
+#                      error events, then turn.completed), writes the DEGENERATE verdict
+#                      (request_changes, no blockers) to -o and exits 0: a turn that completed
+#                      normally despite the logged errors, with an unusable verdict
 # Per-shard seams (Tier 3 sharding — the wrapper invokes the stub once per shard with a
-# DIFFERENT scoped packet on stdin): STUB_OVERFLOW_IF_STDIN / STUB_BLOCK_IF_STDIN hold a
-# sentinel string; if THIS invocation's stdin contains it, the effective mode is overridden
-# to overflow / block_from_stdin for THIS call only (others keep $STUB_MODE, default approve).
+# DIFFERENT scoped packet on stdin): STUB_OVERFLOW_IF_STDIN / STUB_API400_IF_STDIN /
+# STUB_BLOCK_IF_STDIN hold a sentinel string; if THIS invocation's stdin contains it, the
+# effective mode is overridden to overflow / api_400 / block_from_stdin for THIS call only
+# (others keep $STUB_MODE, default approve; when several match, the order is overflow, then
+# api_400, then block).
 # Also: when --output-schema points at question.schema.json AND STUB_MODE is the
 # default 'approve', the stub auto-remaps to 'grounded' (explicit infra/grounded modes win).
 # The stub logs its full argv to $STUB_ARGV_LOG and dumps stdin to
@@ -135,6 +257,8 @@ cat > "\$STUB_STDIN_DUMP"
 # packet contents the stub actually sees, exactly as the plan suggests.)
 if [ -n "\${STUB_OVERFLOW_IF_STDIN:-}" ] && grep -q -- "\$STUB_OVERFLOW_IF_STDIN" "\$STUB_STDIN_DUMP" 2>/dev/null; then
   STUB_MODE="overflow"
+elif [ -n "\${STUB_API400_IF_STDIN:-}" ] && grep -q -- "\$STUB_API400_IF_STDIN" "\$STUB_STDIN_DUMP" 2>/dev/null; then
+  STUB_MODE="api_400"
 elif [ -n "\${STUB_BLOCK_IF_STDIN:-}" ] && grep -q -- "\$STUB_BLOCK_IF_STDIN" "\$STUB_STDIN_DUMP" 2>/dev/null; then
   STUB_MODE="block_from_stdin"
 fi
@@ -251,6 +375,35 @@ case "\$STUB_MODE" in
     # wrapper must classify this as OVERFLOW (distinct from generic INFRA_ERROR).
     printf '%s\n' '{"type":"turn.failed","error":{"message":"Codex ran out of room in the model'"'"'s context window while reading the diff."}}'
     exit 1 ;;
+  api_400|context_length|usage_limit|chatter)
+    # FAILED TURN (P2): cat the matching fixture (the path expands at WRITE time, so the stub
+    # carries the literal sandbox path), exit nonzero, write NO -o verdict file.
+    cat '$FIXTURE_DIR/'"\$STUB_MODE".jsonl
+    exit 1 ;;
+  long_message)
+    cat '$FIXTURE_DIR/long.jsonl'
+    exit 1 ;;
+  long_context)
+    cat '$FIXTURE_DIR/long_context.jsonl'
+    exit 1 ;;
+  approve_with_warning)
+    # ONLY the incident's first line (an item.completed WARNING), then exactly what 'approve'
+    # does (verdict written, exit 0): the warning must NOT be read as a failure.
+    head -n 1 '$FIXTURE_DIR/api_400.jsonl'
+    [ -n "\$OUT" ] && printf '%s\n' '{"verdict":"approve","summary":"looks good","blockers":[],"nonBlocking":[]}' > "\$OUT"
+    exit 0 ;;
+  warning_nonzero)
+    # ONLY a WARNING item (its text mentions the context window), then a nonzero exit and NO -o
+    # verdict file: the warning is not a failure event, so the exit is a generic failure.
+    cat '$FIXTURE_DIR/warning_context.jsonl'
+    exit 1 ;;
+  reconnect_degenerate)
+    # A turn that logged top-level "Reconnecting... N/5" error events and then COMPLETED, exit 0,
+    # with a degenerate verdict (request_changes, zero blockers): the exit is clean, the verdict
+    # is unusable, and the logged errors are noise, not the cause.
+    cat '$FIXTURE_DIR/reconnect_ok.jsonl'
+    [ -n "\$OUT" ] && printf '%s\n' '{"verdict":"request_changes","summary":"x","blockers":[],"nonBlocking":[]}' > "\$OUT"
+    exit 0 ;;
   *)
     printf 'unknown STUB_MODE: %s\n' "\$STUB_MODE" >&2
     exit 99 ;;
@@ -258,6 +411,7 @@ esac
 STUBEOF
   chmod +x "$STUB_DIR/codex"
 }
+write_failure_fixtures      # BEFORE the first stub run: the stub reads these by absolute path
 write_stub
 
 # --- common env for every wrapper invocation ---------------------------------
@@ -2410,6 +2564,7 @@ run_test_36() {
       export STUB_MODE="${STUB_MODE:-approve}"
       export STUB_BLOCK_IF_STDIN="${STUB_BLOCK_IF_STDIN:-}"
       export STUB_OVERFLOW_IF_STDIN="${STUB_OVERFLOW_IF_STDIN:-}"
+      export STUB_API400_IF_STDIN="${STUB_API400_IF_STDIN:-}"
       fan_out_and_aggregate "$jobs" >/dev/null 2>&1
       printf 'OUTCOME=%s\n' "${FAN_OUTCOME:-}"
       printf 'NJOBS=%s\n' "${FAN_N_JOBS:-}"
@@ -2680,6 +2835,7 @@ run_test_38() {
       export STUB_MODE="${STUB_MODE:-approve}"
       export STUB_BLOCK_IF_STDIN="${STUB_BLOCK_IF_STDIN:-}"
       export STUB_OVERFLOW_IF_STDIN="${STUB_OVERFLOW_IF_STDIN:-}"
+      export STUB_API400_IF_STDIN="${STUB_API400_IF_STDIN:-}"
       fan_out_and_aggregate "$jobs" >/dev/null 2>&1
       jq -r '.summary // ""' "$VERDICT_FILE" 2>/dev/null
     ) 2>/dev/null
@@ -5378,6 +5534,928 @@ run_test_69() {
 }
 
 #############################################################################
+# TESTS 70-83 — classify a FAILED Codex turn by its cause [P2: ADR-004 / ADR-005 / ADR-006,
+#   PDR criteria 4-7]
+#   The wrapper used to call every failed turn OVERFLOW ("diff too large"). The rule now:
+#     - a nonzero exit whose STRUCTURED failure events (the .error.message of a turn.failed and
+#       the .message of a top-level error event) carry `ran out of room`, `context window` or
+#       `context_length_exceeded` -> OVERFLOW, summary unchanged;
+#     - any other failure event -> INFRA_ERROR, whose summary carries the API's own message
+#       (a JSON API error unwrapped to `HTTP <status> <type> <code>: <message>`), on ONE line,
+#       capped at 300 characters + `…`;
+#     - a nonzero exit with no failure event -> the generic `codex exited nonzero (N)`;
+#     - the item.completed warning (item.type "error") and agent / command text never count;
+#     - a ZERO exit never reads failure events: the top-level "Reconnecting... N/5" errors Codex
+#       logs inside turns that then complete normally are noise, so an exit-0 job with an
+#       unusable verdict reads `no usable verdict (<path>)`, never `codex turn failed`.
+#   In the fan-out paths (sharded prepr, prepr --multi) the aggregate is
+#   BLOCK > INFRA_ERROR > OVERFLOW > APPROVE, and an aggregate INFRA_ERROR names the failing
+#   shard or lens and its reason.
+#   Fixtures: write_failure_fixtures (under $SANDBOX/fixtures/, written before the stub's first
+#   run). Stub modes: api_400 context_length usage_limit chatter long_message long_context
+#   approve_with_warning warning_nonzero reconnect_degenerate, plus the per-call seam
+#   STUB_API400_IF_STDIN.
+#
+#   Shared plumbing for 70-83:
+#     cls_run <repo> <stub-mode> [NAME=value ...] -- <wrapper-arg>...
+#                                       ONE wrapper run inside <repo> (CODEX_BIN is the suite's
+#                                       stub); sets CLS_STATUS / CLS_OUTCOME / CLS_SUMMARY /
+#                                       CLS_NCALLS / CLS_ERR. The argv log is truncated first.
+#     cls_run_mode <mode> <stub-mode> [NAME=value ...]
+#                                       one of plan bundle phase-review question investigate
+#                                       prepr, against a fresh fixture
+#     cls_diag                          the one-line diagnostic every FAIL line carries: outcome,
+#                                       call count, summary, and the head of stderr
+#     cls_call <fn> [args...]           source the wrapper in a subshell and run <fn> there
+#                                       (stdout only; exit 97 when the wrapper does not source or
+#                                       <fn> is undefined, so RED reports a FAIL, never aborts)
+#############################################################################
+CLS_FX="$FIXTURE_DIR"
+CLS_LINE_400="HTTP 400 invalid_request_error: The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account."
+# The five result variables cls_run / cls_run_mode set, given safe defaults so a caller that
+# reads one before any run (or after an arm that sets only some) never hits an unbound variable.
+CLS_STATUS=""; CLS_OUTCOME=""; CLS_SUMMARY=""; CLS_NCALLS=0; CLS_ERR=""
+
+cls_run() { # <repo> <stub-mode> [NAME=value ...] -- <wrapper-arg>...
+  local repo="$1" mode="$2"
+  local -a ew aw
+  shift 2
+  ew=(STUB_MODE="$mode")           # never empty under bash 3.2 `set -u`
+  aw=()
+  while [ $# -gt 0 ] && [ "$1" != "--" ]; do ew[${#ew[@]}]="$1"; shift; done
+  [ $# -gt 0 ] && shift
+  while [ $# -gt 0 ]; do aw[${#aw[@]}]="$1"; shift; done
+  reset_argv_log
+  ( cd "$repo" && env "${ew[@]}" bash "$WRAPPER" "${aw[@]}" ) > "$SANDBOX/cls.out" 2> "$SANDBOX/cls.err"
+  CLS_STATUS="$(last_json_line "$SANDBOX/cls.out")"
+  CLS_OUTCOME="$(printf '%s' "$CLS_STATUS" | jq -r '.outcome // empty' 2>/dev/null)"
+  CLS_SUMMARY="$(printf '%s' "$CLS_STATUS" | jq -r '.summary // empty' 2>/dev/null)"
+  CLS_NCALLS="$(grep -c -- '---END-ARGV---' "$STUB_ARGV_LOG" 2>/dev/null)"; [ -n "$CLS_NCALLS" ] || CLS_NCALLS=0
+  CLS_ERR="$(head -c 300 "$SANDBOX/cls.err" 2>/dev/null)"
+}
+
+cls_run_mode() { # <mode> <stub-mode> [NAME=value ...]
+  local m="$1" sm="$2" repo
+  shift 2
+  repo="$(bin_repo)"
+  case "$m" in
+    plan)
+      printf '# A plan\n\nDo the thing.\n' > "$SANDBOX/cls-plan.md"
+      cls_run "$repo" "$sm" "$@" -- plan "$SANDBOX/cls-plan.md" ;;
+    bundle)
+      mkdir -p "$repo/docs/pdr"
+      printf '# plan\n' > "$repo/docs/pdr/plan.md"
+      git -C "$repo" add docs && git -C "$repo" commit -qm docs
+      cls_run "$repo" "$sm" "$@" -- bundle docs/pdr ;;
+    question)
+      printf 'DECISION: how do we persist run events?\n\nCONTEXT: high write volume.\n\nOPTIONS:\n- Option A: a dedicated append-only table\n- Option B: reuse the existing jobs table\n' > "$SANDBOX/cls-decision.md"
+      cls_run "$repo" "$sm" "$@" -- question "$SANDBOX/cls-decision.md" ;;
+    investigate)
+      printf 'TASK: why do eval runs get orphaned ~8-19s after start?\n\nSAFETY:\nALLOWED PROBES: read-only file inspection.\nFORBIDDEN PROBES: never trigger a Layer B (live AI) run.\n' > "$SANDBOX/cls-brief.md"
+      cls_run "$repo" "$sm" "$@" -- investigate "$SANDBOX/cls-brief.md" ;;
+    phase-review)
+      # phase-start needs no Codex; it must succeed first, then a change makes the phase non-empty
+      cls_run "$repo" approve -- phase-start P1
+      if ! grep -q '^RUNDIR=' "$SANDBOX/cls.out"; then
+        CLS_STATUS=""; CLS_OUTCOME="(phase-start failed)"; CLS_SUMMARY="$(tr '\n' ' ' < "$SANDBOX/cls.out" | head -c 300)"
+        return 0
+      fi
+      printf 'phase-change\n' > "$repo/phase_new.js"
+      cls_run "$repo" "$sm" "$@" -- phase-review P1 ;;
+    prepr)
+      cls_run "$repo" "$sm" "$@" -- prepr ;;
+    *)
+      fail "cls_run_mode: unknown mode '$m'"
+      CLS_STATUS=""; CLS_OUTCOME="(unknown mode)"; CLS_SUMMARY=""; CLS_NCALLS=0; CLS_ERR="" ;;
+  esac
+}
+
+cls_diag() { # one line, whatever the summary / stderr carry
+  printf "outcome='%s' calls=%s :: summary: %s :: stderr: %s" "$CLS_OUTCOME" "$CLS_NCALLS" \
+    "$(printf '%s' "$CLS_SUMMARY" | tr '\n\t\r' '   ' | head -c 600)" "$(printf '%s' "$CLS_ERR" | tr '\n\t\r' '   ')"
+}
+
+cls_summary_has() { printf '%s' "$CLS_SUMMARY" | grep -qF -- "$1"; }
+
+cls_summary_one_line() { # the status JSON's .summary is a string with no control character in it
+  printf '%s' "$CLS_STATUS" | jq -e '(.summary | type == "string") and ((.summary | test("[[:cntrl:]]")) | not)' >/dev/null 2>&1
+}
+
+cls_call() { # <fn> [args...]
+  (
+    set +u
+    # shellcheck disable=SC1090
+    . "$WRAPPER" >/dev/null 2>&1 || { printf '__SOURCEFAIL__'; exit 97; }
+    [ "$(type -t "$1" 2>/dev/null)" = function ] || { printf '__NOFUNC__:%s' "$1"; exit 97; }
+    "$@"
+  ) 2>/dev/null
+}
+
+cls_expect_api400() { # <label> — the incident's API error, as an INFRA_ERROR, on one line
+  local ok=0
+  [ "$CLS_OUTCOME" = "INFRA_ERROR" ] || ok=1
+  cls_summary_has 'HTTP 400' || ok=1
+  cls_summary_has 'invalid_request_error' || ok=1
+  cls_summary_has 'not supported when using Codex with a ChatGPT account' || ok=1
+  cls_summary_has "$CLS_LINE_400" || ok=1                 # the unwrapped `HTTP <status> <type>: <message>` line
+  cls_summary_has 'codex turn failed (exit 1): ' || ok=1  # ADR-005's summary shape
+  cls_summary_one_line || ok=1
+  [ "$CLS_NCALLS" -ge 1 ] || ok=1                         # the failure came from a real (stub) call
+  if [ "$ok" -eq 0 ]; then
+    pass "classify-400: $1 -> INFRA_ERROR with HTTP 400 / invalid_request_error / the model message, one line"
+  else
+    fail "classify-400: $1: expected INFRA_ERROR whose one-line summary unwraps the API error ('$CLS_LINE_400'), got $(cls_diag)"
+  fi
+}
+
+cls_expect_context_overflow() { # <label> — a RUNTIME context-window OVERFLOW (the stub really ran), summary unchanged
+  local ok=0
+  [ "$CLS_OUTCOME" = "OVERFLOW" ] || ok=1
+  cls_summary_has 'codex hit the context window' || ok=1  # emit_overflow's runtime wording, not a budget guard's
+  [ "$CLS_NCALLS" -ge 1 ] || ok=1                         # a budget OVERFLOW makes zero calls
+  if [ "$ok" -eq 0 ]; then
+    pass "classify-context: $1 -> runtime OVERFLOW ('codex hit the context window ...', the stub was called)"
+  else
+    fail "classify-context: $1: expected a RUNTIME OVERFLOW (summary 'codex hit the context window ...', at least one call), got $(cls_diag)"
+  fi
+}
+
+#############################################################################
+# TEST 70 — the fixtures and the stub's new arms are what the other tests say they are.
+#   A broken fixture or stub arm would let the classification tests below fail (or pass) for a
+#   reason that has nothing to do with the wrapper: pin the premises here, wrapper-free.
+#############################################################################
+run_test_70() {
+  local f ok rc rc2 pair
+  f="$CLS_FX/api_400.jsonl"
+  # --- api_400.jsonl: the incident's four lines, in order ---
+  if [ "$(jq -c '.type' "$f" 2>/dev/null | tr '\n' ' ')" = '"item.completed" "turn.started" "error" "turn.failed" ' ] \
+     && jq -es '.[0].item.type == "error" and (.[2].message | fromjson | .status == 400 and .error.type == "invalid_request_error")
+                and (.[2].message == .[3].error.message)' "$f" >/dev/null 2>&1; then
+    pass "fixtures: api_400.jsonl is the incident's four lines (warning, turn.started, error, turn.failed; one shared JSON-string message with status 400)"
+  else
+    fail "fixtures: api_400.jsonl is not the incident's shape :: $(head -c 400 "$f" 2>&1)"
+  fi
+  # --- context_length.jsonl: the CODE is the only signature ---
+  if jq -es 'length == 2 and all(.[]; ((.message // .error.message) | fromjson | .error.code == "context_length_exceeded")
+                       and (((.message // .error.message) | test("context window|ran out of room"; "i")) | not))' "$CLS_FX/context_length.jsonl" >/dev/null 2>&1; then
+    pass "fixtures: context_length.jsonl carries context_length_exceeded and NO 'context window' / 'ran out of room' text"
+  else
+    fail "fixtures: context_length.jsonl must carry the code and no signature text :: $(head -c 400 "$CLS_FX/context_length.jsonl" 2>&1)"
+  fi
+  # --- usage_limit.jsonl: plain text on both events ---
+  if jq -es 'length == 2 and all(.[]; ((.message // .error.message) == "You'"'"'ve hit your usage limit. Upgrade to Pro or try again later.")
+                                   and (((.message // .error.message) | try fromjson catch "NOT-JSON") == "NOT-JSON"))' "$CLS_FX/usage_limit.jsonl" >/dev/null 2>&1; then
+    pass "fixtures: usage_limit.jsonl is two events with the same plain (non-JSON) message"
+  else
+    fail "fixtures: usage_limit.jsonl is not two plain-text failure events :: $(head -c 400 "$CLS_FX/usage_limit.jsonl" 2>&1)"
+  fi
+  # --- chatter.jsonl / warning_context.jsonl: signature text, but NO failure event ---
+  if jq -es 'length == 2 and all(.[]; .type == "item.completed")
+             and .[0].item.type == "agent_message"
+             and (.[0].item.text | test("context window")) and (.[0].item.text | test("ran out of room"))
+             and .[1].item.type == "command_execution" and .[1].item.exit_code == 0 and .[1].item.status == "completed"
+             and (.[1].item.command | type == "string")
+             and (.[1].item.aggregated_output | test("ran out of room in the model'"'"'s context window"))' "$CLS_FX/chatter.jsonl" >/dev/null 2>&1 \
+     && jq -es 'length == 1 and .[0].type == "item.completed" and .[0].item.type == "error"
+                and (.[0].item.message | test("context window"; "i"))' "$CLS_FX/warning_context.jsonl" >/dev/null 2>&1; then
+    pass "fixtures: chatter.jsonl (agent_message + command_execution output) and warning_context.jsonl (item error) say 'context window' but carry no failure event"
+  else
+    fail "fixtures: chatter / warning_context shape wrong :: $(head -c 400 "$CLS_FX/chatter.jsonl" 2>&1 | tr '\n' '|') :: $(head -c 300 "$CLS_FX/warning_context.jsonl" 2>&1)"
+  fi
+  # --- two_messages.jsonl: an error and a turn.failed with DIFFERENT plain messages, no signature ---
+  if jq -es 'length == 2 and .[0].type == "error" and .[1].type == "turn.failed"
+             and .[0].message == "FIRST-MSG upstream hiccup" and .[1].error.message == "LAST-MSG model not supported"
+             and (all(.[]; (.message // .error.message) | test("context window|ran out of room|context_length_exceeded"; "i") | not))' "$CLS_FX/two_messages.jsonl" >/dev/null 2>&1; then
+    pass "fixtures: two_messages.jsonl is a top-level error (FIRST-MSG) then a turn.failed (LAST-MSG), plain text, no context signature"
+  else
+    fail "fixtures: two_messages.jsonl shape wrong :: $(head -c 300 "$CLS_FX/two_messages.jsonl" 2>&1 | tr '\n' '|')"
+  fi
+  # --- long.jsonl: 1000+ chars with a newline, a tab, a double quote and a backslash ---
+  if jq -es 'length == 1 and .[0].type == "turn.failed" and (.[0].error.message | length > 1000)
+             and (.[0].error.message | contains("\n")) and (.[0].error.message | contains("\t"))
+             and (.[0].error.message | contains("\"")) and (.[0].error.message | contains("\\"))' "$CLS_FX/long.jsonl" >/dev/null 2>&1; then
+    pass "fixtures: long.jsonl is one turn.failed of 1000+ chars with a newline, a tab, a double quote and a backslash"
+  else
+    fail "fixtures: long.jsonl shape wrong :: $(head -c 300 "$CLS_FX/long.jsonl" 2>&1)"
+  fi
+  # --- long_context.jsonl: the signature starts past character 300 ---
+  if jq -es 'length == 1 and .[0].type == "turn.failed"
+             and ((.[0].error.message | index("Codex ran out of room in the model'"'"'s context window.")) > 300)
+             and (.[0].error.message[0:300] | test("ran out of room|context window") | not)' "$CLS_FX/long_context.jsonl" >/dev/null 2>&1; then
+    pass "fixtures: long_context.jsonl keeps its context-window signature past character 300"
+  else
+    fail "fixtures: long_context.jsonl signature is not past char 300 :: $(head -c 300 "$CLS_FX/long_context.jsonl" 2>&1)"
+  fi
+  # --- reconnect_ok.jsonl: two or more real-shaped "Reconnecting... N/5" top-level errors, then a
+  #     turn that COMPLETES (no turn.failed anywhere) ---
+  if jq -es 'length >= 3 and (.[-1].type == "turn.completed") and (.[:-1] | length >= 2)
+             and all(.[:-1][]; .type == "error" and (.message | test("^Reconnecting\\.\\.\\. [0-9]+/5 \\(.+\\)$")))
+             and (any(.[]; .type == "turn.failed") | not)' "$CLS_FX/reconnect_ok.jsonl" >/dev/null 2>&1; then
+    pass "fixtures: reconnect_ok.jsonl is 2+ real-shaped 'Reconnecting... N/5 (...)' error events, then turn.completed, with no turn.failed"
+  else
+    fail "fixtures: reconnect_ok.jsonl shape wrong :: $(head -c 400 "$CLS_FX/reconnect_ok.jsonl" 2>&1 | tr '\n' '|')"
+  fi
+
+  # --- the stub arms: each failed-turn mode cats its fixture, exits 1, writes NO -o file ---
+  ok=0
+  for pair in api_400:api_400 context_length:context_length usage_limit:usage_limit chatter:chatter long_message:long long_context:long_context warning_nonzero:warning_context; do
+    rm -f "$SANDBOX/cls70.o"
+    printf 'packet\n' | env STUB_MODE="${pair%%:*}" "$STUB_DIR/codex" -o "$SANDBOX/cls70.o" > "$SANDBOX/cls70.stdout" 2>/dev/null
+    rc=$?
+    # the stub's own 3 lines (prelude, thread.started, turn.completed), then the WHOLE fixture, byte for byte
+    tail -n +4 "$SANDBOX/cls70.stdout" > "$SANDBOX/cls70.body"
+    if [ "$rc" -ne 1 ] || [ -e "$SANDBOX/cls70.o" ] \
+       || ! cmp -s "$SANDBOX/cls70.body" "$CLS_FX/${pair#*:}.jsonl" \
+       || ! grep -qF -- "$(head -n 1 "$CLS_FX/${pair#*:}.jsonl")" "$SANDBOX/cls70.stdout" \
+       || ! grep -qF -- '"type":"thread.started"' "$SANDBOX/cls70.stdout"; then
+      ok=1
+      fail "stub-arms: STUB_MODE=${pair%%:*} must print ${pair#*:}.jsonl, exit 1 and write no -o file (rc=$rc, -o written: $([ -e "$SANDBOX/cls70.o" ] && echo yes || echo no)) :: $(head -c 300 "$SANDBOX/cls70.stdout")"
+    fi
+  done
+  [ "$ok" -eq 0 ] && pass "stub-arms: api_400 / context_length / usage_limit / chatter / long_message / long_context / warning_nonzero each print their whole fixture, exit 1 and write no -o file"
+
+  # --- the overflow arm and overflow.jsonl are the SAME line: the file is hand-written, so pin it to the stub ---
+  rm -f "$SANDBOX/cls70.o"
+  printf 'packet\n' | env STUB_MODE=overflow "$STUB_DIR/codex" -o "$SANDBOX/cls70.o" > "$SANDBOX/cls70.stdout" 2>/dev/null
+  rc=$?
+  tail -n 1 "$SANDBOX/cls70.stdout" > "$SANDBOX/cls70.body"
+  if [ "$rc" -eq 1 ] && [ ! -e "$SANDBOX/cls70.o" ] \
+     && [ "$(grep -c '' "$CLS_FX/overflow.jsonl")" = "1" ] \
+     && cmp -s "$SANDBOX/cls70.body" "$CLS_FX/overflow.jsonl"; then
+    pass "stub-arms: STUB_MODE=overflow prints a line identical to overflow.jsonl's only line (exit 1, no -o file), so the two cannot drift apart"
+  else
+    fail "stub-arms: STUB_MODE=overflow must print overflow.jsonl's single line byte for byte, exit 1, write no -o file (rc=$rc) :: stub: $(head -c 300 "$SANDBOX/cls70.body") :: file: $(head -c 300 "$CLS_FX/overflow.jsonl")"
+  fi
+
+  rm -f "$SANDBOX/cls70.o"
+  printf 'packet\n' | env STUB_MODE=approve_with_warning "$STUB_DIR/codex" -o "$SANDBOX/cls70.o" > "$SANDBOX/cls70.stdout" 2>/dev/null
+  rc=$?
+  if [ "$rc" -eq 0 ] && jq -e '.verdict == "approve"' "$SANDBOX/cls70.o" >/dev/null 2>&1 \
+     && grep -qF -- 'Model metadata for' "$SANDBOX/cls70.stdout" \
+     && ! jq -Rr 'fromjson? | select(type == "object") | .type' "$SANDBOX/cls70.stdout" 2>/dev/null | grep -qE '^(error|turn\.failed)$'; then
+    pass "stub-arms: approve_with_warning prints ONLY the warning line, writes an approve verdict and exits 0"
+  else
+    fail "stub-arms: approve_with_warning wrong (rc=$rc) :: $(head -c 300 "$SANDBOX/cls70.stdout") :: $(head -c 200 "$SANDBOX/cls70.o" 2>&1)"
+  fi
+
+  # --- reconnect_degenerate: the WHOLE reconnect_ok.jsonl, the degenerate verdict in -o, exit 0 ---
+  rm -f "$SANDBOX/cls70.o"
+  printf 'packet\n' | env STUB_MODE=reconnect_degenerate "$STUB_DIR/codex" -o "$SANDBOX/cls70.o" > "$SANDBOX/cls70.stdout" 2>/dev/null
+  rc=$?
+  tail -n +4 "$SANDBOX/cls70.stdout" > "$SANDBOX/cls70.body"
+  if [ "$rc" -eq 0 ] && cmp -s "$SANDBOX/cls70.body" "$CLS_FX/reconnect_ok.jsonl" \
+     && jq -e '.verdict == "request_changes" and (.blockers | length == 0)' "$SANDBOX/cls70.o" >/dev/null 2>&1; then
+    pass "stub-arms: reconnect_degenerate prints the whole reconnect_ok.jsonl, writes the degenerate verdict (request_changes, no blockers) and exits 0"
+  else
+    fail "stub-arms: reconnect_degenerate wrong (rc=$rc) :: $(head -c 300 "$SANDBOX/cls70.stdout" | tr '\n' '|') :: $(head -c 200 "$SANDBOX/cls70.o" 2>&1)"
+  fi
+
+  # --- the seam: a matching stdin turns STUB_MODE=approve into api_400 for THAT call only ---
+  printf 'packet with SEAM-API400-MARK inside\n' | env STUB_MODE=approve STUB_API400_IF_STDIN=SEAM-API400-MARK "$STUB_DIR/codex" > "$SANDBOX/cls70.stdout" 2>/dev/null
+  rc=$?
+  rm -f "$SANDBOX/cls70.o"
+  printf 'a different packet\n' | env STUB_MODE=approve STUB_API400_IF_STDIN=SEAM-API400-MARK "$STUB_DIR/codex" -o "$SANDBOX/cls70.o" > /dev/null 2>&1
+  rc2=$?
+  if [ "$rc" -eq 1 ] && grep -qF -- 'status\":400' "$SANDBOX/cls70.stdout" \
+     && [ "$rc2" -eq 0 ] && jq -e '.verdict == "approve"' "$SANDBOX/cls70.o" >/dev/null 2>&1; then
+    pass "stub-seam: STUB_API400_IF_STDIN switches a matching call to api_400 (exit 1) and leaves a non-matching call approving (exit 0)"
+  else
+    fail "stub-seam: STUB_API400_IF_STDIN wrong (matching call rc=$rc, non-matching call rc=$rc2) :: $(head -c 300 "$SANDBOX/cls70.stdout")"
+  fi
+  reset_argv_log
+}
+
+#############################################################################
+# TEST 71 — the 400: an HTTP 400 invalid_request_error that is NOT a context failure is an
+#   INFRA_ERROR carrying the API's own message, in EVERY mode that calls Codex [PDR 4, 5].
+#   RED: all six come back OVERFLOW ("diff too large") — the incident.
+#############################################################################
+run_test_71() {
+  local m
+  for m in plan bundle phase-review question investigate prepr; do
+    cls_run_mode "$m" api_400
+    cls_expect_api400 "$m"
+  done
+}
+
+#############################################################################
+# TEST 72 — context code: context_length_exceeded (an invalid_request_error whose TEXT says
+#   nothing about the window) is still a context OVERFLOW, with the summary unchanged [PDR 4].
+#   A guard of unchanged behavior: it may already pass (RED reads it as OVERFLOW because of the
+#   bare "turn.failed" alternative); it keeps the CODE from being mapped to INFRA_ERROR with
+#   every other invalid_request_error once the classifier changes.
+#############################################################################
+run_test_72() {
+  local m
+  for m in prepr question investigate phase-review; do
+    cls_run_mode "$m" context_length
+    cls_expect_context_overflow "context_length_exceeded code, $m"
+  done
+}
+
+#############################################################################
+# TEST 73 — plain API text: a failure whose message is not a JSON API error (a usage limit) is
+#   an INFRA_ERROR with that text as the reason — the bare "turn.failed" is no longer enough
+#   to call a run OVERFLOW [PDR 4].
+#############################################################################
+run_test_73() {
+  local ok=0
+  cls_run_mode prepr usage_limit
+  [ "$CLS_OUTCOME" = "INFRA_ERROR" ] || ok=1
+  cls_summary_has 'usage limit' || ok=1
+  cls_summary_has "codex turn failed (exit 1): You've hit your usage limit. Upgrade to Pro or try again later." || ok=1
+  cls_summary_one_line || ok=1
+  [ "$CLS_NCALLS" -ge 1 ] || ok=1
+  if [ "$ok" -eq 0 ]; then
+    pass "classify-plain: a usage-limit turn.failed -> INFRA_ERROR whose summary carries the plain message"
+  else
+    fail "classify-plain: expected INFRA_ERROR with the usage-limit message in the summary, got $(cls_diag)"
+  fi
+}
+
+#############################################################################
+# TEST 74 — chatter, nonzero: an agent_message that TALKS about the context window ("ran out of
+#   room", "context window") and a command_execution item whose OUTPUT says it, with NO failure
+#   event, are not a context failure. The nonzero exit is a generic INFRA_ERROR; it must never be
+#   OVERFLOW [PDR 4, 6: agent text and command output never make a run OVERFLOW]. (The old
+#   whole-file grep read this log as OVERFLOW.)
+#############################################################################
+run_test_74() {
+  local ok=0
+  cls_run_mode prepr chatter
+  [ "$CLS_OUTCOME" = "INFRA_ERROR" ] || ok=1
+  case "$CLS_SUMMARY" in 'codex exited nonzero (1)'*) : ;; *) ok=1 ;; esac
+  [ "$CLS_NCALLS" -ge 1 ] || ok=1
+  if [ "$ok" -eq 0 ]; then
+    pass "classify-chatter: a nonzero exit whose log only TALKS about the context window (agent text and command output) -> generic INFRA_ERROR, never OVERFLOW"
+  else
+    fail "classify-chatter: expected INFRA_ERROR with a summary starting 'codex exited nonzero (1)', got $(cls_diag)"
+  fi
+}
+
+#############################################################################
+# TEST 75 — warning is harmless: the item.completed warning (item.type "error": "Model
+#   metadata ... not found") never counts as a failure [PDR 6]. Two halves:
+#   (a) a clean run whose log carries it still APPROVEs (exit 0 never reads failure events: a guard
+#       of unchanged behavior, it passes today and must keep passing);
+#   (b) a NONZERO exit whose only "failure" is a warning that mentions the context window is the
+#       generic INFRA_ERROR `codex exited nonzero (1)` — never OVERFLOW, never `codex turn failed`
+#       (a classifier that counted warnings as failure events would fail only here).
+#############################################################################
+run_test_75() {
+  local ok=0 runDir
+  cls_run_mode prepr approve_with_warning
+  runDir="$(printf '%s' "$CLS_STATUS" | jq -r '.runDir // empty' 2>/dev/null)"
+  [ "$CLS_OUTCOME" = "APPROVE" ] || ok=1
+  # the premise: the warning really is in the round log this run produced
+  grep -qF -- 'Model metadata for' "$runDir/round-1.jsonl" 2>/dev/null || ok=1
+  if [ "$ok" -eq 0 ]; then
+    pass "classify-warning: a round whose log carries the item.completed warning still APPROVEs"
+  else
+    fail "classify-warning: expected APPROVE with the warning in $runDir/round-1.jsonl, got $(cls_diag)"
+  fi
+
+  # (b) warning + nonzero exit, no failure event
+  ok=0
+  cls_run_mode prepr warning_nonzero
+  runDir="$(printf '%s' "$CLS_STATUS" | jq -r '.runDir // empty' 2>/dev/null)"
+  [ "$CLS_OUTCOME" = "INFRA_ERROR" ] || ok=1
+  case "$CLS_SUMMARY" in 'codex exited nonzero (1)'*) : ;; *) ok=1 ;; esac
+  cls_summary_has 'codex turn failed' && ok=1             # a warning is not a failure event
+  [ "$CLS_NCALLS" -ge 1 ] || ok=1
+  # the premise: the warning really is in the round log this run produced
+  grep -qF -- 'Context window usage is high' "$runDir/round-1.jsonl" 2>/dev/null || ok=1
+  if [ "$ok" -eq 0 ]; then
+    pass "classify-warning: a nonzero exit whose log only carries a context-window WARNING -> INFRA_ERROR 'codex exited nonzero (1)', never OVERFLOW or 'codex turn failed'"
+  else
+    fail "classify-warning: expected INFRA_ERROR with a summary starting 'codex exited nonzero (1)' (no 'codex turn failed') and the warning in $runDir/round-1.jsonl, got $(cls_diag)"
+  fi
+}
+
+#############################################################################
+# TEST 76 — long message: the summary is ONE line (control characters become spaces), carries the
+#   quotes and the backslash intact, and cuts the API's message to 300 characters plus `…`;
+#   the status is still ONE valid JSON line [PDR 4, ADR-005].
+#############################################################################
+run_test_76() {
+  local ok=0 nlines msglen
+  cls_run_mode prepr long_message
+  [ "$CLS_OUTCOME" = "INFRA_ERROR" ] || ok=1
+  cls_summary_one_line || ok=1                                  # no newline, tab or any control character
+  cls_summary_has '…' || ok=1
+  cls_summary_has 'codex turn failed (exit 1): ' || ok=1
+  # stdout: exactly ONE line, and it is the status JSON
+  nlines="$(grep -c '' "$SANDBOX/cls.out" 2>/dev/null)"; [ -n "$nlines" ] || nlines=0
+  [ "$nlines" -eq 1 ] || ok=1
+  jq -e . "$SANDBOX/cls.out" >/dev/null 2>&1 || ok=1
+  # the message part: 300 characters + the ellipsis, built from the normalized head of the message
+  msglen="$(printf '%s' "$CLS_STATUS" | jq -r '.summary | capture("^codex turn failed \\(exit 1\\): (?<m>.*) — see ") | .m | length' 2>/dev/null)"
+  [ "$msglen" = "301" ] || ok=1
+  printf '%s' "$CLS_STATUS" | jq -e --arg h 'LONG-HEAD first line second line tabbed "double quotes" and back\slash then filler filler-0001 ' \
+    '.summary | capture("^codex turn failed \\(exit 1\\): (?<m>.*) — see ") | .m | (startswith($h) and endswith("…"))' >/dev/null 2>&1 || ok=1
+  if [ "$ok" -eq 0 ]; then
+    pass "classify-long: a 1000+ char message with newline/tab/quotes/backslash -> one-line INFRA_ERROR, message cut to 300 chars + '…', one JSON status line"
+  else
+    fail "classify-long: expected a one-line INFRA_ERROR whose message part is 301 chars ('…' last) in ONE JSON line (stdout lines=$nlines, message length='$msglen'), got $(cls_diag)"
+  fi
+}
+
+#############################################################################
+# TEST 77 — signature past the cap: classification reads the UNCAPPED message, so a context
+#   signature that sits past character 300 still means OVERFLOW (only the SUMMARY is capped)
+#   [ADR-004; the bundle gate's round-1 finding]. A guard of unchanged behavior (RED reads it as
+#   OVERFLOW through the whole-file grep): it breaks if classification is ever fed the capped line.
+#   Three routes: unsharded prepr, question, and the shard classifier.
+#############################################################################
+run_test_77() {
+  local got
+  cls_run_mode prepr long_context
+  cls_expect_context_overflow "long message, signature past char 300, prepr"
+  cls_run_mode question long_context
+  cls_expect_context_overflow "long message, signature past char 300, question"
+  got="$(cls_call classify_verdict_file "$CLS_FX/no-such-verdict.json" "$CLS_FX/long_context.jsonl" 1)"
+  if [ "$got" = "OVERFLOW" ]; then
+    pass "classify-long-context: classify_verdict_file reads the UNCAPPED message (signature past char 300 -> OVERFLOW)"
+  else
+    fail "classify-long-context: classify_verdict_file <missing> long_context.jsonl 1: expected OVERFLOW, got '$got'"
+  fi
+}
+
+#############################################################################
+# TEST 78 — sharded 400 [PDR 5, ADR-006]: TEST 31's three-file repo (docs / tests / other shards)
+#   with the `other` shard's packet carrying SHARD-API400-HERE, so ONLY that shard's call hits the
+#   400 (STUB_API400_IF_STDIN). The aggregate is INFRA_ERROR naming the shard and the API error,
+#   not "shard other inconclusive" OVERFLOW. RED: aggregate OVERFLOW with no API message.
+#############################################################################
+cls_shard_repo() { # <marker> — TEST 31's repo; app.js (group `other`) carries <marker> on every line
+  local r i
+  r="$(make_repo)"
+  printf 'seed\n' > "$r/seed.txt"
+  git -C "$r" add seed.txt && git -C "$r" commit -qm init
+  mkdir -p "$r/docs"
+  { for i in $(seq 1 60); do printf 'docs-line-%s SHARD-DOCS-MARK\n' "$i"; done; } > "$r/docs/guide.md"
+  { for i in $(seq 1 60); do printf 'test-line-%s SHARD-TESTS-MARK\n' "$i"; done; } > "$r/thing.test.js"
+  { for i in $(seq 1 60); do printf 'src-line-%s %s\n' "$i" "$1"; done; } > "$r/app.js"
+  printf '%s' "$r"
+}
+
+cls_multi_repo() { # <marker> — TEST 44's repo: a seed commit, then one changed line carrying <marker>
+  local r
+  r="$(make_repo)"
+  printf 'seed\n' > "$r/seed.txt"
+  git -C "$r" add seed.txt && git -C "$r" commit -qm init
+  printf 'src line %s\n' "$1" >> "$r/seed.txt"
+  printf '%s' "$r"
+}
+
+# The fan-out emitters (the aggregate verdict file, the shard status line, the lens status line)
+# build their JSON from the failing job's message. The 400's text has no quote, backslash or control
+# character, so it cannot tell a jq-built emitter from a raw printf (ADR-006 forbids the printf).
+# Every job of the run just failed with STUB_MODE=long_message — long.jsonl's message carries a
+# newline, a tab, "double quotes" and back\slash — so only a jq-built emitter yields valid JSON.
+cls_expect_long_fanout() { # <label> <noun: shard|lens> — call right after cls_run
+  local ok=0 nlines vpath
+  [ "$CLS_OUTCOME" = "INFRA_ERROR" ] || ok=1
+  [ -n "$CLS_STATUS" ] || ok=1                                       # no parseable status line is a FAIL, never a skip
+  nlines="$(grep -c '' "$SANDBOX/cls.out" 2>/dev/null)"; [ -n "$nlines" ] || nlines=0
+  [ "$nlines" -eq 1 ] || ok=1                                        # stdout is the status line and nothing else
+  jq -e . "$SANDBOX/cls.out" >/dev/null 2>&1 || ok=1                 # ALL of stdout parses (last_json_line alone would skip a broken line)
+  printf '%s' "$CLS_STATUS" | jq -e --arg n "$2" \
+    '.summary | test("^" + $n + " [a-z]+ failed: codex turn failed \\(exit 1\\): LONG-HEAD")' >/dev/null 2>&1 || ok=1
+  cls_summary_has '"double quotes"' || ok=1
+  cls_summary_has 'back\slash' || ok=1
+  cls_summary_one_line || ok=1
+  [ "$CLS_NCALLS" -ge 2 ] || ok=1                                    # a real fan-out: several (stub) calls, each failing
+  # the aggregate verdict file the status points at: ONE valid JSON document with the same text
+  vpath="$(printf '%s' "$CLS_STATUS" | jq -r '.verdictPath // empty' 2>/dev/null)"
+  if [ -n "$vpath" ] && jq -es --arg q '"double quotes"' --arg b 'back\slash' \
+       'length == 1 and (.[0].summary | type == "string" and contains($q) and contains($b))' "$vpath" >/dev/null 2>&1; then :; else ok=1; fi
+  if [ "$ok" -eq 0 ]; then
+    pass "fanout-json: $1, every $2 failing with a long message -> INFRA_ERROR; the status line and the aggregate verdict file are valid JSON carrying \"double quotes\" and back\\slash, summary on one line"
+  else
+    fail "fanout-json: $1: expected INFRA_ERROR whose one-line summary starts '$2 <name> failed: codex turn failed (exit 1): LONG-HEAD', carries \"double quotes\" and back\\slash, with a valid single-line status and a valid aggregate verdict file '$vpath' (stdout lines=$nlines), got $(cls_diag) :: stdout: $(head -c 300 "$SANDBOX/cls.out" | tr '\n\t' '  ') :: verdict file: $(head -c 300 "${vpath:-/nonexistent}" 2>&1 | tr '\n\t' '  ')"
+  fi
+}
+
+run_test_78() {
+  local repo ok=0 vpath
+  repo="$(cls_shard_repo SHARD-API400-HERE)"
+  cls_run "$repo" approve CODEX_GATE_PACKET_BUDGET=9000 CODEX_GATE_SHARD=auto STUB_API400_IF_STDIN=SHARD-API400-HERE -- prepr
+  [ "$CLS_OUTCOME" = "INFRA_ERROR" ] || ok=1
+  case "$CLS_SUMMARY" in 'shard other failed:'*) : ;; *) ok=1 ;; esac
+  cls_summary_has 'HTTP 400' || ok=1
+  cls_summary_has "$CLS_LINE_400" || ok=1
+  cls_summary_has 'sharded into 3; fail closed' || ok=1
+  cls_summary_one_line || ok=1
+  if [ "$ok" -eq 0 ]; then
+    pass "sharded-400: aggregate INFRA_ERROR, summary 'shard other failed: ... HTTP 400 ...' (not OVERFLOW)"
+  else
+    fail "sharded-400: expected INFRA_ERROR with a summary starting 'shard other failed:' that carries the 400, got $(cls_diag)"
+  fi
+  # shards[]: ONLY `other` failed; the other two shards approved (the seam hit one call)
+  if printf '%s' "$CLS_STATUS" | jq -e '(.shards | length == 3)
+       and ((.shards | map({(.group): .outcome}) | add) == {"docs":"APPROVE","tests":"APPROVE","other":"INFRA_ERROR"})' >/dev/null 2>&1 \
+     && [ "$CLS_NCALLS" -eq 3 ]; then
+    pass "sharded-400: shards[] has other=INFRA_ERROR and docs/tests=APPROVE (3 calls: the other shards still ran)"
+  else
+    fail "sharded-400: expected shards[] other=INFRA_ERROR, docs=APPROVE, tests=APPROVE with 3 calls, got shards=$(printf '%s' "$CLS_STATUS" | jq -c '(.shards // []) | map({(.group): .outcome}) | add' 2>/dev/null) :: $(cls_diag)"
+  fi
+  # the aggregate keeps its fail-closed status shape: coverage + shards (ADR-006), no lenses
+  if printf '%s' "$CLS_STATUS" | jq -e '.outcome == "INFRA_ERROR" and has("coverage") and (.coverage | type == "object")
+       and (.shards | type == "array") and (has("lenses") | not)' >/dev/null 2>&1; then
+    pass "sharded-400: the INFRA_ERROR status carries coverage and shards[] (the shard emitter's shape)"
+  else
+    fail "sharded-400: expected an INFRA_ERROR status with coverage and shards[] (and no lenses[]), got $(cls_diag) :: $(printf '%s' "$CLS_STATUS" | jq -c '{outcome, keys: keys}' 2>/dev/null)"
+  fi
+  # the aggregate verdict file is valid JSON and carries the API error too
+  vpath="$(printf '%s' "$CLS_STATUS" | jq -r '.verdictPath // empty' 2>/dev/null)"
+  if [ "$(basename "${vpath:-x}")" = "round-1-verdict.json" ] && [ -f "$vpath" ] \
+     && jq -e '(.summary | type == "string") and (.summary | contains("HTTP 400"))' "$vpath" >/dev/null 2>&1; then
+    pass "sharded-400: round-1-verdict.json is valid JSON and its .summary carries 'HTTP 400'"
+  else
+    fail "sharded-400: round-1-verdict.json missing / invalid / without 'HTTP 400' :: path='$vpath' :: $(head -c 300 "$vpath" 2>&1) :: $(cls_diag)"
+  fi
+  # the shard emitter and the aggregate verdict file on a message that needs JSON escaping: every
+  # shard fails with long.jsonl's message (a newline, a tab, "double quotes", a backslash)
+  repo="$(cls_shard_repo SHARD-LONG-MARK)"
+  cls_run "$repo" long_message CODEX_GATE_PACKET_BUDGET=9000 CODEX_GATE_SHARD=auto -- prepr
+  cls_expect_long_fanout "sharded prepr" shard
+}
+
+#############################################################################
+# TEST 79 — sharded context: a shard that really overflows the context window is still aggregate
+#   OVERFLOW "shard other inconclusive" (TEST 33's shape). It characterizes the path that must NOT
+#   change when ADR-006 adds INFRA_ERROR. May already pass.
+#############################################################################
+run_test_79() {
+  local repo ok=0
+  repo="$(cls_shard_repo SHARD-OVERFLOW-HERE)"
+  cls_run "$repo" approve CODEX_GATE_PACKET_BUDGET=9000 CODEX_GATE_SHARD=auto STUB_OVERFLOW_IF_STDIN=SHARD-OVERFLOW-HERE -- prepr
+  [ "$CLS_OUTCOME" = "OVERFLOW" ] || ok=1
+  cls_summary_has 'shard other inconclusive' || ok=1
+  cls_summary_has 'failed:' && ok=1                       # the INFRA_ERROR wording must NOT leak into an overflow
+  [ "$CLS_NCALLS" -eq 3 ] || ok=1                         # all three shards really ran: a runtime overflow, not a budget one
+  if printf '%s' "$CLS_STATUS" | jq -e '[.shards[] | select(.group == "other")] | .[0].outcome == "OVERFLOW"' >/dev/null 2>&1; then :; else ok=1; fi
+  if [ "$ok" -eq 0 ]; then
+    pass "sharded-context: a shard that overflows the context window stays aggregate OVERFLOW 'shard other inconclusive' (3 calls)"
+  else
+    fail "sharded-context: expected OVERFLOW 'shard other inconclusive' with other=OVERFLOW and 3 calls, got shards=$(printf '%s' "$CLS_STATUS" | jq -c '(.shards // []) | map({(.group): .outcome}) | add' 2>/dev/null) :: $(cls_diag)"
+  fi
+}
+
+#############################################################################
+# TEST 80 — multi-lens 400 [PDR 5, ADR-006]: `prepr --multi` where EVERY lens call gets the 400
+#   (STUB_MODE=api_400). The aggregate is INFRA_ERROR naming the first failing lens and the API
+#   error; every lenses[] entry is INFRA_ERROR. RED: aggregate OVERFLOW "lens <l> inconclusive".
+#############################################################################
+run_test_80() {
+  local repo ok=0
+  repo="$(cls_multi_repo MULTI-LENS-API400-MARK)"                     # TEST 44's setup
+  cls_run "$repo" api_400 -- prepr --multi
+  [ "$CLS_OUTCOME" = "INFRA_ERROR" ] || ok=1
+  case "$CLS_SUMMARY" in 'lens '*) : ;; *) ok=1 ;; esac
+  cls_summary_has ' failed: ' || ok=1
+  cls_summary_has 'HTTP 400' || ok=1
+  cls_summary_has "$CLS_LINE_400" || ok=1
+  cls_summary_has 'lenses; fail closed)' || ok=1
+  cls_summary_one_line || ok=1
+  if [ "$ok" -eq 0 ]; then
+    pass "multi-400: aggregate INFRA_ERROR, summary 'lens <l> failed: ... HTTP 400 ...' (not OVERFLOW)"
+  else
+    fail "multi-400: expected INFRA_ERROR with a summary starting 'lens ' that contains ' failed: ' and the 400, got $(cls_diag)"
+  fi
+  if printf '%s' "$CLS_STATUS" | jq -e '(.lenses | type == "array") and (.lenses | length >= 2) and all(.lenses[]; .outcome == "INFRA_ERROR")' >/dev/null 2>&1 \
+     && printf '%s' "$CLS_STATUS" | jq -e 'has("coverage") and (has("shards") | not)' >/dev/null 2>&1; then
+    pass "multi-400: every lenses[] entry is INFRA_ERROR, and the status carries coverage (the lens emitter's shape)"
+  else
+    fail "multi-400: expected >=2 lenses[] entries, ALL INFRA_ERROR, plus coverage; got lenses=$(printf '%s' "$CLS_STATUS" | jq -c '(.lenses // []) | map({(.lens): .outcome}) | add' 2>/dev/null) :: $(cls_diag)"
+  fi
+  # the lens emitter and the aggregate verdict file on a message that needs JSON escaping: every
+  # lens fails with long.jsonl's message (a newline, a tab, "double quotes", a backslash)
+  repo="$(cls_multi_repo MULTI-LENS-LONG-MARK)"
+  cls_run "$repo" long_message -- prepr --multi
+  cls_expect_long_fanout "prepr --multi" lens
+}
+
+#############################################################################
+# TEST 81 — aggregate precedence BLOCK > INFRA_ERROR > OVERFLOW > APPROVE, driven on
+#   fan_out_and_aggregate directly (the wrapper sourced in a subshell, as TEST 36 does) over two
+#   jobs whose packets carry per-call stub markers [ADR-006]. cls_fan prints the aggregate and the
+#   output variables, including the two new ones: FAN_FIRST_INFRA (the first INFRA_ERROR job) and
+#   FAN_INFRA_REASON (its one-line reason), while FAN_FIRST_INCONCLUSIVE keeps its meaning (the
+#   first OVERFLOW *or* INFRA_ERROR job). It has its own job directory: TEST 36's run_fan reads
+#   a `job_dir` local of TEST 36 itself.
+#############################################################################
+cls_fan() { # <job-dir> <jobs-file> <stub-env-string> — prints OUTCOME / FIRSTINC / FIRSTINFRA / INFRAREASON / JOBS / AGGSUMMARY
+  local jd="$1" jobs="$2" stubenv="$3"
+  (
+    set +u
+    # shellcheck disable=SC1090
+    . "$WRAPPER" >/dev/null 2>&1 || { printf 'SOURCEFAIL\n'; exit 0; }
+    if [ "$(type -t fan_out_and_aggregate 2>/dev/null)" != function ]; then printf 'NOFUNC\n'; exit 0; fi
+    RUN_DIR="$jd/run"; rm -rf "$RUN_DIR"; mkdir -p "$RUN_DIR"
+    REPO_ROOT="$jd"
+    ROUND=1; set_round_paths
+    eval "$stubenv"
+    export STUB_MODE="${STUB_MODE:-approve}"
+    export STUB_BLOCK_IF_STDIN="${STUB_BLOCK_IF_STDIN:-}"
+    export STUB_OVERFLOW_IF_STDIN="${STUB_OVERFLOW_IF_STDIN:-}"
+    export STUB_API400_IF_STDIN="${STUB_API400_IF_STDIN:-}"
+    fan_out_and_aggregate "$jobs" >/dev/null 2>&1
+    printf 'OUTCOME=%s\n' "${FAN_OUTCOME:-}"
+    printf 'FIRSTINC=%s\n' "${FAN_FIRST_INCONCLUSIVE:-}"
+    printf 'FIRSTINFRA=%s\n' "${FAN_FIRST_INFRA:-}"
+    printf 'INFRAREASON=%s\n' "${FAN_INFRA_REASON:-}"
+    printf 'JOBS=%s\n' "$(printf '%s' "${FAN_JOBS_JSON:-[]}" | jq -cS 'map({(.group): .outcome}) | add' 2>/dev/null)"
+    printf 'AGGSUMMARY=%s\n' "$(jq -r '.summary // ""' "$VERDICT_FILE" 2>/dev/null)"
+  ) 2>/dev/null
+}
+
+cls_fan_field() { # <field> — the value of OUTCOME= / FIRSTINC= ... in $CLS_FAN_OUT
+  printf '%s\n' "$CLS_FAN_OUT" | sed -n "s/^$1=//p" | head -n 1
+}
+
+cls_expect_fan() { # <label> <outcome> <first-inconclusive|ANY> <first-infra|ANY> <jobs-json> — compare the aggregate AND each job's own outcome
+  local ok=0
+  [ "$(cls_fan_field OUTCOME)" = "$2" ] || ok=1
+  [ "$3" = ANY ] || [ "$(cls_fan_field FIRSTINC)" = "$3" ] || ok=1
+  [ "$4" = ANY ] || [ "$(cls_fan_field FIRSTINFRA)" = "$4" ] || ok=1
+  # the premise: each job really ended as the case says (the seams hit the jobs they were aimed at)
+  [ "$(cls_fan_field JOBS)" = "$(printf '%s' "$5" | jq -cS . 2>/dev/null)" ] || ok=1
+  if [ "$ok" -eq 0 ]; then
+    pass "fan-precedence: $1 -> $2 (jobs $5; FAN_FIRST_INCONCLUSIVE='$3', FAN_FIRST_INFRA='$4')"
+  else
+    fail "fan-precedence: $1: expected OUTCOME=$2 FIRSTINC='$3' FIRSTINFRA='$4' JOBS=$5, got :: $(printf '%s' "$CLS_FAN_OUT" | tr '\n' '|' | head -c 700)"
+  fi
+}
+
+run_test_81() {
+  local jd="$SANDBOX/cls81" reason agg
+  rm -rf "$jd"; mkdir -p "$jd"
+
+  # control: the driver and the seams do not leak — two clean jobs APPROVE, no INFRA job named
+  printf 'packet alpha: clean\n' > "$jd/a.packet"
+  printf 'packet beta: clean\n'  > "$jd/b.packet"
+  printf 'alpha\t1\t%s\nbeta\t1\t%s\n' "$jd/a.packet" "$jd/b.packet" > "$jd/jobs-ok.tsv"
+  CLS_FAN_OUT="$(cls_fan "$jd" "$jd/jobs-ok.tsv" 'STUB_MODE=approve; STUB_API400_IF_STDIN=FAN-API400-NEVER-PRESENT')"
+  cls_expect_fan "control: two clean jobs" APPROVE "" "" '{"alpha":"APPROVE","beta":"APPROVE"}'
+
+  # {alpha: BLOCK, beta: 400} -> BLOCK (blockers are actionable and a re-run re-surfaces the failure)
+  printf 'packet alpha: SHARDBLOCKER-ALPHA flagged\n' > "$jd/a.packet"
+  printf 'packet beta: FAN-API400-BETA\n'             > "$jd/b.packet"
+  printf 'alpha\t1\t%s\nbeta\t1\t%s\n' "$jd/a.packet" "$jd/b.packet" > "$jd/jobs-1.tsv"
+  CLS_FAN_OUT="$(cls_fan "$jd" "$jd/jobs-1.tsv" 'STUB_MODE=approve; STUB_BLOCK_IF_STDIN=SHARDBLOCKER; STUB_API400_IF_STDIN=FAN-API400-BETA')"
+  # (beta's own outcome must be INFRA_ERROR: the 400 really reached it and was classified, then outranked)
+  cls_expect_fan "{alpha: block, beta: 400}: BLOCK outranks INFRA_ERROR" BLOCK ANY ANY '{"alpha":"BLOCK","beta":"INFRA_ERROR"}'
+
+  # {alpha: 400, beta: overflow} -> INFRA_ERROR, first infra alpha, first inconclusive alpha
+  printf 'packet alpha: FAN-API400-ALPHA\n'   > "$jd/a.packet"
+  printf 'packet beta: FAN-OVERFLOW-BETA\n'   > "$jd/b.packet"
+  printf 'alpha\t1\t%s\nbeta\t1\t%s\n' "$jd/a.packet" "$jd/b.packet" > "$jd/jobs-2.tsv"
+  CLS_FAN_OUT="$(cls_fan "$jd" "$jd/jobs-2.tsv" 'STUB_MODE=approve; STUB_API400_IF_STDIN=FAN-API400-ALPHA; STUB_OVERFLOW_IF_STDIN=FAN-OVERFLOW-BETA')"
+  cls_expect_fan "{alpha: 400, beta: overflow}: INFRA_ERROR outranks OVERFLOW" INFRA_ERROR alpha alpha '{"alpha":"INFRA_ERROR","beta":"OVERFLOW"}'
+
+  # {alpha: overflow, beta: 400} -> INFRA_ERROR, first infra beta, first inconclusive alpha
+  printf 'packet alpha: FAN-OVERFLOW-ALPHA\n' > "$jd/a.packet"
+  printf 'packet beta: FAN-API400-BETA\n'     > "$jd/b.packet"
+  printf 'alpha\t1\t%s\nbeta\t1\t%s\n' "$jd/a.packet" "$jd/b.packet" > "$jd/jobs-3.tsv"
+  CLS_FAN_OUT="$(cls_fan "$jd" "$jd/jobs-3.tsv" 'STUB_MODE=approve; STUB_OVERFLOW_IF_STDIN=FAN-OVERFLOW-ALPHA; STUB_API400_IF_STDIN=FAN-API400-BETA')"
+  cls_expect_fan "{alpha: overflow, beta: 400}: the INFRA job is named even when an OVERFLOW job came first" INFRA_ERROR alpha beta '{"alpha":"OVERFLOW","beta":"INFRA_ERROR"}'
+  reason="$(cls_fan_field INFRAREASON)"
+  if printf '%s' "$reason" | grep -qF -- 'HTTP 400' && printf '%s' "$reason" | grep -qF -- "$CLS_LINE_400" \
+     && [ "$(cls_fan_field AGGSUMMARY)" = "shard beta failed: $reason" ]; then
+    pass "fan-precedence: FAN_INFRA_REASON carries 'HTTP 400' and the aggregate verdict .summary is 'shard beta failed: <reason>'"
+  else
+    fail "fan-precedence: expected FAN_INFRA_REASON with the unwrapped 400 and AGGSUMMARY 'shard beta failed: <reason>', got reason='$reason' :: $(printf '%s' "$CLS_FAN_OUT" | tr '\n' '|' | head -c 600)"
+  fi
+
+  # {alpha: exit 0 with an EMPTY verdict, beta: same} -> INFRA_ERROR; the reason is the missing verdict
+  # (clean packets again: the ones above still carry the previous case's markers)
+  printf 'packet alpha: clean\n' > "$jd/a.packet"
+  printf 'packet beta: clean\n'  > "$jd/b.packet"
+  printf 'alpha\t1\t%s\nbeta\t1\t%s\n' "$jd/a.packet" "$jd/b.packet" > "$jd/jobs-4.tsv"
+  CLS_FAN_OUT="$(cls_fan "$jd" "$jd/jobs-4.tsv" 'STUB_MODE=empty')"
+  cls_expect_fan "{alpha: empty verdict, beta: empty verdict} (exit 0): an unusable verdict is INFRA_ERROR" INFRA_ERROR alpha alpha '{"alpha":"INFRA_ERROR","beta":"INFRA_ERROR"}'
+  if [ "$(cls_fan_field INFRAREASON)" = "no usable verdict ($jd/run/shard-alpha-verdict.json)" ]; then
+    pass "fan-precedence: an exit-0 job's reason is 'no usable verdict (<its verdict path>)'"
+  else
+    fail "fan-precedence: expected FAN_INFRA_REASON='no usable verdict ($jd/run/shard-alpha-verdict.json)', got :: $(printf '%s' "$CLS_FAN_OUT" | tr '\n' '|' | head -c 600)"
+  fi
+
+  # {alpha: a long failure message with a newline, a tab, "double quotes" and a backslash} -> the
+  # aggregate verdict file is built by jq (ADR-006), so it is still valid JSON and carries the text.
+  # The 400's message has none of those characters: only this case can tell jq from a raw printf.
+  printf 'packet alpha: clean\n' > "$jd/a.packet"
+  printf 'alpha\t1\t%s\n' "$jd/a.packet" > "$jd/jobs-5.tsv"
+  CLS_FAN_OUT="$(cls_fan "$jd" "$jd/jobs-5.tsv" 'STUB_MODE=long_message')"
+  cls_expect_fan "{alpha: long message with quotes, a backslash, a newline and a tab}: INFRA_ERROR" INFRA_ERROR alpha alpha '{"alpha":"INFRA_ERROR"}'
+  agg="$jd/run/round-1-verdict.json"
+  if jq -es --arg h 'shard alpha failed: codex turn failed (exit 1): LONG-HEAD' --arg q '"double quotes"' --arg b 'back\slash' \
+       'length == 1 and (.[0].summary | type == "string" and startswith($h) and contains($q) and contains($b)
+                         and ((test("[[:cntrl:]]")) | not))' "$agg" >/dev/null 2>&1; then
+    pass "fan-json: the aggregate verdict file is valid JSON; its one-line .summary starts 'shard alpha failed: codex turn failed (exit 1): LONG-HEAD' and carries \"double quotes\" and back\\slash"
+  else
+    fail "fan-json: $agg must be ONE valid JSON document whose one-line .summary starts 'shard alpha failed: codex turn failed (exit 1): LONG-HEAD' and contains \"double quotes\" and back\\slash, got :: $(head -c 400 "$agg" 2>&1 | tr '\n\t' '  ') :: $(printf '%s' "$CLS_FAN_OUT" | tr '\n' '|' | head -c 400)"
+  fi
+
+  # {alpha: real-shaped "Reconnecting... N/5" error events, then turn.completed, a degenerate verdict, exit 0}
+  # -> INFRA_ERROR whose reason is the unusable verdict. Codex logs those top-level errors inside turns that
+  # then complete normally, so on a zero exit they are noise: the reason must NOT be `codex turn failed (exit 0)`.
+  printf 'packet alpha: clean\n' > "$jd/a.packet"
+  printf 'alpha\t1\t%s\n' "$jd/a.packet" > "$jd/jobs-6.tsv"
+  CLS_FAN_OUT="$(cls_fan "$jd" "$jd/jobs-6.tsv" 'STUB_MODE=reconnect_degenerate')"
+  cls_expect_fan "{alpha: reconnect errors, turn.completed, degenerate verdict} (exit 0): INFRA_ERROR" INFRA_ERROR alpha alpha '{"alpha":"INFRA_ERROR"}'
+  reason="$(cls_fan_field INFRAREASON)"
+  if [ "${reason#no usable verdict (}" != "$reason" ] \
+     && printf '%s' "$reason" | grep -qF -- "$jd/run/shard-alpha-verdict.json" \
+     && ! printf '%s' "$reason" | grep -qF -- 'codex turn failed'; then
+    pass "fan-reconnect: an exit-0 job whose log holds Reconnecting... error events reads 'no usable verdict (<its verdict path>)', never 'codex turn failed'"
+  else
+    fail "fan-reconnect: expected FAN_INFRA_REASON starting 'no usable verdict (' with '$jd/run/shard-alpha-verdict.json' and no 'codex turn failed', got reason='$reason' :: $(printf '%s' "$CLS_FAN_OUT" | tr '\n' '|' | head -c 600)"
+  fi
+}
+
+#############################################################################
+# TEST 82 — classify_verdict_file (the non-emitting shard / lens classifier) on its own
+#   [ADR-004]: `classify_verdict_file <missing verdict> <jsonl> 1` for each failed-turn log, and
+#   its unchanged exit-0 paths. Always exactly ONE token (TEST 36 shadows this function and the
+#   fan-out reads it through $(...), so the 3-argument one-token contract is load-bearing).
+#############################################################################
+cls_expect_token() { # <label> <expected-token> <jsonl> <exit> [verdict-file]
+  local got words
+  cls_call classify_verdict_file "${5:-$CLS_FX/no-such-verdict.json}" "$3" "$4" > "$SANDBOX/cls.unit"
+  got="$(cat "$SANDBOX/cls.unit")"
+  words="$(wc -w < "$SANDBOX/cls.unit" | tr -d ' ')"
+  if [ "$got" = "$2" ] && [ "$words" = "1" ]; then
+    pass "classify-unit: $1 -> exactly '$2'"
+  else
+    fail "classify-unit: $1: expected exactly the one token '$2', got '$got' ($words words)"
+  fi
+}
+
+run_test_82() {
+  # nonzero exit, no verdict file: the cause is read from the failure events only
+  cls_expect_token "api_400 (a 400 that is not a context failure)" INFRA_ERROR "$CLS_FX/api_400.jsonl" 1
+  cls_expect_token "context_length (the code, no signature text)" OVERFLOW "$CLS_FX/context_length.jsonl" 1
+  cls_expect_token "chatter (signature text, no failure event)" INFRA_ERROR "$CLS_FX/chatter.jsonl" 1
+  cls_expect_token "the overflow stub's own turn.failed text" OVERFLOW "$CLS_FX/overflow.jsonl" 1
+  cls_expect_token "a top-level error event alone (no turn.failed) with the signature" OVERFLOW "$CLS_FX/error_only.jsonl" 1
+  cls_expect_token "usage_limit (plain failure text)" INFRA_ERROR "$CLS_FX/usage_limit.jsonl" 1
+  cls_expect_token "long_context (signature past char 300, uncapped)" OVERFLOW "$CLS_FX/long_context.jsonl" 1
+  cls_expect_token "long_message (a long failure with no signature)" INFRA_ERROR "$CLS_FX/long.jsonl" 1
+  cls_expect_token "a warning item that mentions the context window" INFRA_ERROR "$CLS_FX/warning_context.jsonl" 1
+  cls_expect_token "a missing jsonl" INFRA_ERROR "$CLS_FX/no-such.jsonl" 1
+
+  # exit 0: the verdict decides, as before (the classifier edit must not touch these)
+  printf '%s\n' '{"verdict":"approve","summary":"ok","blockers":[],"nonBlocking":[]}' > "$CLS_FX/v-approve.json"
+  printf '%s\n' '{"verdict":"request_changes","summary":"no","blockers":[{"class":"agent_fixable","severity":"P1","file":"a.js","line":1,"issue":"x","suggestion":"y"}],"nonBlocking":[]}' > "$CLS_FX/v-block.json"
+  printf '%s\n' '{"verdict":"request_changes","summary":"degenerate","blockers":[],"nonBlocking":[]}' > "$CLS_FX/v-degenerate.json"
+  cls_expect_token "exit 0 with an approve verdict" APPROVE "$CLS_FX/chatter.jsonl" 0 "$CLS_FX/v-approve.json"
+  cls_expect_token "exit 0 with a blocker" BLOCK "$CLS_FX/chatter.jsonl" 0 "$CLS_FX/v-block.json"
+  cls_expect_token "exit 0 with request_changes and no blockers" INFRA_ERROR "$CLS_FX/chatter.jsonl" 0 "$CLS_FX/v-degenerate.json"
+  cls_expect_token "exit 0 with no verdict file" INFRA_ERROR "$CLS_FX/chatter.jsonl" 0
+}
+
+#############################################################################
+# TEST 83 — the shared helpers on their own [ADR-004 / ADR-005]: codex_failure_messages (the
+#   structured failure events, one line each, optionally capped), codex_context_overflow (the
+#   context signature test over the UNCAPPED lines) and codex_failure_reason (the one-line reason
+#   both callers put in a summary). Each runs in a subshell with the wrapper sourced, so an
+#   undefined helper (RED) is a FAIL, never an abort.
+#############################################################################
+cls_expect_lines() { # <label> <expected-file> <jsonl> — codex_failure_messages output == expected, byte for byte
+  cls_call codex_failure_messages "$3" > "$SANDBOX/cls.unit"
+  if cmp -s "$SANDBOX/cls.unit" "$2"; then
+    pass "helper-messages: $1"
+  else
+    fail "helper-messages: $1: expected $(wc -c < "$2" | tr -d ' ') bytes ($(head -c 200 "$2" | tr '\n' '|')) got $(wc -c < "$SANDBOX/cls.unit" | tr -d ' ') bytes ($(head -c 200 "$SANDBOX/cls.unit" | tr '\n' '|'))"
+  fi
+}
+
+cls_expect_overflow_rc() { # <label> <expected-rc> <jsonl> — codex_context_overflow's exit status
+  local rc
+  cls_call codex_context_overflow "$3" > /dev/null
+  rc=$?
+  if [ "$rc" -eq "$2" ]; then
+    pass "helper-overflow: $1 -> exit $2"
+  else
+    fail "helper-overflow: $1: expected exit $2, got $rc (97 = the wrapper did not source or the helper is undefined)"
+  fi
+}
+
+run_test_83() {
+  local exp="$SANDBOX/cls83.expected" lenu lenc line1 reason rc
+
+  # --- codex_failure_messages: the incident's TWO failure events (error + turn.failed), identical,
+  #     the JSON API error unwrapped; the warning and the lifecycle lines contribute nothing ---
+  printf '%s\n%s\n' "$CLS_LINE_400" "$CLS_LINE_400" > "$exp"
+  cls_expect_lines "api_400.jsonl -> exactly two identical unwrapped lines '$CLS_LINE_400'" "$exp" "$CLS_FX/api_400.jsonl"
+  printf 'HTTP 400 invalid_request_error context_length_exceeded: Input is too long for the requested model.\n%s\n' \
+    'HTTP 400 invalid_request_error context_length_exceeded: Input is too long for the requested model.' > "$exp"
+  cls_expect_lines "context_length.jsonl -> the code is kept in the line ('HTTP 400 <type> <code>: <message>')" "$exp" "$CLS_FX/context_length.jsonl"
+  printf "You've hit your usage limit. Upgrade to Pro or try again later.\nYou've hit your usage limit. Upgrade to Pro or try again later.\n" > "$exp"
+  cls_expect_lines "usage_limit.jsonl -> plain messages pass through unchanged" "$exp" "$CLS_FX/usage_limit.jsonl"
+  printf "Codex ran out of room in the model's context window while reading the diff.\n" > "$exp"
+  cls_expect_lines "error_only.jsonl -> the top-level error event's message, one line" "$exp" "$CLS_FX/error_only.jsonl"
+  : > "$exp"
+  cls_expect_lines "chatter.jsonl (agent text and command output) -> nothing" "$exp" "$CLS_FX/chatter.jsonl"
+  cls_expect_lines "warning_context.jsonl (an item.completed of type error) -> nothing" "$exp" "$CLS_FX/warning_context.jsonl"
+  cls_expect_lines "a missing file -> nothing" "$exp" "$CLS_FX/no-such.jsonl"
+  cls_call codex_failure_messages "$CLS_FX/no-such.jsonl" > /dev/null
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    pass "helper-messages: a missing file is not an error (exit 0, so no caller aborts)"
+  else
+    fail "helper-messages: a missing file must exit 0, got $rc (97 = the wrapper did not source or the helper is undefined)"
+  fi
+
+  # --- long.jsonl: uncapped, ONE line, 1000+ characters, quotes and backslash kept, control
+  #     characters turned into spaces ---
+  cls_call codex_failure_messages "$CLS_FX/long.jsonl" > "$SANDBOX/cls83.long"
+  lenu="$(jq -Rr 'length' "$SANDBOX/cls83.long" 2>/dev/null | tr '\n' ' ')"
+  if [ "$(grep -c '' "$SANDBOX/cls83.long")" = "1" ] && [ "${lenu% }" -gt 1000 ] 2>/dev/null \
+     && ! grep -q "$(printf '\t')" "$SANDBOX/cls83.long" \
+     && grep -qF -- 'LONG-HEAD first line second line tabbed "double quotes" and back\slash then filler filler-0001 ' "$SANDBOX/cls83.long"; then
+    pass "helper-messages: long.jsonl uncapped -> one line of $lenu characters, control characters became spaces, quotes and backslash intact"
+  else
+    fail "helper-messages: long.jsonl uncapped: expected ONE line > 1000 chars with no tab, got lines=$(grep -c '' "$SANDBOX/cls83.long") lengths='$lenu' :: $(head -c 200 "$SANDBOX/cls83.long")"
+  fi
+  # --- with cap 300: exactly the first 300 characters of the uncapped line, plus the ellipsis ---
+  cls_call codex_failure_messages "$CLS_FX/long.jsonl" 300 > "$SANDBOX/cls83.cap"
+  lenc="$(jq -Rr 'length' "$SANDBOX/cls83.cap" 2>/dev/null | tr '\n' ' ')"
+  if [ "$(grep -c '' "$SANDBOX/cls83.cap")" = "1" ] && [ "${lenc% }" = "301" ] \
+     && jq -ne --rawfile u "$SANDBOX/cls83.long" --rawfile c "$SANDBOX/cls83.cap" \
+          '($u | rtrimstr("\n")) as $uu | ($c | rtrimstr("\n")) as $cc | $cc == ($uu[0:300] + "…")' >/dev/null 2>&1; then
+    pass "helper-messages: long.jsonl with cap 300 -> the first 300 characters of the uncapped line plus '…' (301)"
+  else
+    fail "helper-messages: long.jsonl with cap 300: expected one line of 301 chars = uncapped[0:300] + '…', got lines=$(grep -c '' "$SANDBOX/cls83.cap") length='$lenc' :: $(head -c 200 "$SANDBOX/cls83.cap")"
+  fi
+  # a cap longer than the line leaves it alone (no ellipsis on a short message)
+  cls_call codex_failure_messages "$CLS_FX/usage_limit.jsonl" 300 > "$SANDBOX/cls83.cap"
+  line1="$(head -n 1 "$SANDBOX/cls83.cap")"
+  if [ "$line1" = "You've hit your usage limit. Upgrade to Pro or try again later." ]; then
+    pass "helper-messages: a message shorter than the cap is not cut and gets no '…'"
+  else
+    fail "helper-messages: a short message under cap 300 must be unchanged, got '$line1'"
+  fi
+
+  # --- codex_context_overflow: the signature test, over the UNCAPPED failure lines only ---
+  cls_expect_overflow_rc "context_length.jsonl (the code)" 0 "$CLS_FX/context_length.jsonl"
+  cls_expect_overflow_rc "overflow.jsonl (the stub's 'ran out of room ... context window')" 0 "$CLS_FX/overflow.jsonl"
+  cls_expect_overflow_rc "error_only.jsonl (a top-level error event, no turn.failed)" 0 "$CLS_FX/error_only.jsonl"
+  cls_expect_overflow_rc "long_context.jsonl (signature past char 300)" 0 "$CLS_FX/long_context.jsonl"
+  cls_expect_overflow_rc "api_400.jsonl (a 400 that is not a context failure)" 1 "$CLS_FX/api_400.jsonl"
+  cls_expect_overflow_rc "usage_limit.jsonl" 1 "$CLS_FX/usage_limit.jsonl"
+  cls_expect_overflow_rc "chatter.jsonl (agent text and command output about the context window)" 1 "$CLS_FX/chatter.jsonl"
+  cls_expect_overflow_rc "warning_context.jsonl (a warning item about the context window)" 1 "$CLS_FX/warning_context.jsonl"
+  cls_expect_overflow_rc "a missing file" 1 "$CLS_FX/no-such.jsonl"
+
+  # --- codex_failure_reason <jsonl> <exit> <stderr> <verdict>: the three shapes of a reason ---
+  reason="$(cls_call codex_failure_reason "$CLS_FX/api_400.jsonl" 1 /dev/null "$CLS_FX/v.json")"
+  if [ "$reason" = "codex turn failed (exit 1): $CLS_LINE_400 — see $CLS_FX/api_400.jsonl" ]; then
+    pass "helper-reason: a failure event -> 'codex turn failed (exit N): <unwrapped API error> — see <jsonl>'"
+  else
+    fail "helper-reason: api_400 expected 'codex turn failed (exit 1): $CLS_LINE_400 — see $CLS_FX/api_400.jsonl', got '$reason'"
+  fi
+  reason="$(cls_call codex_failure_reason "$CLS_FX/chatter.jsonl" 1 "$CLS_FX/the.stderr" "$CLS_FX/v.json")"
+  if [ "$reason" = "codex exited nonzero (1); see $CLS_FX/the.stderr" ]; then
+    pass "helper-reason: no failure event, nonzero exit -> 'codex exited nonzero (N); see <stderr>'"
+  else
+    fail "helper-reason: chatter + exit 1 expected 'codex exited nonzero (1); see $CLS_FX/the.stderr', got '$reason'"
+  fi
+  reason="$(cls_call codex_failure_reason "$CLS_FX/chatter.jsonl" 0 "$CLS_FX/the.stderr" "$CLS_FX/v.json")"
+  if [ "$reason" = "no usable verdict ($CLS_FX/v.json)" ]; then
+    pass "helper-reason: no failure event, exit 0 -> 'no usable verdict (<verdict>)'"
+  else
+    fail "helper-reason: chatter + exit 0 expected 'no usable verdict ($CLS_FX/v.json)', got '$reason'"
+  fi
+  # a ZERO exit never reads failure events: real Codex logs top-level "Reconnecting... N/5" errors inside turns
+  # that then complete normally, so with exit 0 they are noise and the reason is still the unusable verdict
+  reason="$(cls_call codex_failure_reason "$CLS_FX/reconnect_ok.jsonl" 0 x /some/verdict.json)"
+  if [ "$reason" = "no usable verdict (/some/verdict.json)" ]; then
+    pass "helper-reason: reconnect error events in a completed turn, exit 0 -> exactly 'no usable verdict (<verdict>)', never 'codex turn failed'"
+  else
+    fail "helper-reason: reconnect_ok.jsonl + exit 0 expected exactly 'no usable verdict (/some/verdict.json)', got '$(printf '%s' "$reason" | head -c 300)'"
+  fi
+  # two failure events with DIFFERENT messages: the reason is the LAST one (ADR-005; the real events repeat
+  # one message, so only this fixture can tell the last line from the first)
+  reason="$(cls_call codex_failure_reason "$CLS_FX/two_messages.jsonl" 1 /dev/null "$CLS_FX/v.json")"
+  if printf '%s' "$reason" | grep -qF -- 'LAST-MSG model not supported' && ! printf '%s' "$reason" | grep -qF -- 'FIRST-MSG'; then
+    pass "helper-reason: with two different failure messages the reason carries the LAST one (LAST-MSG), not the first"
+  else
+    fail "helper-reason: two_messages.jsonl expected a reason with 'LAST-MSG model not supported' and no 'FIRST-MSG', got '$(printf '%s' "$reason" | head -c 300)'"
+  fi
+  reason="$(cls_call codex_failure_reason "$CLS_FX/long.jsonl" 1 /dev/null "$CLS_FX/v.json")"
+  if printf '%s' "$reason" | jq -Rre --arg p "$CLS_FX/long.jsonl" \
+       'capture("^codex turn failed \\(exit 1\\): (?<m>.*) — see (?<f>.*)$") | (.m | length == 301 and endswith("…")) and (.f == $p)' >/dev/null 2>&1; then
+    pass "helper-reason: the reason caps the API message at 300 characters + '…'"
+  else
+    fail "helper-reason: long.jsonl expected a 301-char message part ending in '…', got '$(printf '%s' "$reason" | head -c 200)'"
+  fi
+}
+
+#############################################################################
 # run everything
 #############################################################################
 printf '======== codex-gate.test.sh ========\n'
@@ -5457,6 +6535,20 @@ run_test_66
 run_test_67
 run_test_68
 run_test_69
+run_test_70
+run_test_71
+run_test_72
+run_test_73
+run_test_74
+run_test_75
+run_test_76
+run_test_77
+run_test_78
+run_test_79
+run_test_80
+run_test_81
+run_test_82
+run_test_83
 
 printf '====================================\n'
 printf 'PASS=%d FAIL=%d\n' "$PASS_COUNT" "$FAIL_COUNT"

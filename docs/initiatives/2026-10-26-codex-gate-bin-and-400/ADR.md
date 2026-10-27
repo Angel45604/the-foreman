@@ -111,6 +111,11 @@ repeats the `error` event before it):
 
 `codex turn failed (exit <N>): <message> — see <jsonl path>`
 
+That form is used only on a **nonzero** exit. A zero exit with no usable verdict reads `no usable verdict (<path>)`
+even when the log holds top-level `error` events. Codex writes `Reconnecting... N/5` errors inside turns that then
+complete normally (18 of 38 local logs that have them end in `turn.completed`), so on exit 0 those events are noise,
+not the cause. The P2.2 spec review found this.
+
 On the incident run this yields `… HTTP 400 invalid_request_error: The 'gpt-6-astra' model is not supported when using
 Codex with a ChatGPT account. …` (prototyped against the real file 2026-10-26).
 

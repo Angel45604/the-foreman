@@ -141,16 +141,21 @@ Applies to **`prepr` / `prepr-delta` ONLY** (`phase-review`/`plan`/`bundle`/`que
 - **DETERMINISTIC aggregate (NOT an LLM pass — fail-closed, never drops a blocker)** — read every shard verdict:
   - **BLOCK** if ANY shard is BLOCK ⇒ union ALL shards' `blockers[]` + `nonBlocking[]` into
     `<runDir>/round-1-verdict.json`; emit BLOCK with the combined counts.
-  - else **OVERFLOW** if ANY shard is OVERFLOW/INFRA_ERROR/inconclusive ⇒ `shard <g> inconclusive — cannot
+  - else **INFRA_ERROR** if ANY shard failed for a non-context reason (an HTTP error, usage limit, model not
+    supported, or an unusable verdict) ⇒ `shard <g> failed: <reason>`, carrying the job's reason (the API's own
+    message when one was logged).
+  - else **OVERFLOW** if ANY shard is OVERFLOW/inconclusive ⇒ `shard <g> inconclusive — cannot
     certify full coverage` (NEVER APPROVE when a shard didn't get a clean verdict).
   - else (ALL shards APPROVE) ⇒ **APPROVE**, `sharded review: N shards all approved (M files, full coverage)`
     (and the whole reviewed-now surface is recorded in the ledger, like a normal APPROVE).
   Rationale (in-code comment): a deterministic union guarantees a gate never drops a shard's blocker nor approves
   over an unreviewed shard — an LLM aggregate could do either.
-- **Status** — the sharded run emits ONE status line (`APPROVE`/`BLOCK`/`OVERFLOW`) with the usual review fields
-  **plus** the additive Tier-2 `coverage` object **and** a `shards` summary `[{group, files, outcome, verdictPath}]`.
-  Additive only — existing consumers read `outcome`/`blockers` unchanged; `shards` is present only on a sharded run.
-  A missing Codex binary fails at the first shard with a base-shape `INFRA_ERROR` (no `shards[]`).
+- **Status** — the sharded run emits ONE status line (`APPROVE`/`BLOCK`/`INFRA_ERROR`/`OVERFLOW`) with the usual
+  review fields **plus** the additive Tier-2 `coverage` object **and** a `shards` summary
+  `[{group, files, outcome, verdictPath}]`. Additive only — existing consumers read `outcome`/`blockers`
+  unchanged; `shards` is present only on a sharded run. An **aggregate** `INFRA_ERROR` (a shard failed) carries
+  `shards[]` and `coverage`; an early base-shape `INFRA_ERROR` (a malformed knob, or the Codex binary not found,
+  raised at the first shard) carries neither.
 
 Status: **Tier 3 contracts GREEN** — exercised by `codex-gate.test.sh` (adds
 shard-partition complete/disjoint, auto-shard trigger + per-shard verdicts + once-per-shard invocation + shards[]
@@ -184,17 +189,20 @@ the packet's persona and the status's provenance array differ.
   (2) a missing lens persona ⇒ fail closed; (3) any lens over budget ⇒ `OVERFLOW`.
 - **Deterministic aggregate (NOT an LLM pass — fail-closed)** — any lens **BLOCK** ⇒ BLOCK (unioned blockers
   **de-duped by file+line+issue** so a cross-lens duplicate collapses to one, via `dedup_verdict_blockers`); else
-  any lens inconclusive/errored ⇒ **OVERFLOW** (never APPROVE over an un-clean lens); else all approve ⇒ APPROVE.
-  A coverage gap (`coverage.unreviewed > 0`) downgrades even an all-approve run to **OVERFLOW**.
+  any lens failed for a non-context reason ⇒ **INFRA_ERROR** (`lens <l> failed: <reason>`, carrying the job's
+  reason: the API's own message when one was logged); else any lens inconclusive ⇒ **OVERFLOW** (never APPROVE
+  over an un-clean lens); else all approve ⇒ APPROVE. A coverage gap (`coverage.unreviewed > 0`) downgrades even
+  an all-approve run to **OVERFLOW**.
 - **Concurrency** — `CODEX_GATE_MAX_PARALLEL_CODEX` (default **1** = sequential). `>1` is RESERVED / not-yet-wired
   and is treated as 1 today; the deterministic aggregate is order-independent, so correctness never depends on it.
 - **Status** — ONE status line (`APPROVE`/`BLOCK`/`OVERFLOW`/`INFRA_ERROR`) with the usual review fields **plus**
   the additive Tier-2 `coverage` object **and** an additive `lenses` summary `[{lens, outcome, verdictPath}]`
   (mirrors `shards[]`). A multi-lens run carries **no** `shards[]`; existing consumers read `outcome`/`blockers`
-  unchanged. `coverage`/`lenses[]` ride on the **aggregate** BLOCK/OVERFLOW/APPROVE statuses **and** the
-  over-budget OVERFLOW; an **early fail-closed `INFRA_ERROR`** (malformed knob / `MAX_LENSES` exceeded / missing
-  persona — raised *before* lens jobs run — or the Codex binary not found (raised at the first lens, before any
-  Codex call); all via `die_infra`) uses the base status shape **without** `lenses[]`.
+  unchanged. `coverage`/`lenses[]` ride on the **aggregate** BLOCK/INFRA_ERROR/OVERFLOW/APPROVE statuses (an
+  aggregate `INFRA_ERROR` means a lens failed) **and** the over-budget OVERFLOW; an **early fail-closed
+  `INFRA_ERROR`** (malformed knob / `MAX_LENSES` exceeded / missing persona — raised *before* lens jobs run — or
+  the Codex binary not found (raised at the first lens, before any Codex call); all via `die_infra`) uses the base
+  status shape **without** `lenses[]` or `coverage`.
   **No ledger append on a multi-lens APPROVE** (a lens APPROVE is a dimensional whole-diff certification,
   NOT a per-file-surface approval — a later `prepr-delta` must still review those files).
 
@@ -228,7 +236,7 @@ schema, and outcome mapping differ.
 - **Outcome mapping** (`emit_investigate_outcome`, fails closed exactly like `emit_outcome`/`emit_question_outcome`):
   the three model outcomes map to the UPPERCASE status `ROOT_CAUSE_FOUND | NEEDS_MORE_EVIDENCE | UNSAFE_OR_BLOCKED`;
   the **wrapper** adds `INFRA_ERROR` (nonzero exit / missing-empty / invalid-JSON / unknown outcome value) and
-  `OVERFLOW` (context-window `turn.failed` / pre-flight budget). Status line:
+  `OVERFLOW` (context-window failure event / pre-flight budget). Status line:
   `{outcome, threadId, round, verdictPath, runDir, confidence, nextSafeProbe, summary}` (summary = `rootCause`
   when found, else `nextSafeProbe` / blocking reason). The full report stays in the `verdictPath` file.
 - **Safety model** (the whole point): `--sandbox read-only` protects the repo **filesystem** but NOT external

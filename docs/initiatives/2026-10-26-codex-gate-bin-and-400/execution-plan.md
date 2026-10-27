@@ -240,20 +240,27 @@ Then the **phase-boundary** hard gate.
    | plain API text | unsharded `prepr` with `usage_limit` | `INFRA_ERROR`; summary contains `usage limit` |
    | chatter, nonzero | unsharded `prepr` with `chatter` | `INFRA_ERROR` with summary starting `codex exited nonzero (1)`; never `OVERFLOW` |
    | warning is harmless | unsharded `prepr` with `approve_with_warning` | `APPROVE` |
-   | long message | unsharded `prepr` with `long_message` | `INFRA_ERROR`; status is one valid JSON line; summary has no newline or tab and contains `…`; the message part is at most 301 characters |
+   | long message | unsharded `prepr` with `long_message` | `INFRA_ERROR`; status is one valid JSON line; summary has no control character and contains `…`; the message part is exactly 301 characters (300 + `…`) |
+   | special characters through the fan-out (added after the P2.1 spec review) | `long_message` in one `fan_out_and_aggregate` job, in sharded `prepr`, and in `prepr --multi` | the aggregate verdict file and both status lines are valid JSON and carry `"double quotes"` and `back\slash` (so a raw-`printf` aggregate fails) |
+   | the LAST failure line wins | unit, with a fixture whose `error` and `turn.failed` messages differ | `codex_failure_reason` carries the `turn.failed` text |
+   | warning plus nonzero exit | stub mode printing the warning item, then exit 1 | `INFRA_ERROR` starting `codex exited nonzero (1)` |
+   | command output | a `command_execution` item whose output mentions the context window, nonzero exit | `INFRA_ERROR` starting `codex exited nonzero (1)` |
+   | reconnect events in a completed turn (added after the P2.2 spec review) | a fan-out job that logs real-shaped `{"type":"error","message":"Reconnecting... N/5 (…)"}` events, then `turn.completed`, writes a degenerate verdict (request_changes, no blockers) and exits 0; also `codex_failure_reason <fixture> 0 x <verdict>` as a unit | `FAN_INFRA_REASON` and the unit both read `no usable verdict (<verdict path>)`; never `codex turn failed (exit 0)` |
    | signature past the cap | unsharded `prepr` and `question` with `long_context`; `classify_verdict_file <missing> long_context.jsonl 1` | `OVERFLOW`, and `OVERFLOW` from the classifier (classification reads the uncapped message) |
    | sharded 400 | TEST 31's repo with `app.js` carrying the marker `SHARD-API400-HERE` and `STUB_API400_IF_STDIN=SHARD-API400-HERE` | `INFRA_ERROR`; summary starts `shard other failed:` and contains `HTTP 400`; `shards[]` has `other`=`INFRA_ERROR` and the rest `APPROVE`; `round-1-verdict.json` is valid JSON whose `.summary` contains `HTTP 400` |
    | sharded context | same repo with `STUB_OVERFLOW_IF_STDIN` (as TEST 33) | `OVERFLOW` (characterizes the unchanged path) |
    | multi-lens 400 | `prepr --multi` with `STUB_MODE=api_400` | `INFRA_ERROR`; summary starts `lens ` and contains `failed:` and `HTTP 400`; every `lenses[]` entry is `INFRA_ERROR` |
-   | aggregate precedence (unit, via `run_fan`) | jobs {alpha: block marker, beta: 400 marker} | `FAN_OUTCOME=BLOCK` |
+   | aggregate precedence (unit, via the suite's own `cls_fan` driver; `run_fan` is local to TEST 36) | jobs {alpha: block marker, beta: 400 marker} | `FAN_OUTCOME=BLOCK` |
    | | {alpha: 400, beta: overflow} | `INFRA_ERROR`, `FAN_FIRST_INFRA=alpha`, `FAN_FIRST_INCONCLUSIVE=alpha` |
    | | {alpha: overflow, beta: 400} | `INFRA_ERROR`, `FAN_FIRST_INFRA=beta`, `FAN_FIRST_INCONCLUSIVE=alpha`; `FAN_INFRA_REASON` contains `HTTP 400` |
    | classifier unit (source `W`) | `classify_verdict_file <missing> <fixture> 1` | `api_400`→`INFRA_ERROR`, `context_length`→`OVERFLOW`, `chatter`→`INFRA_ERROR`, overflow-stub text→`OVERFLOW`; output is exactly one token |
    | helper unit (source `W`) | `codex_failure_messages api_400.jsonl` | exactly two identical lines, `HTTP 400 invalid_request_error: The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account.`; nothing for `chatter.jsonl` or a missing file; `long.jsonl` uncapped is one line longer than 1000 characters, and with cap `300` is 300 characters plus `…` |
 
 4. Run the suite. **Expected RED:** the 400 / plain-text / chatter / long / sharded / multi / precedence / helper
-   cases fail (they come back `OVERFLOW`, or the helpers are undefined). `context code`, `sharded context` and
-   `warning is harmless` may already pass: they guard behavior that must not change. All 441 original checks pass.
+   cases fail (they come back `OVERFLOW`, or the helpers are undefined). `context code`, `sharded context` and the
+   exit-0 half of `warning is harmless` may already pass: they guard behavior that must not change (the
+   warning-plus-nonzero-exit half fails on the old classifier by design). All 481 checks from before P2 pass.
+   Measured at P2.1 sign-off: RED `PASS=511 FAIL=56`; the plan's P2.2 code in a scratch copy gives `PASS=567 FAIL=0`.
 
 **Review gate:** opus spec review (PDR 4-6, ADR-004/005/006, the trap, fixture provenance), then opus quality review.
 The conductor confirms RED itself.
@@ -307,17 +314,22 @@ codex_context_overflow() { # <jsonl> — succeeds when a failure event carries t
   codex_failure_messages "${1:-}" | grep -iqE "$CODEX_CONTEXT_OVERFLOW_RE"
 }
 
-# The one-line reason a codex round produced no usable result: the API's own message when the
-# round logged a failure event, else the exit code (nonzero) or the missing verdict (zero).
+# The one-line reason a codex round produced no usable result: on a zero exit, the missing or
+# unusable verdict; on a nonzero exit, the API's own message when the round logged a failure
+# event, else the exit code. A zero exit never reads failure events: Codex logs top-level "error"
+# events ("Reconnecting... N/5") inside turns that then complete normally (18 of 38 local logs
+# with such events end in turn.completed).
 codex_failure_reason() { # <jsonl> <exit> <stderr> <verdict>
   local msg
+  if [ "${2:-1}" -eq 0 ]; then
+    printf 'no usable verdict (%s)\n' "${4:-}"
+    return 0
+  fi
   msg="$(codex_failure_messages "${1:-}" 300 | tail -n 1)"
   if [ -n "$msg" ]; then
-    printf 'codex turn failed (exit %s): %s — see %s\n' "${2:-1}" "$msg" "${1:-}"
-  elif [ "${2:-1}" -ne 0 ]; then
-    printf 'codex exited nonzero (%s); see %s\n' "${2:-1}" "${3:-}"
+    printf 'codex turn failed (exit %s): %s — see %s\n' "$2" "$msg" "${1:-}"
   else
-    printf 'no usable verdict (%s)\n' "${4:-}"
+    printf 'codex exited nonzero (%s); see %s\n' "$2" "${3:-}"
   fi
 }
 ```
@@ -374,6 +386,11 @@ classify_nonzero_exit() {
      "inconclusive/errored" becomes "inconclusive". The "Status" lists gain `INFRA_ERROR`.
    - README.md: the sharding aggregate (`:136-141`), multi-lens aggregate (`:179-182`) and investigate mapping (`:224`,
      "context-window failure event" instead of "context-window `turn.failed`") get the same wording.
+   - The INFRA_ERROR bullets that send the driver to `round-<N>.stderr` (SKILL.md review loop `:60-63`, `question`
+     `:121`, `investigate` `:196`) say to read `summary` first. A failed Codex turn carries the API's message there,
+     and an aggregate one names the failing shard or lens and its per-job `.jsonl`. `round-<N>.stderr` is the
+     fallback and is often empty. Where a doc says an aggregate INFRA_ERROR summary carries "the API's own message",
+     it says "the job's reason (the API's own message when one was logged)" (P2.2 spec review).
    - Keep the two INFRA_ERROR shapes distinct in every Status text. An aggregate `INFRA_ERROR` (a shard or lens
      failed) carries `shards[]`/`lenses[]` and `coverage`. The early base-shape `INFRA_ERROR` (malformed knob,
      MAX_LENSES, missing persona, Codex binary not found, as P1 documented) carries neither.

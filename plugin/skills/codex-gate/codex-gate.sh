@@ -198,10 +198,11 @@ die_infra() { # <summary> — emit an INFRA_ERROR status line and exit 0 (fail c
 
 emit_overflow() { # <summary> — emit an OVERFLOW status line and exit 0 (fail closed, distinct
   # from INFRA_ERROR). The diff is too large for one review (predicted pre-flight by the budget
-  # OR observed at runtime via the context-window turn.failed signature), OR a coverage gap left
-  # files unaccounted (Tier 2 fail-closed). Same status fields as die_infra incl. zeroed counts;
-  # only the outcome differs. When a coverage manifest was computed ($COVERAGE_JSON set, prepr/
-  # prepr-delta), it is carried along (additive) so the gap count is visible. The loop STOPs + surfaces.
+  # OR observed at runtime via a context-window failure event, see CODEX_CONTEXT_OVERFLOW_RE), OR a
+  # coverage gap left files unaccounted (Tier 2 fail-closed). Same status fields as die_infra incl.
+  # zeroed counts; only the outcome differs. When a coverage manifest was computed ($COVERAGE_JSON
+  # set, prepr/ prepr-delta), it is carried along (additive) so the gap count is visible. The loop
+  # STOPs + surfaces.
   local summary="$1"
   if [ -n "${COVERAGE_JSON:-}" ]; then
     jq -nc \
@@ -717,19 +718,82 @@ parse_thread_id() {
 }
 
 # ----------------------------------------------------------------------------
+# Failure events of a codex round. A failed turn is a context overflow only when its
+# failure text says so: Codex's own "ran out of room in the model's context window",
+# or the API's context_length_exceeded code (which arrives as an invalid_request_error,
+# so the error TYPE alone never decides). Only structured failure events count: the
+# .error.message of {"type":"turn.failed"} and the .message of top-level {"type":"error"}.
+# item.completed items of type "error" are warnings, and agent / command text is
+# content, so neither is ever read here.
+# ----------------------------------------------------------------------------
+CODEX_CONTEXT_OVERFLOW_RE='ran out of room|context window|context_length_exceeded'
+
+# One line per failure event. A message that is itself a JSON API error is unwrapped to
+# "HTTP <status> <type> <code>: <message>" (absent parts omitted). Control characters
+# become spaces. With a cap (> 0) each line is cut to that many characters plus "…" (jq
+# counts codepoints); classification passes no cap, so a long message is matched whole.
+codex_failure_messages() { # <jsonl> [cap]
+  [ -f "${1:-}" ] || return 0
+  jq -rR --argjson cap "${2:-0}" '
+    fromjson? | select(type == "object")
+    | if .type == "turn.failed" then (.error.message? // empty)
+      elif .type == "error" then (.message? // empty)
+      else empty end
+    | tostring
+    | . as $raw
+    | ((fromjson? // null) | if type == "object" and (.error | type) == "object" then . else null end) as $api
+    | (if $api == null then $raw
+       else ([ ($api.status // empty | "HTTP \(.)"), ($api.error.type // empty), ($api.error.code // empty) ]
+             | map(tostring) | join(" ")) as $head
+            | (if $head == "" then "" else $head + ": " end) + (($api.error.message // $raw) | tostring)
+       end)
+    | gsub("[[:cntrl:]]+"; " ") | gsub(" {2,}"; " ") | sub("^ +"; "") | sub(" +$"; "")
+    | select(length > 0)
+    | if $cap > 0 and length > $cap then .[0:$cap] + "…" else . end
+  ' "$1" 2>/dev/null
+}
+
+codex_context_overflow() { # <jsonl> — succeeds when a failure event carries the context signature
+  codex_failure_messages "${1:-}" | grep -iqE "$CODEX_CONTEXT_OVERFLOW_RE"
+}
+
+# The one-line reason a codex round produced no usable result: on a zero exit, the missing or
+# unusable verdict; on a nonzero exit, the API's own message when the round logged a failure
+# event, else the exit code. A zero exit never reads failure events: Codex logs top-level "error"
+# events ("Reconnecting... N/5") inside turns that then complete normally (18 of 38 local logs
+# with such events end in turn.completed).
+codex_failure_reason() { # <jsonl> <exit> <stderr> <verdict>
+  local msg
+  if [ "${2:-1}" -eq 0 ]; then
+    printf 'no usable verdict (%s)\n' "${4:-}"
+    return 0
+  fi
+  msg="$(codex_failure_messages "${1:-}" 300 | tail -n 1)"
+  if [ -n "$msg" ]; then
+    printf 'codex turn failed (exit %s): %s — see %s\n' "$2" "$msg" "${1:-}"
+  else
+    printf 'codex exited nonzero (%s); see %s\n' "$2" "${3:-}"
+  fi
+}
+
+# ----------------------------------------------------------------------------
 # Map codex result -> outcome and emit the status line.
 # ----------------------------------------------------------------------------
 # ----------------------------------------------------------------------------
-# Classify a nonzero codex round: OVERFLOW if the round JSONL carries the
-# context-window signature (ran out of room / context window / turn.failed),
-# else generic INFRA_ERROR. Never returns (both branches exit). Call only when
+# Classify a nonzero codex round, by cause, in this order. (1) OVERFLOW if a failure
+# event carries the context signature (codex_context_overflow: "ran out of room" /
+# "context window" / context_length_exceeded). (2) Otherwise INFRA_ERROR carrying the
+# API's own message when the round logged a failure event ("codex turn failed (exit N):
+# HTTP 400 ..."). (3) Otherwise the generic INFRA_ERROR naming the exit code and stderr.
+# A bare turn.failed event does not decide: it also reports HTTP errors, usage
+# limits and unsupported models. Never returns (both branches exit). Call only when
 # CODEX_EXIT != 0.
 # ----------------------------------------------------------------------------
 classify_nonzero_exit() {
-  if [ -f "${JSONL_FILE:-}" ] && grep -iE 'ran out of room|context window|"turn\.failed"' "$JSONL_FILE" >/dev/null 2>&1; then
+  if codex_context_overflow "${JSONL_FILE:-}"; then
     emit_overflow "codex hit the context window (turn.failed); diff too large — use delta/shard"
   fi
-  die_infra "codex exited nonzero ($CODEX_EXIT); see $STDERR_FILE"
+  die_infra "$(codex_failure_reason "${JSONL_FILE:-}" "${CODEX_EXIT:-1}" "${STDERR_FILE:-}" "${VERDICT_FILE:-}")"
 }
 
 # ----------------------------------------------------------------------------
@@ -1729,15 +1793,17 @@ mode_prepr_delta() { _prepr_common 1 "$@"; }
 # Classify ONE shard's Codex result WITHOUT emitting a status line (the non-emitting
 # sibling of emit_outcome's mapping). Reads $CODEX_EXIT + a verdict file; echoes the
 # shard outcome (APPROVE|BLOCK|OVERFLOW|INFRA_ERROR). Same fail-closed rules as
-# emit_outcome: nonzero-with-context-window-signature => OVERFLOW; nonzero otherwise,
-# or missing/empty/invalid-JSON, or request_changes-with-zero-blockers => INFRA_ERROR;
-# any blocker => BLOCK; approve + zero blockers => APPROVE. Never approves on ambiguity.
+# emit_outcome: nonzero-with-a-context-window-failure-event (codex_context_overflow: a
+# turn.failed / error event whose text carries the signature, not any turn.failed) => OVERFLOW;
+# nonzero otherwise, or missing/empty/invalid-JSON, or request_changes-with-zero-blockers
+# => INFRA_ERROR; any blocker => BLOCK; approve + zero blockers => APPROVE. Never approves
+# on ambiguity. Echoes one token; the job's reason text comes from codex_failure_reason.
 #   <verdict-file> <jsonl-file> <codex-exit>
 # ----------------------------------------------------------------------------
 classify_verdict_file() { # <verdict-file> <jsonl-file> <codex-exit>
   local vf="$1" jf="$2" ex="$3" verdict nb
   if [ "${ex:-1}" -ne 0 ]; then
-    if [ -f "$jf" ] && grep -iE 'ran out of room|context window|"turn\.failed"' "$jf" >/dev/null 2>&1; then
+    if codex_context_overflow "$jf"; then
       printf 'OVERFLOW'; return 0
     fi
     printf 'INFRA_ERROR'; return 0
@@ -1775,18 +1841,23 @@ classify_verdict_file() { # <verdict-file> <jsonl-file> <codex-exit>
 # out of scope); fail closed. Otherwise review it in a fresh thread (THREAD_ID_IN empty,
 # ROUND=1) via run_codex, classify_verdict_file the result.
 #
-# Aggregate rule (fail-closed, identical to the historical shard aggregate):
+# Aggregate rule (fail-closed; BLOCK > INFRA_ERROR > OVERFLOW > APPROVE):
 #   - ANY job BLOCK              => BLOCK; union ALL jobs' blockers[]+nonBlocking[] into
 #                                   $VERDICT_FILE (never drop a job's blocker).
-#   - else ANY OVERFLOW/INFRA    => OVERFLOW (never APPROVE over an inconclusive job).
+#   - else ANY job INFRA_ERROR   => INFRA_ERROR (a job failed for a NON-context reason: API
+#                                   error, usage limit, unusable verdict). Carries the first
+#                                   such job's own reason and stays INFRA_ERROR, not OVERFLOW.
+#   - else ANY job OVERFLOW      => OVERFLOW (never APPROVE over an inconclusive job).
 #   - else (ALL APPROVE)         => APPROVE.
 #
 # Returns via output variables (the caller composes + emits the vocabulary-specific
 # status line, so the shard caller's output stays byte-identical):
-#   FAN_OUTCOME            APPROVE|BLOCK|OVERFLOW
+#   FAN_OUTCOME            APPROVE|BLOCK|INFRA_ERROR|OVERFLOW
 #   FAN_N_JOBS             number of jobs processed
 #   FAN_TOTAL_FILES        sum of per-job `files`
 #   FAN_FIRST_INCONCLUSIVE label of the first OVERFLOW/INFRA_ERROR job (else "")
+#   FAN_FIRST_INFRA        label of the first INFRA_ERROR job (else "")
+#   FAN_INFRA_REASON       that job's one-line reason (codex_failure_reason; else "")
 #   FAN_BLOCKERS           unioned blocker count (BLOCK only; else 0)
 #   FAN_AGENT_FIXABLE      unioned agent_fixable blocker count (BLOCK only; else 0)
 #   FAN_DECISION_BLOCKERS  unioned decision blocker count (BLOCK only; else 0)
@@ -1794,8 +1865,9 @@ classify_verdict_file() { # <verdict-file> <jsonl-file> <codex-exit>
 #                          {group,files,outcome,verdictPath} — field-name neutral so a
 #                          lens caller can rename the container field (shards/lenses/…)
 #                          when it builds its status line.
-# On BLOCK the aggregate union is written to $VERDICT_FILE; on OVERFLOW/APPROVE a tiny
-# audit verdict is written there too (the caller may overwrite with its own summary text).
+# On BLOCK the aggregate union is written to $VERDICT_FILE; on INFRA_ERROR/OVERFLOW/APPROVE
+# a tiny audit verdict is written there too (the caller may overwrite with its own summary
+# text). The INFRA_ERROR summary embeds API text, so it is built with jq --arg, never printf.
 #   <jobs-file> [verdict-file-prefix]
 # ----------------------------------------------------------------------------
 fan_out_and_aggregate() { # <jobs-file> [prefix]
@@ -1811,8 +1883,9 @@ fan_out_and_aggregate() { # <jobs-file> [prefix]
   local agg_blockers="$RUN_DIR/.fan-blockers.jsonl"     # unioned blockers[] across BLOCK jobs
   local agg_nonblock="$RUN_DIR/.fan-nonblocking.jsonl"  # unioned nonBlocking[]
   : > "$agg_blockers"; : > "$agg_nonblock"
-  local any_block=0 any_inconclusive=0 n_jobs=0 total_files=0
+  local any_block=0 any_inconclusive=0 any_infra=0 n_jobs=0 total_files=0
   FAN_FIRST_INCONCLUSIVE=""
+  FAN_FIRST_INFRA=""; FAN_INFRA_REASON=""
 
   local jline label files packet
   while IFS="	" read -r label files packet; do
@@ -1826,7 +1899,7 @@ fan_out_and_aggregate() { # <jobs-file> [prefix]
     local job_jsonl="$RUN_DIR/${prefix}${label}.jsonl"
     local job_stderr="$RUN_DIR/${prefix}${label}.stderr"
 
-    local job_outcome job_chars
+    local job_outcome job_chars job_reason=""
     # If THIS job's OWN packet STILL exceeds budget, it is inconclusive (OVERFLOW) — do
     # NOT silently drop it and do NOT recurse (sub-splitting is out of scope). Fail closed.
     job_chars="$(wc -c < "$packet" 2>/dev/null | tr -d ' ')"
@@ -1843,6 +1916,10 @@ fan_out_and_aggregate() { # <jobs-file> [prefix]
       THREAD_ID_IN=""; ROUND=1
       run_codex code "$packet" "$REPO_ROOT"
       job_outcome="$(classify_verdict_file "$job_verdict" "$job_jsonl" "$CODEX_EXIT")"
+      # While CODEX_EXIT and this job's paths are still current: the reason travels with an INFRA_ERROR job.
+      if [ "$job_outcome" = "INFRA_ERROR" ]; then
+        job_reason="$(codex_failure_reason "$job_jsonl" "$CODEX_EXIT" "$job_stderr" "$job_verdict")"
+      fi
       VERDICT_FILE="$SAVE_VF"; JSONL_FILE="$SAVE_JF"; STDERR_FILE="$SAVE_SF"; THREAD_ID_IN="$SAVE_TID"; ROUND="$SAVE_RD"
     fi
 
@@ -1858,7 +1935,12 @@ fan_out_and_aggregate() { # <jobs-file> [prefix]
         jq -c '(.nonBlocking // [])[]' "$job_verdict" 2>/dev/null >> "$agg_nonblock"
         ;;
       APPROVE) : ;;
-      *) # OVERFLOW / INFRA_ERROR — inconclusive
+      INFRA_ERROR) # a non-context failure: inconclusive AND an infra failure with its own reason
+        any_inconclusive=1; any_infra=1
+        [ -n "$FAN_FIRST_INCONCLUSIVE" ] || FAN_FIRST_INCONCLUSIVE="$label"
+        if [ -z "$FAN_FIRST_INFRA" ]; then FAN_FIRST_INFRA="$label"; FAN_INFRA_REASON="$job_reason"; fi
+        ;;
+      *) # OVERFLOW — inconclusive
         any_inconclusive=1
         [ -n "$FAN_FIRST_INCONCLUSIVE" ] || FAN_FIRST_INCONCLUSIVE="$label"
         ;;
@@ -1890,8 +1972,18 @@ fan_out_and_aggregate() { # <jobs-file> [prefix]
 
   rm -f "$agg_blockers" "$agg_nonblock"
 
+  if [ "$any_infra" = "1" ]; then
+    # A job failed for a non-context reason (API error, unusable verdict). That is an infra failure,
+    # not an oversized diff: say so, with the job's own reason. jq escapes the API text.
+    jq -nc --arg s "$fan_noun $FAN_FIRST_INFRA failed: $FAN_INFRA_REASON" \
+      '{verdict:"request_changes", summary:$s, blockers:[], nonBlocking:[]}' > "$VERDICT_FILE" 2>/dev/null || :
+    rm -f "$jobs_jsonl"
+    FAN_OUTCOME="INFRA_ERROR"
+    return 0
+  fi
+
   if [ "$any_inconclusive" = "1" ]; then
-    # Fail closed: a job did not return a clean verdict (overflow/error). NEVER APPROVE.
+    # Fail closed: a job did not return a clean verdict (overflow). NEVER APPROVE.
     printf '%s\n' "{\"verdict\":\"request_changes\",\"summary\":\"$fan_noun $FAN_FIRST_INCONCLUSIVE inconclusive\",\"blockers\":[],\"nonBlocking\":[]}" > "$VERDICT_FILE" 2>/dev/null || :
     rm -f "$jobs_jsonl"
     FAN_OUTCOME="OVERFLOW"
@@ -1917,9 +2009,11 @@ fan_out_and_aggregate() { # <jobs-file> [prefix]
 # Aggregate rule (fail-closed):
 #   - ANY shard BLOCK            => BLOCK; union ALL shards' blockers[]+nonBlocking[] into
 #                                   $RUN_DIR/round-1-verdict.json; emit BLOCK w/ combined counts.
-#   - else ANY shard OVERFLOW/INFRA_ERROR (incl. a shard whose OWN packet is still over
-#                                   budget) => OVERFLOW ("shard <g> inconclusive — cannot
-#                                   certify full coverage"). NEVER APPROVE over it.
+#   - else ANY shard INFRA_ERROR (a non-context failure: API error, usage limit, unusable
+#                                   verdict) => INFRA_ERROR ("shard <g> failed: <reason>").
+#   - else ANY shard OVERFLOW (incl. a shard whose OWN packet is still over budget)
+#                                => OVERFLOW ("shard <g> inconclusive — cannot certify
+#                                   full coverage"). NEVER APPROVE over either.
 #   - else (ALL shards APPROVE)  => APPROVE, "sharded review: N shards all approved (M files,
 #                                   full coverage)".
 # The status carries the additive Tier-2 `coverage` object AND a `shards` summary
@@ -2016,8 +2110,21 @@ shard_and_review() { # <changed> <untracked> <base> <delta> <skipped> <label> <f
     return 0
   fi
 
+  if [ "$FAN_OUTCOME" = "INFRA_ERROR" ]; then
+    # Fail closed: a shard failed for a non-context reason (API error, unusable verdict). NEVER APPROVE.
+    # The summary carries the shard's own reason (API text), escaped by jq --arg.
+    jq -nc \
+      --arg outcome "INFRA_ERROR" --arg threadId "" --argjson round 1 \
+      --arg verdictPath "$VERDICT_FILE" --arg runDir "$RUN_DIR" \
+      --argjson coverage "$coverage_arg" --argjson shards "$shards_arr" \
+      --arg summary "shard $FAN_FIRST_INFRA failed: $FAN_INFRA_REASON (over-budget diff $fullchars chars sharded into $n_shards; fail closed)" \
+      '{outcome:$outcome, threadId:$threadId, round:$round, verdictPath:$verdictPath, runDir:$runDir,
+        blockers:0, agentFixableBlockers:0, decisionBlockers:0, coverage:$coverage, shards:$shards, summary:$summary}'
+    return 0
+  fi
+
   if [ "$FAN_OUTCOME" = "OVERFLOW" ]; then
-    # Fail closed: a shard did not return a clean verdict (overflow/error). NEVER APPROVE.
+    # Fail closed: a shard overflowed, or its own packet is still over budget. NEVER APPROVE.
     jq -nc \
       --arg outcome "OVERFLOW" --arg threadId "" --argjson round 1 \
       --arg verdictPath "$VERDICT_FILE" --arg runDir "$RUN_DIR" \
@@ -2068,7 +2175,9 @@ shard_and_review() { # <changed> <untracked> <base> <delta> <skipped> <label> <f
 # Only after all three does fan_out_and_aggregate invoke Codex (one fresh thread/lens).
 #
 # Aggregate = fan_out_and_aggregate (same trust-critical core the shard path uses),
-# with FAN_NOUN=lens FAN_NOUN_PLURAL=lenses for the verdict-file .summary wording.
+# with FAN_NOUN=lens FAN_NOUN_PLURAL=lenses for the verdict-file .summary wording. A lens
+# that failed for a non-context reason makes the run INFRA_ERROR ("lens <l> failed:
+# <reason>"), not OVERFLOW; BLOCK > INFRA_ERROR > OVERFLOW > APPROVE.
 # On BLOCK, the unioned blockers are DE-DUPed by (file+line+issue) so the same finding
 # surfaced by >=2 lenses collapses to ONE blocker (G3). The status carries an additive
 # `lenses:[{lens,outcome,verdictPath}]` array (G4) derived from FAN_JOBS_JSON.
@@ -2194,8 +2303,21 @@ multi_lens_review() { # <changed> <untracked> <base> <delta> <skipped> <label>
     return 0
   fi
 
+  if [ "$FAN_OUTCOME" = "INFRA_ERROR" ]; then
+    # Fail closed: a lens failed for a non-context reason (API error, unusable verdict). NEVER APPROVE.
+    # The summary carries the lens's own reason (API text), escaped by jq --arg.
+    jq -nc \
+      --arg outcome "INFRA_ERROR" --arg threadId "" --argjson round 1 \
+      --arg verdictPath "$VERDICT_FILE" --arg runDir "$RUN_DIR" \
+      --argjson coverage "$coverage_arg" --argjson lenses "$lenses_arr" \
+      --arg summary "lens $FAN_FIRST_INFRA failed: $FAN_INFRA_REASON ($n_lenses lenses; fail closed)" \
+      '{outcome:$outcome, threadId:$threadId, round:$round, verdictPath:$verdictPath, runDir:$runDir,
+        blockers:0, agentFixableBlockers:0, decisionBlockers:0, coverage:$coverage, lenses:$lenses, summary:$summary}'
+    return 0
+  fi
+
   if [ "$FAN_OUTCOME" = "OVERFLOW" ]; then
-    # Fail closed: a lens did not return a clean verdict (overflow/error). NEVER APPROVE.
+    # Fail closed: a lens overflowed its context window. NEVER APPROVE.
     jq -nc \
       --arg outcome "OVERFLOW" --arg threadId "" --argjson round 1 \
       --arg verdictPath "$VERDICT_FILE" --arg runDir "$RUN_DIR" \
