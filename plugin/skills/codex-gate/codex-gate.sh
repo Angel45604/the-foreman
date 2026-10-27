@@ -862,6 +862,14 @@ emit_outcome() { # [ledgerMode]
   if ! jq -e . "$VERDICT_FILE" >/dev/null 2>&1; then
     die_infra "verdict file is not valid JSON ($VERDICT_FILE)"
   fi
+  # blockers[] must BE an array (verdict.schema.json requires it). Any other type would be miscounted:
+  # false, 0, {}, null or a missing key read as zero blockers and approve; a string, a non-empty object
+  # or a nonzero number reads as blockers nobody wrote. Either way it is an inconsistent verdict.
+  local btype
+  btype="$(jq -r '.blockers | type' "$VERDICT_FILE" 2>/dev/null)"
+  if [ "$btype" != "array" ]; then
+    die_infra "inconsistent verdict: blockers is ${btype:-unreadable}, not an array ($VERDICT_FILE)"
+  fi
 
   local verdict summary nblockers nfix ndecision outcome
   verdict="$(jq -r '.verdict // empty' "$VERDICT_FILE" 2>/dev/null)"
@@ -1795,9 +1803,10 @@ mode_prepr_delta() { _prepr_common 1 "$@"; }
 # shard outcome (APPROVE|BLOCK|OVERFLOW|INFRA_ERROR). Same fail-closed rules as
 # emit_outcome: nonzero-with-a-context-window-failure-event (codex_context_overflow: a
 # turn.failed / error event whose text carries the signature, not any turn.failed) => OVERFLOW;
-# nonzero otherwise, or missing/empty/invalid-JSON, or request_changes-with-zero-blockers
-# => INFRA_ERROR; any blocker => BLOCK; approve + zero blockers => APPROVE. Never approves
-# on ambiguity. Echoes one token; the job's reason text comes from codex_failure_reason.
+# nonzero otherwise, or missing/empty/invalid-JSON, or a non-array blockers, or
+# request_changes-with-zero-blockers => INFRA_ERROR; any blocker => BLOCK; approve + zero
+# blockers => APPROVE. Never approves on ambiguity. Echoes one token; the job's reason text
+# comes from codex_failure_reason.
 #   <verdict-file> <jsonl-file> <codex-exit>
 # ----------------------------------------------------------------------------
 classify_verdict_file() { # <verdict-file> <jsonl-file> <codex-exit>
@@ -1811,6 +1820,8 @@ classify_verdict_file() { # <verdict-file> <jsonl-file> <codex-exit>
   if [ ! -s "$vf" ] || ! jq -e . "$vf" >/dev/null 2>&1; then
     printf 'INFRA_ERROR'; return 0
   fi
+  # A non-array blockers (verdict.schema.json requires an array) is an inconsistent verdict.
+  [ "$(jq -r '.blockers | type' "$vf" 2>/dev/null)" = "array" ] || { printf 'INFRA_ERROR'; return 0; }
   verdict="$(jq -r '.verdict // empty' "$vf" 2>/dev/null)"
   nb="$(jq -r '(.blockers // []) | length' "$vf" 2>/dev/null)"
   if [ "${nb:-0}" -gt 0 ]; then printf 'BLOCK'; return 0; fi
@@ -1852,7 +1863,7 @@ classify_verdict_file() { # <verdict-file> <jsonl-file> <codex-exit>
 #
 # Returns via output variables (the caller composes + emits the vocabulary-specific
 # status line, so the shard caller's output stays byte-identical):
-#   FAN_OUTCOME            APPROVE|BLOCK|INFRA_ERROR|OVERFLOW
+#   FAN_OUTCOME            APPROVE|BLOCK|INFRA_ERROR|OVERFLOW (reset per call)
 #   FAN_N_JOBS             number of jobs processed
 #   FAN_TOTAL_FILES        sum of per-job `files`
 #   FAN_FIRST_INCONCLUSIVE label of the first OVERFLOW/INFRA_ERROR job (else "")
@@ -1884,6 +1895,7 @@ fan_out_and_aggregate() { # <jobs-file> [prefix]
   local agg_nonblock="$RUN_DIR/.fan-nonblocking.jsonl"  # unioned nonBlocking[]
   : > "$agg_blockers"; : > "$agg_nonblock"
   local any_block=0 any_inconclusive=0 any_infra=0 n_jobs=0 total_files=0
+  FAN_OUTCOME=""
   FAN_FIRST_INCONCLUSIVE=""
   FAN_FIRST_INFRA=""; FAN_INFRA_REASON=""
 
@@ -2135,6 +2147,12 @@ shard_and_review() { # <changed> <untracked> <base> <delta> <skipped> <label> <f
     return 0
   fi
 
+  # Only an explicit APPROVE may approve: any other aggregate value is an internal error. Fail closed
+  # BEFORE the ledger append below.
+  if [ "${FAN_OUTCOME:-}" != "APPROVE" ]; then
+    die_infra "sharded review: unexpected aggregate outcome '${FAN_OUTCOME:-}' — refusing to approve (fail closed)"
+  fi
+
   # ---- ALL shards APPROVE => APPROVE (full coverage). Record the ledger (opt-in). ----
   # total_files from $changed (not FAN_TOTAL_FILES) to preserve the historical count exactly.
   local total_files
@@ -2326,6 +2344,12 @@ multi_lens_review() { # <changed> <untracked> <base> <delta> <skipped> <label>
       '{outcome:$outcome, threadId:$threadId, round:$round, verdictPath:$verdictPath, runDir:$runDir,
         blockers:0, agentFixableBlockers:0, decisionBlockers:0, coverage:$coverage, lenses:$lenses, summary:$summary}'
     return 0
+  fi
+
+  # Only an explicit APPROVE may approve: any other aggregate value is an internal error. Fail closed
+  # BEFORE the coverage check and the APPROVE emitter below.
+  if [ "${FAN_OUTCOME:-}" != "APPROVE" ]; then
+    die_infra "multi-lens review: unexpected aggregate outcome '${FAN_OUTCOME:-}' — refusing to approve (fail closed)"
   fi
 
   # ---- COVERAGE fail-closed (Tier-2 contract; mirrors emit_outcome's guard): even if EVERY
@@ -3221,6 +3245,9 @@ main() {
 # Run main ONLY when executed directly (not when sourced). Sourcing is used by the test
 # harness to unit-test pure helpers like shard_group_for_path without dispatching a mode.
 # (bash 3.2-safe: BASH_SOURCE[0] is this file's path; $0 is the invoked program.)
+# Keep this a plain string comparison; do not canonicalize either side. The test harness
+# sources this file with $0 set to a "./" spelling of the same path (SKILL_DIR still
+# resolves) and relies on the two spellings differing so main does not auto-run.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   main "$@"
 fi
