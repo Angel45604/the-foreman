@@ -57,22 +57,30 @@ Run the matching mode and drive the loop below. Modes:
    (Run from the repo root for code-tier modes so Codex can inspect the repo read-only.)
 2. Branch on `outcome`:
    - **APPROVE** → report Codex approved (quote `summary`); proceed (e.g. next phase / ExitPlanMode / `/commit-push-pr`).
-   - **INFRA_ERROR** → **STOP and surface to the user.** Read `runDir/round-<N>.stderr` for the reason
-     (auth/quota/schema). Do one bounded retry only if it's clearly transient. Never treat as approve; never advance the phase.
+   - **INFRA_ERROR** → **STOP and surface to the user.** Read `summary` first: a failed Codex turn carries the
+     API's own message there, and an aggregate one (sharded `prepr`, `--multi`) names the failing shard or lens
+     and the per-job file to read. That file is the `.jsonl` when an API message was logged, the `.stderr` on a
+     nonzero exit without one, and the verdict path for an unusable exit-0 verdict. `runDir/round-<N>.stderr`
+     (auth/quota/schema) is the fallback and is often empty. An `INFRA_ERROR` raised before Codex runs (binary
+     not found, malformed knob, refusal) writes no `round-<N>.stderr` (any file there is from an earlier
+     attempt); its reason is in `summary`.
+     Do one bounded retry only if it's clearly transient. Never treat as approve; never advance the phase.
      If auth-related, tell the user: `CODEX_HOME=~/.claude/codex-gate/home <codex> login`.
    - **OVERFLOW** → **STOP and surface to the user** with the `summary` message + the `runDir`. The diff is
-     too large for one review (predicted pre-flight by the packet budget, or observed at runtime via Codex's
-     context-window `turn.failed`), OR a **coverage gap** (`prepr`/`prepr-delta` left a branch-diff file
+     too large for one review (predicted pre-flight by the packet budget, or observed at runtime via a
+     context-window failure event: Codex's "ran out of room… context window" or the API's
+     `context_length_exceeded`), OR a **coverage gap** (`prepr`/`prepr-delta` left a branch-diff file
      neither reviewed-now, prior-hash-matched, nor scratch-excluded — approval is impossible until it's
      reviewed; the `coverage.unreviewed` count is on the status), OR (sharded `prepr`/`prepr-delta`) a
-     **shard that stayed inconclusive** — one shard's own packet was still over budget or it errored/overflowed,
-     so full coverage can't be certified (the `shards[]` summary on the status names it). Do NOT approve, do NOT
-     advance the phase. For a too-large diff, `prepr`/`prepr-delta` **auto-shard by path** (Tier 3 — default
-     `CODEX_GATE_SHARD=auto`); if the sharded run still OVERFLOWs because a single shard is itself too big,
-     `prepr-delta` (Tier 2 — a delta over only unreviewed/changed-since-reviewed files) narrows the surface —
-     note that to the user. (You can also bump `CODEX_GATE_PACKET_BUDGET` if the budget is the only constraint
-     and the diff genuinely fits the model, or set `CODEX_GATE_SHARD=off` to force the plain Tier-1 OVERFLOW
-     with no sharding.)
+     **shard that stayed inconclusive** — one shard's own packet was still over budget or it overflowed,
+     so full coverage can't be certified (the `shards[]` summary on the status names it). Any *other* failed
+     turn (an HTTP error, usage limit, model not supported, capacity) is **not** an overflow: it is
+     `INFRA_ERROR` with the API's message in `summary`. Do NOT approve, do NOT advance the phase. For a
+     too-large diff, `prepr`/`prepr-delta` **auto-shard by path** (Tier 3 — default `CODEX_GATE_SHARD=auto`); if
+     the sharded run still OVERFLOWs because a single shard is itself too big, `prepr-delta` (Tier 2 — a delta
+     over only unreviewed/changed-since-reviewed files) narrows the surface — note that to the user. (You can
+     also bump `CODEX_GATE_PACKET_BUDGET` if the budget is the only constraint and the diff genuinely fits the
+     model, or set `CODEX_GATE_SHARD=off` to force the plain Tier-1 OVERFLOW with no sharding.)
    - **BLOCK** → read the verdict file (`jq . <verdictPath>`). Then:
      - If **any** blocker has `class == "decision"` → **STOP and surface those decision blockers to the user.**
        Do NOT auto-rewrite a plan/design to satisfy Codex. Let the user decide; resume only on their say-so.
@@ -113,7 +121,9 @@ Flow:
 2. `bash <skill-dir>/codex-gate.sh question <file>` (run from the repo root so Codex grounds
    in real code/canon at code tier). Capture the status JSON.
 3. Branch on `outcome`:
-   - **INFRA_ERROR** → STOP and surface (read `runDir/round-1.stderr`); ask the user directly without the grounding.
+   - **INFRA_ERROR** → STOP and surface (read `summary` first: a failed Codex turn carries the API's message
+     there, and when Codex never ran it is the only reason; `runDir/round-1.stderr` is the fallback and is often
+     empty); ask the user directly without the grounding.
    - **GROUNDED** → read the grounding file (`jq . <verdictPath>`). It has `optionAssessments[]`
      (`option`/`pros`/`cons`/`risk`), `missingOptions[]` (`option`/`why`), `recommendation` + `rationale`,
      `considerations[]`, and `settledByCanon`/`canonAnswer`.
@@ -188,7 +198,8 @@ A text/markdown file you author. Cover:
      — surface to the user.
    - **UNSAFE_OR_BLOCKED** → STOP and surface: the only way forward needs a forbidden/risky probe or a human
      decision. **Never relax the contract to "make progress".**
-   - **INFRA_ERROR / OVERFLOW** → STOP and surface (read `runDir/round-<N>.stderr`), same as the review loop.
+   - **INFRA_ERROR / OVERFLOW** → STOP and surface (read `summary` first, where a failed Codex turn carries the
+     API's message; `runDir/round-<N>.stderr` is the fallback and is often empty), same as the review loop.
 3. **Convergence guard:** if `needs_more_evidence` recurs with no new SAFE evidence obtainable, or the same
    `nextSafeProbe` repeats with no progress → STOP and surface ("not converging — needs you").
    `CODEX_GATE_MAX_ROUNDS` (default 8) is the backstop.
@@ -385,14 +396,18 @@ applies to `prepr`/`prepr-delta` ONLY (`phase-review`/`plan`/`bundle`/`question`
   (recursive sub-splitting is out of scope; an inconclusive shard ⇒ the aggregate fails closed).
 - **Deterministic aggregate (NOT an LLM pass — fail-closed).** The gate reads every shard verdict and:
   **BLOCK** if any shard blocked (it **unions all shards' `blockers[]` + `nonBlocking[]`** into
-  `<runDir>/round-1-verdict.json` and emits BLOCK with the combined counts); else **OVERFLOW** if any shard is
-  inconclusive/errored (`shard <g> inconclusive — cannot certify full coverage` — it NEVER approves over an
-  unreviewed shard); else **APPROVE** (`sharded review: N shards all approved (M files, full coverage)`). A
-  deterministic union is used precisely so a gate can never drop a blocker nor approve over an unreviewed shard.
-- **Status.** The sharded run emits ONE status line (`APPROVE`/`BLOCK`/`OVERFLOW`) with the usual fields plus
-  the additive `coverage` object **and** a `shards` summary array `[{group, files, outcome, verdictPath}]`.
+  `<runDir>/round-1-verdict.json` and emits BLOCK with the combined counts); else **INFRA_ERROR** if any
+  shard failed for a non-context reason (`shard <g> failed: <reason>`, the job's reason: the API's own
+  message when one was logged); else **OVERFLOW** if any shard is inconclusive
+  (`shard <g> inconclusive — cannot certify full coverage` — it NEVER approves over an unreviewed shard);
+  else **APPROVE** (`sharded review: N shards all approved (M files, full coverage)`). A deterministic union
+  is used precisely so a gate can never drop a blocker nor approve over an unreviewed shard.
+- **Status.** The sharded run emits ONE status line (`APPROVE`/`BLOCK`/`INFRA_ERROR`/`OVERFLOW`) with the usual
+  fields plus the additive `coverage` object **and** a `shards` summary array `[{group, files, outcome, verdictPath}]`.
   Existing consumers (which read `outcome`/`blockers`) are unaffected; `shards` is additive and only present on
-  a sharded run. Set `CODEX_GATE_SHARD=off` to disable sharding and keep the plain Tier-1 OVERFLOW.
+  a sharded run. An **aggregate** `INFRA_ERROR` (a shard failed) carries `shards[]` and `coverage`; an early
+  base-shape `INFRA_ERROR` (a malformed knob, or the Codex binary not found, raised at the first shard) carries neither.
+  Set `CODEX_GATE_SHARD=off` to disable sharding and keep the plain Tier-1 OVERFLOW.
 
 ### Opt-in multi-LENS review (`prepr`/`prepr-delta` — `--multi` / `CODEX_GATE_FANOUT=1`)
 Opt-in (**off by default**). Instead of one reviewer, review the SAME reviewed-now diff through N specialized
@@ -407,14 +422,18 @@ high-impact feature the multi-lens pass is the pre-PR `prepr --multi`.) NOT defa
 - **Lens set:** always **architecture/contracts + security/data-integrity + tests/verification**;
   **frontend/UX** is added ONLY when the reviewed-now diff touches an FE path (`CODEX_GATE_FE_GLOBS`).
 - **Deterministic aggregate (NOT an LLM pass — fail-closed):** any lens **BLOCK** ⇒ BLOCK (the unioned blockers
-  are **de-duped across lenses by file+line+issue**, so a finding two lenses raise collapses to one); any lens
-  inconclusive/errored ⇒ **OVERFLOW** (never APPROVE over an un-clean lens); else all lenses approve ⇒ APPROVE.
+  are **de-duped across lenses by file+line+issue**, so a finding two lenses raise collapses to one); else
+  **INFRA_ERROR** if any lens failed for a non-context reason (`lens <l> failed: <reason>`, the job's reason:
+  the API's own message when one was logged); else any lens inconclusive ⇒ **OVERFLOW** (never APPROVE over an
+  un-clean lens); else all lenses approve ⇒ APPROVE.
 - **Status:** ONE status line with the usual review fields **plus** an additive `lenses:[{lens,outcome,verdictPath}]`
   array (mirrors `shards[]`). A multi-lens run carries **no** `shards[]`; existing single-thread + sharded
   consumers are unaffected (purely additive). `lenses[]` (and `coverage`) are present on the **aggregate**
-  BLOCK / OVERFLOW / APPROVE statuses **and** the over-budget OVERFLOW; an **early fail-closed `INFRA_ERROR`**
-  (malformed knob, `MAX_LENSES` exceeded, or a missing persona — raised *before* lens jobs run, via
-  `die_infra`) uses the base status shape and does **not** include `lenses[]`.
+  BLOCK / INFRA_ERROR / OVERFLOW / APPROVE statuses (an aggregate `INFRA_ERROR` means a lens failed) **and** the
+  over-budget OVERFLOW; an **early fail-closed `INFRA_ERROR`** (malformed knob, `MAX_LENSES` exceeded, or a
+  missing persona — raised *before* lens jobs run — or the Codex binary not found (raised at the first lens,
+  before any Codex call); all via `die_infra`) uses the base status shape and does **not** include `lenses[]` or
+  `coverage`.
 - **Non-composable with Tier-3 sharding:** when multi-lens is active the sharding branch is **bypassed** — every
   lens reviews the FULL diff (multi-lens is NOT a context-overflow mitigation). If any lens packet exceeds
   `CODEX_GATE_PACKET_BUDGET` the run fails closed with **OVERFLOW** ("narrow via `prepr-delta --multi`, or drop
@@ -466,15 +485,19 @@ bash <skill-dir>/codex-gate.sh phase-review P2
 > Don't trust this list over the gate itself — `codex-gate.sh config` reports the **effective** dials of the
 > copy that actually runs, and whether it still matches the versioned source.
 
-`CODEX_GATE_MODEL`, `CODEX_GATE_EFFORT` (defaults: `gpt-5.6-sol`/`xhigh` — **not** `ultra`, which performs
+`CODEX_GATE_MODEL`, `CODEX_GATE_EFFORT` (defaults: `gpt-6-astra`/`xhigh` — **not** `ultra`, which performs
 wrapper-invisible automatic task delegation; both remain env-overridable, and `CODEX_GATE_EFFORT=ultra` combined
 with multi-lens `--multi`/`CODEX_GATE_FANOUT=1` on `prepr`/`prepr-delta` is refused — see the multi-lens section
 above; `CODEX_GATE_MODEL=""` is a real
 override meaning "omit `-m`, use Codex's own default"), `CODEX_GATE_FAST` (**default 0 = OFF, opt-in**; Codex
-"fast mode" — same model, ~1.5× faster at **~2.5× credit cost**; set exactly `1` to enable — **any other
+"fast mode" — same model, ~2× faster at **~2.5× credit cost**; set exactly `1` to enable — **any other
 value, including `2`, leaves it OFF** — it does NOT change model/effort, fast≠dumb), `CODEX_GATE_MAX_ROUNDS`
 (default 8), `CODEX_GATE_EXCLUDES` (extra scratch globs; `.docker/` is NOT excluded by default),
 `CODEX_GATE_SESSION` (namespacing).
+**Codex binary:** `CODEX_BIN` (optional; a path or a command name on `PATH`; an empty value counts as unset). Unset,
+the wrapper takes the first executable of ChatGPT.app's new CLI path (`…/Resources/codex-cli/bin/codex`), then the
+old one (`…/Resources/codex`). A `CODEX_BIN` that is not an executable file or command, or neither default present,
+fails closed with `INFRA_ERROR` and zero Codex calls. `config` and `phase-start` never need the binary.
 **Config report:** `CODEX_GATE_RUNTIME` (the gate that actually runs; default
 `$HOME/.claude/skills/codex-gate/codex-gate.sh`) and `CODEX_GATE_SOURCE` (the versioned copy; default
 auto-discovered — the running script **when git tracks it at** `plugin/skills/codex-gate/codex-gate.sh`, else
