@@ -36,6 +36,7 @@ the new path, then the old one. With neither it emits `INFRA_ERROR` naming both 
 - `thread_id` comes from the JSONL event `{"type":"thread.started","thread_id":"…"}`.
 - Token usage is in the `{"type":"turn.completed","usage":{…}}` event.
 - Exit code ≠ verdict (a `request_changes` still exits 0); branch on parsed JSON, nonzero ⇒ infra.
+- A `blockers` field that is not an array is an inconsistent verdict and gives `INFRA_ERROR`.
 
 **Tier is chosen by repo presence, NOT by mode.** Every review mode (plan, bundle, phase-review, prepr,
 prepr-delta) runs **code tier when inside a git repo**; doc tier is the fallback **only when cwd is not a git repo**.
@@ -155,7 +156,8 @@ Applies to **`prepr` / `prepr-delta` ONLY** (`phase-review`/`plan`/`bundle`/`que
   `[{group, files, outcome, verdictPath}]`. Additive only — existing consumers read `outcome`/`blockers`
   unchanged; `shards` is present only on a sharded run. An **aggregate** `INFRA_ERROR` (a shard failed) carries
   `shards[]` and `coverage`; an early base-shape `INFRA_ERROR` (a malformed knob, or the Codex binary not found,
-  raised at the first shard) carries neither.
+  raised at the first shard) carries neither. Any aggregate value other than the four is an internal error and
+  fails closed as a base-shape `INFRA_ERROR`.
 
 Status: **Tier 3 contracts GREEN** — exercised by `codex-gate.test.sh` (adds
 shard-partition complete/disjoint, auto-shard trigger + per-shard verdicts + once-per-shard invocation + shards[]
@@ -202,7 +204,8 @@ the packet's persona and the status's provenance array differ.
   aggregate `INFRA_ERROR` means a lens failed) **and** the over-budget OVERFLOW; an **early fail-closed
   `INFRA_ERROR`** (malformed knob / `MAX_LENSES` exceeded / missing persona — raised *before* lens jobs run — or
   the Codex binary not found (raised at the first lens, before any Codex call); all via `die_infra`) uses the base
-  status shape **without** `lenses[]` or `coverage`.
+  status shape **without** `lenses[]` or `coverage`. Any aggregate value other than the four is an internal error
+  and fails closed as a base-shape `INFRA_ERROR`.
   **No ledger append on a multi-lens APPROVE** (a lens APPROVE is a dimensional whole-diff certification,
   NOT a per-file-surface approval — a later `prepr-delta` must still review those files).
 

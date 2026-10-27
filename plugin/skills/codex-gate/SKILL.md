@@ -407,6 +407,7 @@ applies to `prepr`/`prepr-delta` ONLY (`phase-review`/`plan`/`bundle`/`question`
   Existing consumers (which read `outcome`/`blockers`) are unaffected; `shards` is additive and only present on
   a sharded run. An **aggregate** `INFRA_ERROR` (a shard failed) carries `shards[]` and `coverage`; an early
   base-shape `INFRA_ERROR` (a malformed knob, or the Codex binary not found, raised at the first shard) carries neither.
+  Any aggregate value other than the four is an internal error and fails closed as a base-shape `INFRA_ERROR`.
   Set `CODEX_GATE_SHARD=off` to disable sharding and keep the plain Tier-1 OVERFLOW.
 
 ### Opt-in multi-LENS review (`prepr`/`prepr-delta` — `--multi` / `CODEX_GATE_FANOUT=1`)
@@ -433,7 +434,8 @@ high-impact feature the multi-lens pass is the pre-PR `prepr --multi`.) NOT defa
   over-budget OVERFLOW; an **early fail-closed `INFRA_ERROR`** (malformed knob, `MAX_LENSES` exceeded, or a
   missing persona — raised *before* lens jobs run — or the Codex binary not found (raised at the first lens,
   before any Codex call); all via `die_infra`) uses the base status shape and does **not** include `lenses[]` or
-  `coverage`.
+  `coverage`. Any aggregate value other than the four is an internal error and fails closed as a base-shape
+  `INFRA_ERROR`.
 - **Non-composable with Tier-3 sharding:** when multi-lens is active the sharding branch is **bypassed** — every
   lens reviews the FULL diff (multi-lens is NOT a context-overflow mitigation). If any lens packet exceeds
   `CODEX_GATE_PACKET_BUDGET` the run fails closed with **OVERFLOW** ("narrow via `prepr-delta --multi`, or drop
@@ -532,7 +534,8 @@ that `*.ts`/`*.js` will match TS/JS **backend** files too; narrow/widen it per r
 - **Fail closed on inconsistent verdicts.** The wrapper only emits `APPROVE` when `verdict=="approve"`
   AND `blockers[]` is empty. Any blocker present ⇒ `BLOCK` regardless of the `.verdict` field
   (approve-with-blockers is inconsistent — never approve over an outstanding blocker). A
-  `request_changes` with zero blockers is degenerate and surfaces as `INFRA_ERROR`.
+  `request_changes` with zero blockers is degenerate and surfaces as `INFRA_ERROR`. A `blockers` field that
+  is not an array is an inconsistent verdict and gives `INFRA_ERROR`.
 - **Memory/continuity split.** The driver (you) may READ the repo's continuity/context files to build
   `<RUNDIR>/context.md`, and writes only under the run dir — the gate never writes the repo's memory
   files (updating `handoff.md` etc. is your general practice, not the gate's job). The Codex reviewer is

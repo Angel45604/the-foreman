@@ -182,6 +182,10 @@ JSONL
 #   invalidjson    -> writes non-JSON to -o, exit 0
 #   approve_with_blockers -> verdict approve BUT a non-empty blockers[] (inconsistent), exit 0
 #   reqchanges_no_blockers -> request_changes with ZERO blockers (degenerate), exit 0
+#   approve_bad_blockers -> verdict approve whose `blockers` is NOT an array (verdict.schema.json requires
+#                      one), exit 0. $STUB_BLOCKERS_JSON is the raw JSON text spliced in as the `blockers`
+#                      value (true, false, 0, {}, null, "x", [] ... ; unset or empty means []), or the word MISSING,
+#                      which omits the key altogether
 #   grounded        -> GROUNDING object (question.schema.json), settledByCanon=false, exit 0
 #   grounded_settled-> GROUNDING object, settledByCanon=true + canonAnswer set, exit 0
 #   inv_root_cause  -> INVESTIGATION report (investigate.schema.json), outcome
@@ -326,6 +330,16 @@ case "\$STUB_MODE" in
   reqchanges_no_blockers)
     # DEGENERATE: request_changes with an empty blockers[] -> wrapper must surface INFRA_ERROR
     [ -n "\$OUT" ] && printf '%s\n' '{"verdict":"request_changes","summary":"changes but no blockers","blockers":[],"nonBlocking":[]}' > "\$OUT"
+    exit 0 ;;
+  approve_bad_blockers)
+    # SCHEMA VIOLATION: says approve, but "blockers" is not an array (or is absent). The raw JSON text of
+    # \$STUB_BLOCKERS_JSON is spliced in as the value (default []); the word MISSING omits the key. The wrapper
+    # must fail closed on every one of them: a non-array can never count as "zero blockers".
+    if [ "\${STUB_BLOCKERS_JSON:-}" = "MISSING" ]; then
+      [ -n "\$OUT" ] && printf '%s\n' '{"verdict":"approve","summary":"looks good","nonBlocking":[]}' > "\$OUT"
+    else
+      [ -n "\$OUT" ] && printf '%s\n' "{\"verdict\":\"approve\",\"summary\":\"looks good\",\"blockers\":\${STUB_BLOCKERS_JSON:-[]},\"nonBlocking\":[]}" > "\$OUT"
+    fi
     exit 0 ;;
   grounded)
     # QUESTION mode: a GROUNDING-shaped object (valid vs question.schema.json), unsettled.
@@ -5561,6 +5575,9 @@ run_test_69() {
 #                                       ONE wrapper run inside <repo> (CODEX_BIN is the suite's
 #                                       stub); sets CLS_STATUS / CLS_OUTCOME / CLS_SUMMARY /
 #                                       CLS_NCALLS / CLS_ERR. The argv log is truncated first.
+#     cls_collect                       the five-variable result collection cls_run ends with, reading
+#                                       $SANDBOX/cls.out / cls.err and the argv log (also called by
+#                                       bad_run_shadow in 84-90)
 #     cls_run_mode <mode> <stub-mode> [NAME=value ...]
 #                                       one of plan bundle phase-review question investigate
 #                                       prepr, against a fresh fixture
@@ -5576,6 +5593,14 @@ CLS_LINE_400="HTTP 400 invalid_request_error: The 'gpt-6-astra' model is not sup
 # reads one before any run (or after an arm that sets only some) never hits an unbound variable.
 CLS_STATUS=""; CLS_OUTCOME=""; CLS_SUMMARY=""; CLS_NCALLS=0; CLS_ERR=""
 
+cls_collect() { # read the last run's $SANDBOX/cls.out / cls.err into CLS_STATUS / OUTCOME / SUMMARY / NCALLS / ERR
+  CLS_STATUS="$(last_json_line "$SANDBOX/cls.out")"
+  CLS_OUTCOME="$(printf '%s' "$CLS_STATUS" | jq -r '.outcome // empty' 2>/dev/null)"
+  CLS_SUMMARY="$(printf '%s' "$CLS_STATUS" | jq -r '.summary // empty' 2>/dev/null)"
+  CLS_NCALLS="$(grep -c -- '---END-ARGV---' "$STUB_ARGV_LOG" 2>/dev/null)"; [ -n "$CLS_NCALLS" ] || CLS_NCALLS=0
+  CLS_ERR="$(head -c 300 "$SANDBOX/cls.err" 2>/dev/null)"
+}
+
 cls_run() { # <repo> <stub-mode> [NAME=value ...] -- <wrapper-arg>...
   local repo="$1" mode="$2"
   local -a ew aw
@@ -5587,11 +5612,7 @@ cls_run() { # <repo> <stub-mode> [NAME=value ...] -- <wrapper-arg>...
   while [ $# -gt 0 ]; do aw[${#aw[@]}]="$1"; shift; done
   reset_argv_log
   ( cd "$repo" && env "${ew[@]}" bash "$WRAPPER" "${aw[@]}" ) > "$SANDBOX/cls.out" 2> "$SANDBOX/cls.err"
-  CLS_STATUS="$(last_json_line "$SANDBOX/cls.out")"
-  CLS_OUTCOME="$(printf '%s' "$CLS_STATUS" | jq -r '.outcome // empty' 2>/dev/null)"
-  CLS_SUMMARY="$(printf '%s' "$CLS_STATUS" | jq -r '.summary // empty' 2>/dev/null)"
-  CLS_NCALLS="$(grep -c -- '---END-ARGV---' "$STUB_ARGV_LOG" 2>/dev/null)"; [ -n "$CLS_NCALLS" ] || CLS_NCALLS=0
-  CLS_ERR="$(head -c 300 "$SANDBOX/cls.err" 2>/dev/null)"
+  cls_collect
 }
 
 cls_run_mode() { # <mode> <stub-mode> [NAME=value ...]
@@ -6456,6 +6477,444 @@ run_test_83() {
 }
 
 #############################################################################
+# TESTS 84-90 — a malformed `blockers`, or an unknown fan-out aggregate, can never approve
+#   [fail-closed guards: ADR-002 / ADR-003, PDR criteria 1-4]
+#   verdict.schema.json requires `blockers` and types it as an array. The wrapper counted
+#   `(.blockers // []) | length`, so a boolean, a number, an object, null or a missing key counted
+#   as ZERO blockers and an `approve` verdict approved. The rule now: a `blockers` that is not an
+#   array is an INCONSISTENT verdict, INFRA_ERROR, in every classifier:
+#     - emit_outcome (plan, bundle, phase-review, prepr, prepr-delta): the summary starts
+#       `inconsistent verdict: blockers is <jq type>, not an array (` and no ledger line is written;
+#     - classify_verdict_file (one shard or lens job): INFRA_ERROR, so the job's reason reads
+#       `no usable verdict (<path>)` and, with no BLOCK job, the aggregate is INFRA_ERROR.
+#   The two fan-out emitters (shard_and_review, multi_lens_review) approve only when the aggregate
+#   is exactly APPROVE: any other FAN_OUTCOME (WEIRD, empty) is an INFRA_ERROR in the BASE status
+#   shape (no shards[] / lenses[]) naming the value, with no ledger line. In multi_lens_review the guard
+#   runs BEFORE the coverage-gap check (ADR-003), so a forced gap with a WEIRD aggregate is still an
+#   INFRA_ERROR naming the value, never the coverage OVERFLOW.
+#   The `FAN_OUTCOME=""` reset at the top of fan_out_and_aggregate is not observable through these tests:
+#   every return path of that function sets FAN_OUTCOME, and the shadow (bad_run_shadow) replaces the whole
+#   function. The reset is defensive.
+#   Stub mode: approve_bad_blockers + STUB_BLOCKERS_JSON (raw JSON text, or MISSING).
+#
+#   Shared plumbing for 84-90 (on top of cls_run / cls_run_mode / cls_shard_repo / cls_multi_repo):
+#     BAD_SHAPES                         a bash array of "<raw blockers JSON>:<jq type>" entries, one per
+#                                        shape that must fail. Split an entry on its LAST colon
+#                                        (raw="${spec%:*}"; typ="${spec##*:}"): the raw JSON may itself
+#                                        contain colons ({"a":1}), the jq type never does
+#     bad_seed <repo> [NAME=value ...] -- <wrapper-arg>...
+#                                        ONE clean approve run first: it writes the review ledger's
+#                                        baseline (BAD_LEDGER0), so "no new ledger line" is a before/after
+#                                        comparison and not an absent file nobody could find
+#     bad_ledger_lines <status-json>     the line count of the worktree ledger beside the status' runDir
+#                                        (the lookup TEST 25 does: <wtkey>/ledger.jsonl), "NA" when no runDir is named
+#     bad_ledger_unchanged <baseline>    the seed approved, the baseline is <baseline>, the run under test
+#                                        left the count where it was (it first sets BAD_LEDGER1 from
+#                                        CLS_STATUS, so call it right after the run; bad_diag shows it). Only the
+#                                        single-thread and sharded runs use it: a multi-lens run never
+#                                        writes a ledger line, so those cases take no seed and check that
+#                                        the count after the run is 0
+#     bad_job_verdict_approve_true <status-json> <shard|lens>
+#                                        at least one per-job verdict file in the status' runDir
+#                                        (<shard|lens>-*-verdict.json) holds verdict approve with
+#                                        blockers == true: the stub's verdict is the cause of the INFRA_ERROR
+#     bad_diag                           cls_diag + the ledger counts: the line every FAIL carries
+#     bad_run_shadow <repo> <fan-outcome> [NAME=value ...] -- <wrapper-arg>...
+#                                        the REAL `main`, end to end, with fan_out_and_aggregate shadowed
+#                                        so it sets FAN_OUTCOME to <fan-outcome> and calls no Codex; fills
+#                                        the same CLS_* variables cls_run does
+#############################################################################
+BAD_SHAPES=('true:boolean' 'false:boolean' '0:number' '{}:object' 'null:null' '"x":string' 'MISSING:null')
+BAD_OBJ_BLOCKER='[{"class":"agent_fixable","severity":"P1","file":"a.js","line":1,"issue":"x","suggestion":"y"}]'
+BAD_SEED_OK=1; BAD_LEDGER0="NA"; BAD_LEDGER1="NA"
+
+# The shadow driver. `bash -c` sources the wrapper, REDEFINES fan_out_and_aggregate, then runs the real
+# main. The wrapper's main guard compares BASH_SOURCE[0] with $0: $0 is the `./` spelling and the sourced
+# path ($WRAPPER) is not, so sourcing never auto-runs main, yet SKILL_DIR (dirname of $0) still resolves to
+# the skill directory. The shadow sets every FAN_* output the two callers read, and calls no Codex.
+# A driver that cannot get that far fails with a cause on stderr (cls_diag shows its head): __SOURCEFAIL__
+# when sourcing the wrapper failed, __NOFUNC__ when the wrapper no longer defines fan_out_and_aggregate
+# (so the shadow would define a function nothing calls); both exit 97.
+BAD_SHADOW_SCRIPT='
+src="$1"; shift
+. "$src" || { echo __SOURCEFAIL__ >&2; exit 97; }
+[ "$(type -t fan_out_and_aggregate)" = function ] || { echo __NOFUNC__ >&2; exit 97; }
+fan_out_and_aggregate() {
+  FAN_OUTCOME="${FANSHADOW_OUTCOME-}"
+  FAN_N_JOBS=1
+  FAN_TOTAL_FILES=3
+  FAN_JOBS_JSON="[]"
+  FAN_BLOCKERS=0; FAN_AGENT_FIXABLE=0; FAN_DECISION_BLOCKERS=0
+  FAN_FIRST_INCONCLUSIVE=""; FAN_FIRST_INFRA=""; FAN_INFRA_REASON=""
+  return 0
+}
+main "$@"
+'
+
+bad_ledger_lines() { # <status-json>
+  local rd ledger n
+  rd="$(printf '%s' "$1" | jq -r '.runDir // empty' 2>/dev/null)"
+  [ -n "$rd" ] || { printf 'NA'; return 0; }
+  ledger="$(dirname "$(dirname "$rd")")/ledger.jsonl"
+  if [ -f "$ledger" ]; then
+    n="$(grep -c '' "$ledger" 2>/dev/null)"; [ -n "$n" ] || n=0
+    printf '%s' "$n"
+  else
+    printf '0'
+  fi
+}
+
+bad_seed() { # <repo> [NAME=value ...] -- <wrapper-arg>...
+  local repo="$1"
+  shift
+  cls_run "$repo" approve "$@"
+  BAD_SEED_OK=1
+  [ "$CLS_OUTCOME" = "APPROVE" ] && BAD_SEED_OK=0
+  BAD_LEDGER0="$(bad_ledger_lines "$CLS_STATUS")"
+  BAD_LEDGER1="NA"
+}
+
+bad_ledger_unchanged() { # <baseline> — call right after the run under test; first sets BAD_LEDGER1 from CLS_STATUS
+  BAD_LEDGER1="$(bad_ledger_lines "$CLS_STATUS")"            # global on purpose: bad_diag reads it
+  [ "$BAD_SEED_OK" -eq 0 ] && [ "$BAD_LEDGER0" = "$1" ] && [ "$BAD_LEDGER1" = "$BAD_LEDGER0" ]
+}
+
+bad_job_verdict_approve_true() { # <status-json> <shard|lens> — see the header: the cause, read straight from the run dir
+  local rd f
+  rd="$(printf '%s' "$1" | jq -r '.runDir // empty' 2>/dev/null)"
+  [ -n "$rd" ] || return 1
+  for f in "$rd/$2"-*-verdict.json; do
+    [ -f "$f" ] || continue                                 # an unmatched glob stays a literal pattern: skip it
+    jq -e '.verdict == "approve" and .blockers == true' "$f" >/dev/null 2>&1 && return 0
+  done
+  return 1
+}
+
+bad_summary_starts() { # <prefix> — the status summary begins with <prefix> (literal, no pattern characters)
+  case "$CLS_SUMMARY" in "$1"*) return 0 ;; esac
+  return 1
+}
+
+bad_diag() {
+  printf '%s :: ledger lines: after the seed run=%s, after the run under test=%s (seed approved: %s)' \
+    "$(cls_diag)" "$BAD_LEDGER0" "$BAD_LEDGER1" "$([ "$BAD_SEED_OK" -eq 0 ] && echo yes || echo NO)"
+}
+
+bad_run_shadow() { # <repo> <fan-outcome> [NAME=value ...] -- <wrapper-arg>...
+  local repo="$1" fo="$2"
+  local -a ew aw
+  shift 2
+  ew=(FANSHADOW_OUTCOME="$fo")     # never empty under bash 3.2 `set -u`; the value may be the empty string
+  aw=()
+  while [ $# -gt 0 ] && [ "$1" != "--" ]; do ew[${#ew[@]}]="$1"; shift; done
+  [ $# -gt 0 ] && shift
+  while [ $# -gt 0 ]; do aw[${#aw[@]}]="$1"; shift; done
+  reset_argv_log
+  ( cd "$repo" && env STUB_MODE=approve "${ew[@]}" bash -c "$BAD_SHADOW_SCRIPT" "$TEST_DIR/./codex-gate.sh" "$WRAPPER" "${aw[@]}" ) \
+    > "$SANDBOX/cls.out" 2> "$SANDBOX/cls.err"
+  cls_collect
+}
+
+#############################################################################
+# TEST 84 — the approve_bad_blockers stub arm is what the other tests say it is.
+#   A stub that coerced the value, dropped the key for the wrong word, or exited nonzero would make
+#   every test below pass or fail for a reason that has nothing to do with the wrapper: pin the
+#   premise here, wrapper-free. Each shape arrives byte for byte; MISSING omits the key; an unset
+#   STUB_BLOCKERS_JSON means [] (the unchanged-behavior control).
+#############################################################################
+run_test_84() {
+  local spec raw typ rc ok=0 o="$SANDBOX/bad84.o"
+  for spec in "${BAD_SHAPES[@]}" '[]:array'; do
+    raw="${spec%:*}"; typ="${spec##*:}"
+    rm -f "$o"
+    printf 'packet\n' | env STUB_MODE=approve_bad_blockers STUB_BLOCKERS_JSON="$raw" "$STUB_DIR/codex" -o "$o" > "$SANDBOX/bad84.stdout" 2>/dev/null
+    rc=$?
+    if [ "$raw" = "MISSING" ]; then
+      if [ "$rc" -eq 0 ] && jq -e '.verdict == "approve" and (has("blockers") | not) and (.nonBlocking == [])' "$o" >/dev/null 2>&1; then :; else
+        ok=1; fail "stub-arm: approve_bad_blockers + STUB_BLOCKERS_JSON=MISSING must write an approve verdict WITHOUT a blockers key and exit 0 (rc=$rc) :: $(head -c 300 "$o" 2>&1)"
+      fi
+    else
+      if [ "$rc" -eq 0 ] && jq -e --arg t "$typ" '.verdict == "approve" and has("blockers") and ((.blockers | type) == $t)' "$o" >/dev/null 2>&1 \
+         && [ "$(jq -c '.blockers' "$o" 2>/dev/null)" = "$raw" ]; then :; else
+        ok=1; fail "stub-arm: approve_bad_blockers + STUB_BLOCKERS_JSON=$raw must write an approve verdict whose blockers is exactly $raw (a $typ) and exit 0 (rc=$rc) :: $(head -c 300 "$o" 2>&1)"
+      fi
+    fi
+  done
+  [ "$ok" -eq 0 ] && pass "stub-arm: approve_bad_blockers writes an approve verdict whose blockers is exactly true / false / 0 / {} / null / \"x\" / [] (raw), or no blockers key for MISSING, and exits 0"
+  rm -f "$o"
+  printf 'packet\n' | env -u STUB_BLOCKERS_JSON STUB_MODE=approve_bad_blockers "$STUB_DIR/codex" -o "$o" > "$SANDBOX/bad84.stdout" 2>/dev/null
+  rc=$?
+  if [ "$rc" -eq 0 ] && jq -e '.verdict == "approve" and .blockers == []' "$o" >/dev/null 2>&1; then
+    pass "stub-arm: approve_bad_blockers with STUB_BLOCKERS_JSON unset writes an approve verdict with blockers []"
+  else
+    fail "stub-arm: approve_bad_blockers with STUB_BLOCKERS_JSON unset must write an approve verdict with blockers [] and exit 0 (rc=$rc) :: $(head -c 300 "$o" 2>&1)"
+  fi
+  reset_argv_log
+}
+
+#############################################################################
+# TEST 85 — every bad shape through UNSHARDED prepr [ADR-002; PDR 1]: `approve` + a `blockers` that
+#   is not an array is an INFRA_ERROR, never APPROVE. The summary names the jq type; exactly one
+#   stub call ran; and the ledger line count is where a clean approve left it. RED: six shapes APPROVE
+#   (and write a ledger line), "x" is BLOCK (one string = one blocker). Controls (already green):
+#   approve + [] is APPROVE, and approve + one object blocker is BLOCK.
+#############################################################################
+run_test_85() {
+  local spec raw typ repo ok
+  for spec in "${BAD_SHAPES[@]}"; do
+    raw="${spec%:*}"; typ="${spec##*:}"; ok=0
+    repo="$(bin_repo)"
+    bad_seed "$repo" -- prepr
+    cls_run "$repo" approve_bad_blockers STUB_BLOCKERS_JSON="$raw" -- prepr
+    [ "$CLS_OUTCOME" = "INFRA_ERROR" ] || ok=1
+    bad_summary_starts "inconsistent verdict: blockers is $typ, not an array (" || ok=1
+    [ "$CLS_NCALLS" -eq 1 ] || ok=1                         # the stub really produced the verdict, once
+    bad_ledger_unchanged 1 || ok=1                          # the seed wrote ONE line; the bad run added none
+    if [ "$ok" -eq 0 ]; then
+      pass "bad-blockers: prepr + approve with blockers=$raw -> INFRA_ERROR 'inconsistent verdict: blockers is $typ, not an array (...)', ledger unchanged"
+    else
+      fail "bad-blockers: prepr + approve with blockers=$raw: expected INFRA_ERROR whose summary starts 'inconsistent verdict: blockers is $typ, not an array (' with exactly 1 call and the ledger unchanged at 1 line, got $(bad_diag)"
+    fi
+  done
+
+  # control: approve + [] is still an APPROVE (the stub arm itself does not distort a good verdict)
+  repo="$(bin_repo)"
+  cls_run "$repo" approve_bad_blockers STUB_BLOCKERS_JSON='[]' -- prepr
+  if [ "$CLS_OUTCOME" = "APPROVE" ] && [ "$CLS_NCALLS" -eq 1 ]; then
+    pass "bad-blockers: control, prepr + approve with blockers=[] -> APPROVE"
+  else
+    fail "bad-blockers: control, prepr + approve with blockers=[] must still be APPROVE with 1 call, got $(cls_diag)"
+  fi
+  # control: approve + one OBJECT blocker is still a BLOCK (one blocker, an agent-fixable one)
+  repo="$(bin_repo)"
+  cls_run "$repo" approve_bad_blockers STUB_BLOCKERS_JSON="$BAD_OBJ_BLOCKER" -- prepr
+  if [ "$CLS_OUTCOME" = "BLOCK" ] && printf '%s' "$CLS_STATUS" | jq -e '.blockers == 1 and .agentFixableBlockers == 1' >/dev/null 2>&1; then
+    pass "bad-blockers: control, prepr + approve with one object blocker -> BLOCK (1 blocker, 1 agent-fixable)"
+  else
+    fail "bad-blockers: control, prepr + approve with one object blocker must still be BLOCK (blockers=1, agentFixableBlockers=1), got $(cls_diag)"
+  fi
+}
+
+#############################################################################
+# TEST 86 — the same inconsistent verdict in the other review modes [ADR-002; PDR 1]: `true` through
+#   `plan`, `bundle` and `phase-review` (all three run at the code tier here, because cls_run_mode
+#   executes them inside a Git fixture; `phase-review` also reviews a phase diff) is an
+#   INFRA_ERROR with the same summary prefix. They share emit_outcome with prepr; this pins that
+#   the check sits in the shared emitter and not in one mode's wrapper code. `prepr-delta` (named by
+#   PDR criterion 1) gets its own case: a clean approve seeds the ledger with one line, the reviewed
+#   file then changes so the delta is NOT empty (an empty delta short-circuits to a synthetic approve
+#   and never reaches emit_outcome), and the bad verdict must leave the ledger at that one line.
+#   RED: all APPROVE (and prepr-delta adds a second ledger line).
+#############################################################################
+run_test_86() {
+  local m ok repo
+  for m in plan bundle phase-review; do
+    ok=0
+    cls_run_mode "$m" approve_bad_blockers STUB_BLOCKERS_JSON=true
+    [ "$CLS_OUTCOME" = "INFRA_ERROR" ] || ok=1
+    bad_summary_starts "inconsistent verdict: blockers is boolean, not an array (" || ok=1
+    [ "$CLS_NCALLS" -ge 1 ] || ok=1
+    if [ "$ok" -eq 0 ]; then
+      pass "bad-blockers: $m + approve with blockers=true -> INFRA_ERROR 'inconsistent verdict: blockers is boolean, not an array (...)'"
+    else
+      fail "bad-blockers: $m + approve with blockers=true: expected INFRA_ERROR whose summary starts 'inconsistent verdict: blockers is boolean, not an array (' (at least 1 call), got $(cls_diag)"
+    fi
+  done
+
+  # prepr-delta: seed ONE clean approve (the ledger now holds the reviewed change.js), change that file so
+  # the delta has an unreviewed change, then run prepr-delta with the bad verdict (the stub is called once)
+  ok=0
+  repo="$(bin_repo)"
+  bad_seed "$repo" -- prepr
+  printf 'export const X=2;\n' > "$repo/change.js"
+  cls_run "$repo" approve_bad_blockers STUB_BLOCKERS_JSON=true -- prepr-delta
+  [ "$CLS_OUTCOME" = "INFRA_ERROR" ] || ok=1
+  bad_summary_starts "inconsistent verdict: blockers is boolean, not an array (" || ok=1
+  [ "$CLS_NCALLS" -eq 1 ] || ok=1                           # the delta was not empty: the stub really produced the verdict
+  bad_ledger_unchanged 1 || ok=1                            # the seed wrote ONE line; the bad prepr-delta added none
+  if [ "$ok" -eq 0 ]; then
+    pass "bad-blockers: prepr-delta (unreviewed change) + approve with blockers=true -> INFRA_ERROR 'inconsistent verdict: blockers is boolean, not an array (...)', ledger unchanged"
+  else
+    fail "bad-blockers: prepr-delta (unreviewed change) + approve with blockers=true: expected INFRA_ERROR whose summary starts 'inconsistent verdict: blockers is boolean, not an array (' with exactly 1 call and the ledger unchanged at 1 line, got $(bad_diag)"
+  fi
+}
+
+#############################################################################
+# TEST 87 — classify_verdict_file on its own [ADR-002]: `classify_verdict_file <verdict> <jsonl> 0`
+#   (the wrapper sourced in a subshell) prints exactly ONE token. Every bad shape is INFRA_ERROR;
+#   approve + [] is APPROVE and approve + one object blocker is BLOCK (the two unchanged controls).
+#   RED: six shapes print APPROVE, "x" prints BLOCK.
+#############################################################################
+run_test_87() {
+  local spec raw typ vf n=0
+  for spec in "${BAD_SHAPES[@]}"; do
+    raw="${spec%:*}"; typ="${spec##*:}"
+    n=$((n + 1))
+    vf="$CLS_FX/v-bad-blockers-$n.json"
+    if [ "$raw" = "MISSING" ]; then
+      printf '%s\n' '{"verdict":"approve","summary":"s","nonBlocking":[]}' > "$vf"
+    else
+      printf '{"verdict":"approve","summary":"s","blockers":%s,"nonBlocking":[]}\n' "$raw" > "$vf"
+    fi
+    cls_expect_token "an approve verdict whose blockers is $([ "$raw" = "MISSING" ] && echo 'MISSING (key absent)' || echo "$raw ($typ)")" INFRA_ERROR "$CLS_FX/chatter.jsonl" 0 "$vf"
+  done
+  printf '%s\n' '{"verdict":"approve","summary":"s","blockers":[],"nonBlocking":[]}' > "$CLS_FX/v-bad-ctl-approve.json"
+  printf '{"verdict":"approve","summary":"s","blockers":%s,"nonBlocking":[]}\n' "$BAD_OBJ_BLOCKER" > "$CLS_FX/v-bad-ctl-block.json"
+  cls_expect_token "control: approve + blockers [] (an empty array)" APPROVE "$CLS_FX/chatter.jsonl" 0 "$CLS_FX/v-bad-ctl-approve.json"
+  cls_expect_token "control: approve + one object blocker" BLOCK "$CLS_FX/chatter.jsonl" 0 "$CLS_FX/v-bad-ctl-block.json"
+}
+
+#############################################################################
+# TEST 88 — sharded [ADR-002; PDR 2]: TEST 31's three-file repo, budget 9000, every shard's stub call
+#   writes approve + blockers=true. Each shard job is classified INFRA_ERROR (its reason is
+#   `no usable verdict (<its verdict path>)`), so the aggregate is INFRA_ERROR, never APPROVE; the
+#   summary names a shard; and the ledger count stays where a clean sharded approve left it.
+#   RED: every shard APPROVEs, the aggregate APPROVEs and the ledger grows by a line.
+#############################################################################
+run_test_88() {
+  local repo ok=0
+  repo="$(cls_shard_repo SHARD-BADBLK-MARK)"
+  bad_seed "$repo" CODEX_GATE_PACKET_BUDGET=9000 CODEX_GATE_SHARD=auto -- prepr
+  cls_run "$repo" approve_bad_blockers CODEX_GATE_PACKET_BUDGET=9000 CODEX_GATE_SHARD=auto STUB_BLOCKERS_JSON=true -- prepr
+  [ "$CLS_OUTCOME" = "INFRA_ERROR" ] || ok=1
+  bad_summary_starts "shard " || ok=1
+  cls_summary_has 'failed: no usable verdict (' || ok=1
+  [ "$CLS_NCALLS" -eq 3 ] || ok=1                           # all three shards really ran and returned the bad verdict
+  bad_ledger_unchanged 1 || ok=1
+  if [ "$ok" -eq 0 ]; then
+    pass "bad-blockers-sharded: every shard approves with blockers=true -> aggregate INFRA_ERROR 'shard <g> failed: no usable verdict (...)', ledger unchanged"
+  else
+    fail "bad-blockers-sharded: expected INFRA_ERROR whose summary starts 'shard ' and contains 'failed: no usable verdict (' after 3 calls, the ledger unchanged at 1 line, got $(bad_diag)"
+  fi
+  # each shard job is itself INFRA_ERROR (the classifier, not only the aggregate, refuses the shape)
+  if printf '%s' "$CLS_STATUS" | jq -e '(.shards | length == 3) and all(.shards[]; .outcome == "INFRA_ERROR")' >/dev/null 2>&1; then
+    pass "bad-blockers-sharded: shards[] has three entries, all INFRA_ERROR"
+  else
+    fail "bad-blockers-sharded: expected shards[] with three entries, all INFRA_ERROR, got shards=$(printf '%s' "$CLS_STATUS" | jq -c '(.shards // []) | map({(.group): .outcome}) | add' 2>/dev/null) :: $(cls_diag)"
+  fi
+  # the cause, read straight from the run dir: at least one shard-*-verdict.json IS an approve with blockers=true
+  if bad_job_verdict_approve_true "$CLS_STATUS" shard; then
+    pass "bad-blockers-sharded: the run dir holds a shard-*-verdict.json with verdict approve and blockers=true (the stub's verdict is the cause)"
+  else
+    fail "bad-blockers-sharded: expected at least one shard-*-verdict.json in the run dir with verdict approve and blockers == true, runDir=$(printf '%s' "$CLS_STATUS" | jq -r '.runDir // "none"' 2>/dev/null) :: $(cls_diag)"
+  fi
+}
+
+#############################################################################
+# TEST 89 — multi-lens [ADR-002; PDR 2]: `prepr --multi` where every lens writes approve +
+#   blockers=true. Every lens job is INFRA_ERROR, the aggregate is INFRA_ERROR, never APPROVE; the
+#   summary names a lens and the job's reason. RED: every lens APPROVEs.
+#############################################################################
+run_test_89() {
+  local repo ok=0
+  repo="$(cls_multi_repo MULTI-LENS-BADBLK-MARK)"
+  cls_run "$repo" approve_bad_blockers STUB_BLOCKERS_JSON=true -- prepr --multi
+  [ "$CLS_OUTCOME" = "INFRA_ERROR" ] || ok=1
+  bad_summary_starts "lens " || ok=1
+  cls_summary_has 'failed: no usable verdict (' || ok=1
+  [ "$CLS_NCALLS" -ge 2 ] || ok=1                           # a real fan-out: several (stub) calls, each returning the bad verdict
+  if [ "$ok" -eq 0 ]; then
+    pass "bad-blockers-multi: every lens approves with blockers=true -> aggregate INFRA_ERROR 'lens <l> failed: no usable verdict (...)'"
+  else
+    fail "bad-blockers-multi: expected INFRA_ERROR whose summary starts 'lens ' and contains 'failed: no usable verdict (' after at least 2 calls, got $(cls_diag)"
+  fi
+  if printf '%s' "$CLS_STATUS" | jq -e '(.lenses | length >= 2) and all(.lenses[]; .outcome == "INFRA_ERROR")' >/dev/null 2>&1; then
+    pass "bad-blockers-multi: lenses[] has at least two entries, all INFRA_ERROR"
+  else
+    fail "bad-blockers-multi: expected lenses[] with at least two entries, all INFRA_ERROR, got lenses=$(printf '%s' "$CLS_STATUS" | jq -c '(.lenses // []) | map({(.lens): .outcome}) | add' 2>/dev/null) :: $(cls_diag)"
+  fi
+  # the cause, read straight from the run dir: at least one lens-*-verdict.json IS an approve with blockers=true
+  if bad_job_verdict_approve_true "$CLS_STATUS" lens; then
+    pass "bad-blockers-multi: the run dir holds a lens-*-verdict.json with verdict approve and blockers=true (the stub's verdict is the cause)"
+  else
+    fail "bad-blockers-multi: expected at least one lens-*-verdict.json in the run dir with verdict approve and blockers == true, runDir=$(printf '%s' "$CLS_STATUS" | jq -r '.runDir // "none"' 2>/dev/null) :: $(cls_diag)"
+  fi
+}
+
+#############################################################################
+# TEST 90 — an unknown aggregate outcome never approves [ADR-003; PDR 3]: the REAL `main prepr`
+#   (TEST 31's sharded setup) and `main prepr --multi`, end to end, with fan_out_and_aggregate
+#   shadowed (bad_run_shadow) so FAN_OUTCOME is `WEIRD`, then empty. Each emitter must answer
+#   INFRA_ERROR in the BASE status shape (no shards[], no lenses[]) with a summary that names the
+#   value, call no Codex (the shadow replaced the fan-out), and write no ledger line. The control
+#   shadow sets APPROVE: the emitter approves, which proves the driver reaches the real emitter
+#   and that the other cases fail for the aggregate value and for nothing else. The sharded cases seed
+#   one clean approve so "no ledger line" is a before/after comparison; a multi-lens run never writes a
+#   ledger line, so those cases take no seed and check that no ledger line exists. One more multi-lens
+#   case forces a coverage gap (CODEX_GATE_FORCE_UNREVIEWED=1) under a WEIRD aggregate: the guard must
+#   answer first (ADR-003), so the status is the guard's INFRA_ERROR, not the coverage OVERFLOW.
+#   RED: `WEIRD` and empty both fall through to the APPROVE emitter (and, with a forced gap, to OVERFLOW).
+#############################################################################
+bad_expect_unknown_agg() { # <label> <emitter prefix> <value> <ledger baseline|NONE> — call right after bad_run_shadow
+  # <ledger baseline> is the line count the seed run left (single-thread / sharded: the run under test must
+  # leave it there). NONE is the multi-lens form: a lens run never writes a ledger line, so no seed ran and
+  # the count after the run must be 0.
+  local ok=0 ledger_say ledger_got
+  [ "$CLS_OUTCOME" = "INFRA_ERROR" ] || ok=1                # never APPROVE
+  bad_summary_starts "$2: unexpected aggregate outcome '$3'" || ok=1
+  cls_summary_has 'refusing to approve' || ok=1
+  cls_summary_one_line || ok=1
+  [ "$CLS_NCALLS" -eq 0 ] || ok=1                           # the shadow ran, not the real fan-out
+  printf '%s' "$CLS_STATUS" | jq -e '(has("shards") | not) and (has("lenses") | not)' >/dev/null 2>&1 || ok=1   # the BASE shape
+  if [ "$4" = "NONE" ]; then
+    BAD_LEDGER1="$(bad_ledger_lines "$CLS_STATUS")"         # no seed, so bad_ledger_unchanged is not called here
+    [ "$BAD_LEDGER1" = "0" ] || ok=1
+    ledger_say="no ledger line written (multi-lens never writes one)"
+    ledger_got="ledger lines after the run=$BAD_LEDGER1 (must be 0)"
+  else
+    bad_ledger_unchanged "$4" || ok=1
+    ledger_say="ledger unchanged"
+    ledger_got="ledger lines: after the seed run=$BAD_LEDGER0, after the run under test=$BAD_LEDGER1, expected unchanged at $4 (seed approved: $([ "$BAD_SEED_OK" -eq 0 ] && echo yes || echo NO))"
+  fi
+  if [ "$ok" -eq 0 ]; then
+    pass "unknown-aggregate: $1 -> INFRA_ERROR \"$2: unexpected aggregate outcome '$3' ...\" in the base shape, no Codex call, $ledger_say"
+  else
+    fail "unknown-aggregate: $1: expected INFRA_ERROR whose one-line summary starts \"$2: unexpected aggregate outcome '$3'\" and contains 'refusing to approve' (0 calls, no shards[] / lenses[], $ledger_say), got $(cls_diag) :: $ledger_got :: status keys: $(printf '%s' "$CLS_STATUS" | jq -c 'keys' 2>/dev/null)"
+  fi
+}
+
+bad_expect_shadow_control() { # <label> <summary text an approve carries> — call right after bad_run_shadow with APPROVE
+  if [ "$CLS_OUTCOME" = "APPROVE" ] && [ "$CLS_NCALLS" -eq 0 ] && cls_summary_has "$2"; then
+    pass "unknown-aggregate: control, $1 with the shadow setting APPROVE -> APPROVE ('$2', no Codex call): the driver reaches the real emitter"
+  else
+    fail "unknown-aggregate: control, $1 with the shadow setting APPROVE must be APPROVE with a summary containing '$2' and 0 calls, got $(cls_diag) (hint: calls > 0 means sourcing ran main itself: did the BASH_SOURCE[0]/\$0 guard near the end of codex-gate.sh change? __SOURCEFAIL__ / __NOFUNC__ in the stderr above mean the driver never reached main)"
+  fi
+}
+
+run_test_90() {
+  local repo shard_env_a="CODEX_GATE_PACKET_BUDGET=9000" shard_env_b="CODEX_GATE_SHARD=auto" fo label
+  # --- shard_and_review ---
+  repo="$(cls_shard_repo SHARD-WEIRD-MARK)"
+  bad_run_shadow "$repo" APPROVE "$shard_env_a" "$shard_env_b" -- prepr
+  bad_expect_shadow_control "sharded prepr" "sharded review: 1 shards all approved"
+  for fo in WEIRD ""; do
+    repo="$(cls_shard_repo SHARD-WEIRD-MARK)"
+    bad_seed "$repo" "$shard_env_a" "$shard_env_b" -- prepr
+    bad_run_shadow "$repo" "$fo" "$shard_env_a" "$shard_env_b" -- prepr
+    label="sharded prepr, aggregate FAN_OUTCOME='$fo'"
+    bad_expect_unknown_agg "$label" "sharded review" "$fo" 1
+  done
+  # --- multi_lens_review: a lens run never writes a ledger line, so there is no seed run and no baseline:
+  #     the ledger check is "no ledger line written" (the count after the run is 0) ---
+  repo="$(cls_multi_repo MULTI-LENS-WEIRD-MARK)"
+  bad_run_shadow "$repo" APPROVE -- prepr --multi
+  bad_expect_shadow_control "prepr --multi" "lenses all approved"
+  for fo in WEIRD ""; do
+    repo="$(cls_multi_repo MULTI-LENS-WEIRD-MARK)"
+    bad_run_shadow "$repo" "$fo" -- prepr --multi
+    label="prepr --multi, aggregate FAN_OUTCOME='$fo'"
+    bad_expect_unknown_agg "$label" "multi-lens review" "$fo" NONE
+  done
+  # --- ordering (ADR-003): the multi-lens guard runs BEFORE the coverage-gap check. CODEX_GATE_FORCE_UNREVIEWED
+  #     (the test seam TEST 47 uses) forces a gap; with a WEIRD aggregate the answer must still be the guard's
+  #     INFRA_ERROR naming WEIRD. A guard placed after the coverage check answers OVERFLOW ('coverage gap: ...')
+  #     here, and the base-shape and summary checks fail with it ---
+  repo="$(cls_multi_repo MULTI-LENS-WEIRD-MARK)"
+  bad_run_shadow "$repo" WEIRD CODEX_GATE_FORCE_UNREVIEWED=1 -- prepr --multi
+  bad_expect_unknown_agg "prepr --multi with a forced coverage gap, FAN_OUTCOME='WEIRD'" "multi-lens review" WEIRD NONE
+}
+
+#############################################################################
 # run everything
 #############################################################################
 printf '======== codex-gate.test.sh ========\n'
@@ -6549,6 +7008,13 @@ run_test_80
 run_test_81
 run_test_82
 run_test_83
+run_test_84
+run_test_85
+run_test_86
+run_test_87
+run_test_88
+run_test_89
+run_test_90
 
 printf '====================================\n'
 printf 'PASS=%d FAIL=%d\n' "$PASS_COUNT" "$FAIL_COUNT"
