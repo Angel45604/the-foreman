@@ -1,0 +1,4 @@
+interface:
+  display_name: "Keep It Simple"
+  short_description: "Challenge complexity and reuse existing patterns"
+  default_prompt: "Use $keep-it-simple to assess the simplest sound approach to this work."

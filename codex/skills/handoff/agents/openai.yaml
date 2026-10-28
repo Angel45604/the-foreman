@@ -1,0 +1,4 @@
+interface:
+  display_name: "Handoff"
+  short_description: "Checkpoint work for Claude or Codex resume"
+  default_prompt: "Use $handoff to prepare a host-neutral checkpoint and kickoff prompt."

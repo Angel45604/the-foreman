@@ -1,0 +1,4 @@
+interface:
+  display_name: "The Refiner"
+  short_description: "Refine prose while preserving voice and meaning"
+  default_prompt: "Use $the-refiner to review this prose without changing its facts or voice."

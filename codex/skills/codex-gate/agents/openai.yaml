@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Gate"
+  short_description: "Run an isolated independent Codex review"
+  default_prompt: "Use $codex-gate to review this plan or implementation with evidence."

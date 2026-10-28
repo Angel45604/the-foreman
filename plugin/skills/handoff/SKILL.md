@@ -1,112 +1,124 @@
 ---
 name: handoff
-description: Use when the current session is low on context but the work isn't finished — produces a cold-start HANDOFF doc plus a paste-ready KICKOFF PROMPT so a fresh agent can resume seamlessly AND inherit this session's development workflow (the mandated skill chain, the ultracode / dynamic-Workflows posture, and the hard-won gotchas). Trigger whenever the user says they're "running out of context", asks to "prepare a handoff", "hand this off to a fresh agent", "write a handoff", "pass this to the next agent/session", or "so a new agent can pick up where we left off" — even if they don't say the word "handoff".
+description: Use when work must continue in a fresh session, context is low, or the user requests a handoff, including transfers between Claude Code and Codex.
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 ---
 
-# handoff — teach the next agent (cold-start handoff + kickoff prompt)
+# handoff — a checkpoint either host can resume
 
-The next agent starts with **zero context**. Your job is not to summarize — it's to transmit
-enough that a fresh agent resumes *as if it were you*: the same understanding of the work, the same
-git/verification footing, and the same **development workflow** (skills, posture, hard-won gotchas).
+Produce exactly two user-facing Markdown artifacts: a complete handoff and a short kickoff prompt
+pointing at it. Both work in Claude Code and Codex desktop/CLI. Switching hosts preserves the
+initiative; it does not restart planning or authorize another action. The user opens the receiving
+host in the checkout and supplies the kickoff or handoff path. This skill does not message chats.
 
-You produce **two artifacts at two altitudes**, and they are different on purpose:
+`<skill-dir>` is the absolute directory containing this SKILL.md. Read
+[the shared continuity contract](references/continuity.md) before capture or resume; its schema,
+versioned markers, validation rules and example are authoritative. Use the shared templates in
+`assets/handoff-template.md` and `assets/kickoff-prompt-template.md`. Do not duplicate the JSON schema.
 
-| Artifact | Altitude | Audience | Filename (default) |
-|---|---|---|---|
-| **Handoff doc** | deep, exhaustive | the fresh agent reads it cold | `handoff-<YYYY-MM-DD>-<slug>.md` |
-| **Kickoff prompt** | lean, paste-ready | the **user** pastes it into the fresh agent | `next-agent-prompt-<YYYY-MM-DD>-<slug>.md` |
+## 1. Gather and quiesce
 
-The kickoff prompt **points at** the handoff doc — it never duplicates it. The user copies the
-kickoff prompt in one action; the fresh agent then reads the doc for the full picture.
+Read repository canon and the active initiative bundle. Check actual git status, branch, exact HEAD,
+staged/unstaged/untracked work, local-versus-pushed status and never-stage paths. Use repository-relative
+references with the source checkout root recorded once; identify external evidence paths explicitly.
+Prefer the existing initiative bundle for output, or the project's established context location
+(default `.claude/context/`). That folder is usable by either host. Honor a requested slug/destination.
 
----
+Stop or join active writers before capture. Record worker ownership, completed results and outstanding
+questions; old worker handles cannot transfer. If writers cannot quiesce, mark the handoff incomplete
+and do not claim a valid checkpoint. Keep raw logs on disk with concise evidence anchors in the doc.
 
-## Step 1 — Gather ground truth (never write a handoff from memory)
+Collect the exact lifecycle stage, phase/substep and first unfinished action; approved scope/non-goals;
+plan, ledger and Markdown board paths; findings/blockers; commands and raw results. Keep last green
+separate from current expected TDD RED, unexpected failure or unverified work. Record result provenance
+and date; historical output must not be labeled newly verified. A source-host success summary is a claim.
 
-A handoff is a pile of **claims about state**. A wrong claim sends the fresh agent down the wrong
-path for an hour. Anchor everything in evidence before you write a word:
+Carry actual human request/response, gate, scope, status and evidence for each authorization: plan,
+local commits, phase/batch boundaries, live/ship and cross-chat coordination. Keep pending, denied,
+consumed and revoked decisions distinct. A recommendation, default option, silence, `approved:true`
+or the handoff request grants no authority. Preserve validated consumed escalation receipts and their
+request/provenance; never recreate a consumed response file. Retain unanswered request IDs/questions.
 
-- **Git state** — run `git status -sb`, `git log --oneline -8`, `git branch --show-current`,
-  `git rev-parse HEAD`. Capture: branch, **exact HEAD sha**, clean vs dirty, staged vs unstaged,
-  **pushed vs local-only**, and anything that must **never be staged** (scratch, design bundles, dev hacks).
-- **Verification** — list the test / lint / build commands this work uses and their **last actual
-  result**. Tag each ✅ *verified this session* vs ⬜ *assumed*. Never mark work DONE that you didn't
-  watch pass — an honest "in-flight, unverified" beats a confident lie.
-- **Where the work lives** — the active plan/bundle dir (`docs/plans/active/...`), the key files as
-  `path:line`, the auto-memory entry if the project uses one.
-- **The conversation** — distill: the goal + *why*, decisions already made, gotchas discovered,
-  what's DONE+verified, what's in-flight, and the **exact next steps in order**.
+For reviews, retain original verdict/context paths, reviewed content/scope identities, rounds and
+unresolved findings. Record the concrete run/session/phase bindings and original phase-start snapshot,
+manifest and PHASE_HEAD required by the continuity contract. Never run `phase-start` again over
+in-progress edits. A reviewer conversation ID is optional; credentials and private chat history are not
+checkpoint inputs. Do not include secrets or rely on auto-memory, hosted-only boards or hidden state.
 
-## Step 2 — Pick the location + slug
+## 2. Author and finalize all artifacts
 
-- **Dir:** if an active plan bundle dir is in play, write there; otherwise default to `.claude/context/`
-  (create it if missing).
-- **Date:** `date +%F`. **Slug:** short kebab naming the work/phase (e.g. `phase-c-d`, `auth-refactor`).
-- **Args:** invoking `handoff` (listed bare or as `the-foreman:handoff` depending on install) with
-  `<slug>` sets the slug/topic. The user may also pass overrides — a target dir, a
-  different skill set, or "no ultracode". Honor them; otherwise use the defaults below.
+Fill every relevant template section from ground truth. Preserve workflow responsibilities: fresh
+implementer per task, TDD, root-cause debugging, spec review then quality review, independent
+`codex-gate`, verification and the five human gates. The receiving Foreman adapter maps these to its
+available skills, question tools, models and native workers. Do not mandate source-host slash commands,
+model names or tool APIs. ULTRACODE describes rigor and deliberate delegation, not a portable model dial.
 
-## Step 3 — Write the handoff doc (deep)
+Write both the complete handoff prose and the lean kickoff prompt now. Finish the receiving
+adapter's required per-file refiner Review workers, apply their findings, and log their outcomes.
+Finalize the ledger, companion board/Markdown twin, context files, verification logs, receipts and
+all other evidence before capture. Finish every repository-local write, including the kickoff and
+any capture-input JSON; the helper inventories tracked and nonignored untracked files, so a new
+kickoff or log written afterward would immediately invalidate the checkpoint.
 
-Read `assets/handoff-template.md` and fill **every** section from Step 1's ground truth. Keep every
-claim evidence-true. The skeleton: banner (status / your-job / git discipline) → §0 onboarding
-read-order → §1 git + verification baseline (exact, copy-pasteable) → §2 mandated process (Step 5) →
-§3 the work (state + next steps, `path:line` grounded) → §4 gotchas → §5 safety rails.
+Write the final state JSON using the exact schema in `references/continuity.md`. Use a writable
+initiative/context location; state JSON is capture input, not a third kickoff artifact. Record pending
+unanswered file escalations in `pendingGate` with their original request ID/questions and request file
+in evidence. `file-escalation` provenance means an already-accepted durable receipt, not a pending
+request. Finish all findings, prose corrections and known-limitations notes, then stop/join all
+writers. Neither refinement nor the companion board render belongs after the final capture.
 
-## Step 4 — Write the kickoff prompt (lean, paste-ready)
+## 3. Final capture and read-only check
 
-Read `assets/kickoff-prompt-template.md` and fill it. It is **one message** the user pastes into a
-fresh agent: orientation (continuing X, status, you own Y) → read-first-in-order (point at the
-handoff doc as the deep source) → working dir + git discipline → **Process (mandated) + ULTRACODE
-block** → the immediate first action + safety rails. Lean: a pointer, not a copy of the doc.
+Only after §2 is complete, run:
 
-## Step 5 — Teach the workflow (the heart of the handoff)
+```bash
+node <skill-dir>/references/continuity.mjs capture <repo> <state.json> <handoff.md>
+node <skill-dir>/references/continuity.mjs check <handoff.md> <repo>
+```
 
-This is what the user is really asking for — not just *what* is left, but *how we've been working*,
-so the fresh agent keeps the same discipline instead of inventing its own. Transmit three things into
-both §2 of the doc and the kickoff prompt:
+Capture preserves prose and embeds the versioned checkpoint. Check is read-only: it verifies
+filesystem/git identities and referenced evidence, never tests, permissions or approvals. Inspect its
+output and fix incorrect/missing evidence; do not suppress failures or declare gates passed. The
+helper secret-scans checkpoint content; review prose too and exclude credentials/customer data.
+After capture, perform no inventoried writes: do not edit the kickoff, ledger, board, context,
+logs, evidence, state input or handoff prose. Deliver the existing artifacts and report the final
+check output in chat; do not append that result to an inventoried file. A `validated` filesystem
+result still leaves pending decisions pending and authority for the receiver to adjudicate.
 
-1. **The mandated skill chain.** Default (the user's standard set — adjust to what this session
-   actually used). The `superpowers` skills below are installed via the `obra/superpowers-marketplace`
-   plugin marketplace:
-   - `/superpowers:subagent-driven-development` — a fresh implementer subagent per task (model + effort per
-     the-foreman SKILL.md §8: the standard tier builds, the deep tier reviews); after each,
-     **spec-compliance review THEN code-quality review**. Give the subagent the full task text + exact file
-     anchors (it has zero context). Re-verify yourself; don't trust subagent reports.
-   - `/superpowers:test-driven-development` — RED first (write the failing test, watch it fail), then implement.
-   - `/superpowers:systematic-debugging` — root-cause before patching any failure.
-   - `/superpowers:verification-before-completion` — re-run the suites + read the diff yourself before claiming done.
-   - `/codex-gate` per phase — the independent second gate; run **both** gates.
-2. **The ⚡ ULTRACODE posture** (include unless this session clearly wasn't ultracode): *optimize for
-   the most exhaustive, correct outcome — token cost is not a constraint — and take advantage of
-   dynamic Workflows for the structurable parts (e.g. a parallel-reader "understand" fan-out to map
-   the surfaces before you spec tasks). Drive the per-task review loop yourself (review adjudication
-   isn't a fan-out).*
-3. **The hard-won gotchas from THIS session** — the operational lessons a fresh agent would otherwise
-   rediscover painfully. These are the **highest-value bytes in the whole handoff**. Be concrete, e.g.
-   "codex-gate: fresh `CODEX_GATE_SESSION` per round or it overflows on a big branch; verify each
-   finding in code before fixing", "run tests under `node`, not bunx", "flag X must be set in dev".
+If a correction or later work is necessary, return to §2: explain and verify the change, finalize
+all artifacts and quiesce writers again, then recapture and check before delivery. Keep the existing
+valid resume block when recapturing the same initiative/phase; retain its exact original reviewer
+bindings, manifest and baseline bytes. Recapture must not bless a changed/missing baseline, replay
+`phase-start`, remove the block, or change phase/initiative/output identity to bypass its protection.
+If the helper rejects original-baseline drift, preserve the work, restore original evidence or resolve
+the affected review scope with the user; never manufacture a passing checkpoint.
 
-Adapt the canonical text in the templates — don't blind-paste the project-specific bits.
+## 4. Receiving agent
 
-## Step 6 — Hand it to the user
+Load the receiving host's installed `the-foreman` adapter and follow its preflight plus the shared
+resume contract. Check the checkpoint against the actual checkout; rerun the recorded relevant checks
+and classify validated/changed/missing/pending facts before the first unfinished action. Preserve an
+intentional RED checkpoint and its last green baseline; continue only its already-authorized next
+implementation step, never cross a boundary on RED. Unexpected failure, unresolved BLOCK,
+INFRA_ERROR, OVERFLOW or missing review evidence stays unresolved.
 
-- Print **both file paths** (clickable).
-- Print the **kickoff prompt inline in a fenced block** so the user can copy it in one action.
-- One honest line on the **trust level**: what's verified vs still-claimed.
+Carry forward only verified, in-scope human decisions compatible with receiver policy, including a
+source-host approval channel that differs from the receiver's. Do not ask again solely because the host
+changed. Pending questions stay pending on a supported receiving channel; preserve validated read-once
+receipts. A valid completed review is retained with original provenance, not rerun merely for a host
+switch. A missing reviewer conversation can use a fresh reviewer against the verified original
+snapshot; never replace that baseline. If evidence or work moved, remap accessible repository-relative
+paths and stop only affected actions until gaps are resolved. Never reset dirty work or silently fetch,
+copy credentials, publish evidence or create a replacement phase baseline.
 
----
+For legacy unversioned docs, recover only verifiable facts and label unknowns. Malformed/unsupported
+versioned data cannot auto-advance. Report the exact recoverable gap. Start fresh receiver workers
+when needed under actual host limits; separate user-owned chats require explicit user authorization
+for participants and messages. A queued message is not completion and does not authorize a reply.
 
-## Principles
+## 5. Deliver without further writes
 
-- **Two altitudes, kept separate.** The doc is exhaustive; the prompt is a lean pointer. Collapsing
-  them defeats the purpose — the user wants a short thing to paste and a deep thing to land on.
-- **Evidence over optimism.** DONE means you watched it pass. Everything else is in-flight. A handoff
-  that overstates state is worse than no handoff.
-- **Assume zero context.** Spell out read-order, exact commands, exact shas, exact file paths. The
-  fresh agent knows nothing about this session — not even which branch it's on.
-- **Teach the process, not just the state.** That's the whole point: the next agent should work the
-  way this session worked.
-- **Git discipline is sacrosanct.** Carry the user's rules verbatim (LOCAL-only / never-stage-X / no
-  push or PR without an explicit ask).
+Surface the two existing clickable paths and include the already-finalized kickoff inline in one
+fenced block. Report the final check status and what was verified, historical, expected RED or still
+pending. Do not create or refine either artifact here. The handoff checkpoint itself requires no
+approval and grants no commit, push, PR, live run or cross-chat permission.

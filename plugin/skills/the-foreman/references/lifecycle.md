@@ -33,6 +33,11 @@ preflight before entering any auto stage.
 detection), §3 (preflight).
 **Gate / artifact:** the `entry-to-brainstorm` transition is **auto** (no artifact); the preflight
 fails closed and is the one real stop here if the deny rails are absent.
+**Resume:** read the [shared continuity contract](../../handoff/references/continuity.md) and apply
+SKILL.md §2. Validate the checkout, dirty work and original evidence, rerun relevant verification and
+classify current green/expected RED/failure separately from the historical last green. A host switch
+does not restart planning or invalidate verified matching human decisions. Claude preflight remains
+mandatory; source-host safeguards never substitute for it.
 
 ### Stage 1 — Brainstorm 🚦
 **Purpose:** refine the rough idea into a fully-formed design before any plan or code.
@@ -97,9 +102,35 @@ gate (§7).
 ### Stage 7 — Handoff / pause 🚦
 **Purpose:** checkpoint state at low context or a natural pause so the next agent resumes cleanly.
 **Delegates to:** `handoff` (wrapped — SKILL.md §5); the handoff doc and kickoff prompt each get
-their own the-refiner Review subagent before the final hand-to-user step (SKILL.md §5).
+their own the-refiner Review subagent before final capture/check (SKILL.md §5). Both artifacts
+are host-neutral. Apply refinement findings and log outcomes; finalize the kickoff, ledger, companion
+board/Markdown twin, context/evidence/log files and state input, then quiesce all writers before
+capture/check. Preserve pending gates, original evidence and actual authorization provenance.
 **Gate / artifact:** `handoff` is a **checkpoint** — wrap `handoff` and render its companion Artifact
-(§7); nothing to approve. Then loop back to Stage 0 for the next agent.
+(§7) before final capture/check; nothing to approve. Delivery surfaces existing files and the final
+read-only check result in chat without further inventoried writes. Corrections repeat finalization
+and capture/check, retaining the existing same-phase original review bindings/baseline protections.
+Then loop back to Stage 0 for the next agent.
+
+## Resume without losing review coverage
+
+SKILL.md §2's narrow resume exception preserves completed reviews only when their original verdict,
+context, reviewed scope/content identities and evidence still match. Historical results keep original
+provenance; they are not newly verified. Missing evidence leaves that gate unverified. Continue at the
+first unfinished action with fresh receiving-host workers; old running handles do not transfer.
+
+Retain recorded run/session/phase bindings, PHASE_HEAD and the original phase-start snapshot with its
+manifest and every baseline file. Never replay `phase-start` over in-progress edits. Missing reviewer
+conversation state permits a fresh reviewer against that existing baseline, not a new baseline. On
+relocation, preserve actual work, remap accessible references and stop affected review until coverage
+can be restored or the human approves complete in-flight scope.
+
+Only matching explicit human decisions compatible with receiving policy carry forward. Source-host
+channels map through its adapter; no duplicate approval is needed solely because the host changed.
+Pending questions remain pending; consumed escalation answers travel as validated receipts with
+request/provenance, never recreated response files. Expected TDD RED can resume its already-authorized
+implementation step but cannot pass a boundary or preserve a batch grant through a non-green signal.
+All new/unfinished gates below retain their ordinary protocol, scope and timing requirements.
 
 ## The render-then-ask protocol
 

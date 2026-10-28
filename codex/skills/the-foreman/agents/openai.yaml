@@ -1,0 +1,4 @@
+interface:
+  display_name: "The Foreman"
+  short_description: "Conduct development through verified gates"
+  default_prompt: "Use $the-foreman to start or resume a gated development initiative."
