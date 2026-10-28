@@ -31,7 +31,10 @@ This skill **orchestrates** — it never re-encodes what another skill already d
 
 **Violating the letter of these IS violating the spirit. A "same spirit" substitute does NOT count.**
 "Delegate X" / "run BOTH gates" means **actually invoke X** (the `Skill` tool or its CLI) — *now, this
-turn* — not describe it, not approximate it, not defer it.
+turn* — not describe it, not approximate it, not defer it. These are requirements for new or
+unfinished gates. The sole resume exception is §2's shared continuity contract: original completed
+reviews and explicit matching human decisions can survive a host switch after their evidence is
+validated. A prose claim alone never qualifies; fresh gates retain every requirement below.
 
 1. **`codex-gate` = INVOKE the `codex-gate` skill.** EVERY codex-gate call named in a §6 stage is
    mandatory AT that stage — the closed set: `question` at genuine forks (§6·1), `bundle`/`plan` at
@@ -40,7 +43,8 @@ turn* — not describe it, not approximate it, not defer it.
    — and drive it to **APPROVE**. It is the independent second pair of eyes (§1). It is **NOT** satisfied
    by: a homegrown/"completeness" critic · your own self-review · the-foreman's OWN scripts
    (`gate-contract.mjs --print`, `preflight.mjs`) · a ledger/handoff that *records* a prior "codex-gate
-   APPROVE". **If you have not literally invoked `codex-gate` this initiative, the gate has NOT run** —
+   APPROVE" without the original verified evidence (§2). **If `codex-gate` was not literally invoked
+   for this initiative and reviewed scope, the gate has NOT run** —
    say so and run it. **APPROVE/converged is a verdict codex-gate emits, never one you declare** — "the
    remaining findings are noise" is a rebuttal to feed back into the loop, not a verdict; if the gate
    still won't approve, that is non-convergence → STOP + surface (§6). An `INFRA_ERROR` on a review mode
@@ -85,8 +89,9 @@ Adopt this posture before any work so it never has to be re-explained:
   unfetchable "verify in Phase 0" rather than inventing it.
 - **Run BOTH gates.** Claude's own review AND the independent `codex-gate` — **invoked, not
   approximated** (Non-negotiable #1). A homegrown critic / self-review / the-foreman's own scripts /
-  a recorded prior "APPROVE" do NOT substitute for invoking the `codex-gate` skill. Verify every
-  finding in code before acting on it — Codex catches real gaps Claude reviews miss, and Claude
+  a recorded prior "APPROVE" without §2's verified original evidence do NOT substitute for invoking
+  the `codex-gate` skill. Verify every finding in code before acting on it — Codex catches real gaps
+  Claude reviews miss, and Claude
   catches noise Codex raises.
 - **Git discipline.** LOCAL-only by default. Branch off the integration base **before** any
   write/commit. Never push or open a PR without an explicit ask. **Never `git add -A`** — stage
@@ -107,8 +112,9 @@ git rules in particular survive context that conversational "don't push yet" pro
    requirements, and codebase context (the domain docs router).
 
 Then branch on entry mode (§2): **if resuming**, also read the initiative bundle + the `handoff`
-doc + auto-memory to inherit prior state. **A fresh start authors those instead of reading
-them** — there is nothing to resume.
+doc and referenced evidence to inherit prior state. Existing project memory may help orientation,
+but required context must be in the checkpoint and accessible artifacts. **A fresh start authors
+initiative artifacts instead of reading them** — there is nothing to resume.
 
 ## §2 — Entry detection (fresh vs resume)
 
@@ -116,11 +122,44 @@ Detect the entry mode FIRST, before any work — a fresh start has none of the a
 assumes, so guessing wrong wastes a cold-start.
 
 - **RESUME (an in-flight initiative).** Signal: you arrived via a `handoff` kickoff prompt, or a
-  plan bundle / feature branch / worktree already exists for this work. Do `handoff`'s §0
-  onboarding (bundle → handoff doc → auto-memory), then **re-confirm the green baseline** —
-  actually RE-RUN the stated verification THIS turn (run lint/tests/build for the touched project
-  and report the result; naming or *promising* the checks is not re-confirmation) and check the git
-  footing (flag a stale base / uncommitted drift) — before continuing.
+  plan bundle / feature branch / worktree already exists for this work. Read its onboarding,
+  bundle, ledger, checkpoint and evidence; follow the
+  [shared resume contract](../handoff/references/continuity.md) for either source host. Use THIS
+  Claude adapter and run §3 unchanged; source-host safeguards never replace Claude preflight.
+  Run `node <skill-dir>/../handoff/references/continuity.mjs check <handoff.md> <repo>` and inspect
+  repository identity, HEAD, staged/unstaged/untracked fingerprints, approved scope and referenced
+  evidence. Actually RE-RUN the stated relevant verification THIS turn and report its result;
+  naming or promising checks is not verification. Keep original historical results labeled with
+  their provenance, separate from current output. An expected TDD RED may reproduce correctly:
+  preserve the last green baseline and continue only the already-authorized next implementation
+  step. Never reset work to obtain green or pass a boundary on RED. Unexpected failure or unresolved
+  BLOCK/INFRA_ERROR/OVERFLOW remains unresolved.
+  Preserve original completed review evidence only when the verdict/context, reviewed scope/content
+  identities and baseline are accessible and match; a handoff's APPROVE sentence is insufficient.
+  This narrow exception satisfies the original review requirement without a fresh invocation solely
+  because the conductor host changed. Missing, changed or unverifiable evidence leaves the affected
+  gate unverified and requires fresh review. Resume at the first unfinished action, including any
+  unfinished spec, quality or independent review; never replay completed work blindly.
+  Adopt the recorded ledger, CODEX_GATE_RUNS, CODEX_GATE_SESSION, phase ID, PHASE_HEAD and original
+  phase-start snapshot rather than new host defaults. Verify the snapshot manifest and every listed
+  baseline file. **Never call `phase-start` again over in-progress edits.** A missing baseline is not
+  an empty file. If reviewer conversation state is missing, use a fresh reviewer against the original
+  verified baseline and context, recording that it is fresh; do not copy credentials. On relocation,
+  remap accessible repository-relative paths, preserve dirty work and stop only the affected review
+  until the baseline is restored or the human approves a scope covering all in-flight changes.
+  Carry explicit human decisions only within their original, still-matching scope and compatible
+  receiver policy. Accept genuine source-host approval evidence from its supported channel, including
+  Codex's explicit scoped chat answer; do not demand a tool named AskUserQuestion on the source host.
+  Do not ask again merely for a host switch. Plan approval and local-commit permission stay separate;
+  pending/denied/revoked decisions stay so, and consumed actions are not new permission. Batch-run
+  retains its frozen phase set and green conditions; live/ship retain their action/scope/timing rules.
+  Persist a validated escalation answer's receipt with request/provenance when first accepted;
+  never recreate or replay its consumed response file. Retain unanswered request IDs and complete
+  questions. Surface a pending native question through this adapter's supported gate channel without
+  inventing a source answer. Create fresh native workers after quiescing source writers; old handles
+  are context only. Legacy handoffs recover only verifiable facts with unknowns labeled; malformed
+  or unsupported versioned data cannot auto-advance. Report validated/changed/missing/pending facts
+  and resolve only the actual evidence or authorization gap.
 - **FRESH START (greenfield — invoked to BEGIN new development).** Signal: no plan bundle, no
   handoff doc, no feature branch/worktree yet. Bootstrap from zero: read only the repo canon
   that exists (the §1 read-order), **establish branch posture first** (branch off the
@@ -289,11 +328,18 @@ them as Gate Boards (the §5 refiner Review pass still applies).
 
 **REQUIRED SUB-SKILL:** use `handoff` to checkpoint state at phase boundaries and when low on
 context. It produces the cold-start doc + paste-ready kickoff prompt the next agent resumes from
-(§2 RESUME). After handoff writes the handoff doc and the kickoff prompt, and before handoff's
-final hand-to-user step, dispatch one fresh subagent per file that invokes the-refiner in Review
-mode and returns that file's findings table; apply the findings to each file first (same isolation
-rule as §4: never inline). Do not re-encode its templates here — call it by name so its structure
-stays single-sourced.
+(§2 RESUME). After handoff authors the handoff doc and kickoff prompt, dispatch one fresh subagent
+per file that invokes the-refiner in Review mode and returns that file's findings table; apply the
+findings and log the outcomes before handoff's final capture/check (same isolation rule as §4: never
+inline). Finalize the ledger, companion board/Markdown twin, context/evidence/log files and state input
+before that capture, then quiesce all writers. Delivery only surfaces existing artifacts and reports
+the final read-only check in chat; no subsequent inventoried writes. A necessary correction returns
+to finalization, capture and check; preserve the existing same-phase checkpoint's original review
+bindings and baseline bytes rather than bypassing its recapture protections.
+Do not re-encode its templates here — call it by name so its structure stays single-sourced. Both
+hosts use the shared continuity contract (§2); retain original review snapshots, actual human
+decision provenance and pending/consumed escalation receipts. The companion board's Markdown twin,
+not a private hosted URL, travels with the handoff.
 
 ## §6 — The lifecycle conductor (idea → shipped, gated)
 
@@ -335,12 +381,21 @@ The 7 stages (🚦 = a human stop; ⚙️ = auto-advance with verification):
    mandate ("drive it idea→shipped"), plan text, or recorded prior intent NEVER satisfies it. Then
    `codex-gate prepr` → `commit-push-pr`. (Not a render-then-ask gate; a push without that fresh ask
    trips `governance-pushback`.)
-7. **Handoff/pause** 🚦 — at low context / a natural pause, **wrap** `handoff` (§5) + render the
-   `handoff` checkpoint's companion Artifact (§7); loop back to stage 0 for the next agent.
+7. **Handoff/pause** 🚦 — at low context / a natural pause, **wrap** `handoff` (§5); render its
+   companion Artifact (§7) and finalize all artifacts before final capture/check. Delivery makes no
+   inventoried writes; loop back to stage 0 for the next agent.
 
 Decision-class blockers / `INFRA_ERROR` / `OVERFLOW` / non-convergence in any stage → **STOP + surface**.
+On resume, §2 determines which actions are already complete: retain validated original evidence and
+phase-start baselines, then execute the first unfinished action. The this-turn review requirements
+above apply to new/unfinished reviews, never to a verified completed review solely for a host switch.
 
 ## §7 — The gate-enforcement protocol (render-then-ask)
+
+**Inherited decisions:** §2's verified matching human receipts satisfy already-completed decisions,
+including those made on the source host's supported channel. Do not replay a completed gate merely
+because the host changed. Missing/conflicting scope or evidence leaves it unverified. Pending gates
+and every new trigger use the full protocol below; this exception grants no new approval.
 
 **Trigger recognition (do not miss the gate):** when the user *reacts to a plan or board* — "do you
 approve?", "how far should I implement?", "looks good, proceed", "start building" — you are AT the
@@ -395,7 +450,9 @@ protocol below. The same applies whenever any gate's trigger fires.
     `node <skill-dir>/references/escalation.mjs request <session-dir> <gateId> '<questionsJson>' "<authorizes>" <htmlPath> <mdPath>`
     Surface the request path (+ the opened board), then poll
     `node <skill-dir>/references/escalation.mjs check <session-dir> <requestId>` and resume
-    ONLY on `status:"answered"` with a valid read-once answer. `pending`/`invalid` ⇒ keep waiting;
+    ONLY on `status:"answered"` with a valid read-once answer. Persist the returned validated answer
+    with request/provenance as a consumed receipt before continuing; do not recreate its response
+    file on resume. `pending`/`invalid` ⇒ keep waiting;
     **never advance without a complete valid answer** (ADR-006). A session that must end, ends AT the
     gate — the pending escalation file doubles as the handoff. This is the FALLBACK; the normal gate is `AskUserQuestion`.
   **Render NOW — don't defer the gate.** When the trigger fires, the Artifact must materialize *this
@@ -481,7 +538,7 @@ If any thought below is in your head, you are about to skip a gate. Stop and run
 | Run a homegrown "completeness critic" / your own review *as* the gate | That is NOT `codex-gate`. **Invoke the `codex-gate` skill.** "Same spirit" ≠ the independent gate. |
 | Defer codex to "later / Stage-4 phase-review" | The PLAN bundle needs `codex-gate bundle`/`plan` → APPROVE **now**, before approval. "Later" ≠ at the gate. |
 | Treat the-foreman's own `gate-contract.mjs --print` / `preflight.mjs` as the review | Those are *this skill's* scripts, not the independent gate. Run `codex-gate`. |
-| Read a ledger/handoff that says "codex-gate APPROVE" and move on | A *recorded claim* is not the gate running. Invoke `codex-gate` yourself this initiative. |
+| Read a ledger/handoff that says "codex-gate APPROVE" and move on | A *recorded claim* is not the gate running. Validate original reviewed evidence under §2 or invoke the missing review; a host switch alone does not invalidate a completed review. |
 | "Offer" codex-gate as an optional step at the end | §1 says run BOTH gates. It is **required, not offered.** |
 | Answer "do you approve? / how far?" in prose, or ask "which should I start?" | You are AT the plan-approval hard gate. Render the planDeck, **surface** it (publish if the tool's there, else **open it in a Chrome tab** via `open-artifact.mjs` — §4·3), and **block on a structured `AskUserQuestion`** (§7). |
 | Collapse the gate's two decisions into one casual question | Approve-the-plan and authorize-local-commits (default NO) are **orthogonal** — structured `AskUserQuestion`, not prose. |
@@ -489,7 +546,7 @@ If any thought below is in your head, you are about to skip a gate. Stop and run
 | Apologize that "the Artifact publish tool isn't available" / stall / treat it as a blocker | Publishing is OPTIONAL hosting; the rendered file IS the complete, secret-scanned deliverable. **Open it in a Chrome tab** (`open-artifact.mjs`, §4·3), state the path, and **continue the gate** — the `AskUserQuestion`, not the URL, is the gate. No apology, no spiral. |
 | Say "invoking codex-gate…" then end the turn waiting for a "monitor event" | `codex-gate` is **synchronous** — drive the loop to a verdict THIS turn; don't defer the gate (or the render-stop) to "when it returns". |
 | Skip/substitute because "there's no real bundle dir to gate" | **Write the bundle to disk first, then run `codex-gate`.** Missing files = author them, not skip the gate. |
-| Skip `phase-start`/`phase-review` because "the plan was already gated" | Each phase's codex calls are in the closed mandatory set (Non-negotiable #1) — per phase, every phase. |
+| Skip `phase-start`/`phase-review` because "the plan was already gated" | Each phase's codex calls are in the closed mandatory set (Non-negotiable #1) — per phase, every phase. A §2 resume retains its verified original snapshot rather than replaying `phase-start` over edits. |
 | Declare "converged — the rest is noise" yourself | APPROVE is emitted by codex-gate, never by you. Rebut inside the loop; no verdict = non-convergence → STOP + surface. |
 | Skip a boundary stop because the phase was "too small to be material" | Selectivity never applies to hard gates (§7) — every trigger renders and blocks, however small the phase. |
 | Treat the kickoff "drive it idea→shipped" as the ship authorization | Ship needs a FRESH ask after the final boundary that names the act (§6·6). Stop at "ready to ship — awaiting your instruction". |

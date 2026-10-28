@@ -1,23 +1,17 @@
-<!--
-  KICKOFF PROMPT TEMPLATE — the LEAN artifact the USER pastes into a fresh agent.
-  One message. Point at the handoff doc for depth; do NOT duplicate it. Fill every [bracket],
-  delete this comment. Keep it tight — this is a launcher, not the manual.
--->
+<!-- One paste-ready message for either host. Finalize/refine this file before final capture/check;
+     delivery only displays it. Point to the detailed checkpoint; do not duplicate it. -->
 
-You're continuing [project / feature]. [One line of status: what's DONE + verified.] You own **[the next scope]**.
+Continue [initiative] in `[checkout root]` on `[branch]`. Read repository `AGENTS.md` and its routed
+contracts, load your installed `the-foreman` adapter, then read `[handoff path]` and the referenced
+plan/ledger/evidence. Use your receiving-host adapter and the shared continuity contract to validate
+checkout, dirty work, original snapshot and scoped human decisions; rerun the recorded relevant checks.
 
-Read first, in order:
-1. `AGENTS.md` (repo root), then [downstream `AGENTS.md` / `CLAUDE.md`].
-2. `[path]/handoff-[date]-[slug].md` — the full cold-start handoff (build state, the spec, the gotchas, the data contract, the safety rails). Self-sufficient; follow its §0.
-3. [the plan / design bundle / spec] — [what to read; ⚠️ what NEVER to stage].
-4. [auto-memory entry, if any] — [the relevant paragraph].
+Status: [historical green / current green / expected RED / pending]. First unfinished action:
+[exact action]. Preserve [critical original baseline/gotcha]. Keep last green separate from expected
+RED; never pass a boundary on RED. Resume matching verified decisions without asking again solely for
+a host switch; pending questions remain pending and consumed response files stay consumed.
 
-Working dir: `[path]`, branch `[branch]` (HEAD = `[sha]`). [Git discipline — e.g. LOCAL commits only; no push/PR without my explicit ask. Never stage `[X]`.]
-
-Process (mandated): /superpowers:subagent-driven-development (fresh implementer per task at the standard tier; spec-review THEN code-quality review, both at the deep tier — per the-foreman §8) · /superpowers:test-driven-development (RED first) · /superpowers:systematic-debugging · /superpowers:verification-before-completion (re-run the suites + read the diff yourself) · invoke `codex-gate` (listed bare or as `the-foreman:codex-gate` depending on install) per phase. Run BOTH gates. ⚡ We're in ULTRACODE effort: optimize for the most exhaustive, correct outcome (token cost is not a constraint) and take advantage of dynamic Workflows for the structurable parts (e.g. a parallel-reader "understand" fan-out to map the surfaces before you spec tasks). Drive the per-task review loop yourself.
-
-[Optional but high-value: the 1–2 most critical session gotchas, e.g. codex-gate base = the pre-phase HEAD, fresh CODEX_GATE_SESSION per round (resuming OVERFLOWs on a big branch), verify each finding in code before fixing.]
-
-[The work — one short paragraph per phase/task you own, with the `path:line` anchors and the goal. This is the distillation of the handoff doc's §3, not a re-paste.]
-
-Start by: [the concrete first action — handoff §0 onboarding, confirm the baseline green, then propose a short plan before implementing]. 🛑 [the safety rail — e.g. NEVER trigger a real paid run; test with mocks]. Stop at phase boundaries to report.
+Use your native workers and supported tools for implementation, spec review, quality review and the
+independent gate. [Actual user constraints, never-stage paths and permissions.] This prompt grants no
+new commit, ship, live-run or cross-chat authority. Report any changed/missing evidence precisely and
+continue only the already-authorized work whose prerequisites remain valid.
